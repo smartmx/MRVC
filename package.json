@@ -1,0 +1,570 @@
+{
+  "name": "mrvc",
+  "displayName": "MRVC",
+  "description": "MRVC — open, configure, build and flash MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
+  "version": "0.1.0",
+  "publisher": "mrvc",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "WCH",
+    "MounRiver",
+    "MRS",
+    "RISC-V",
+    "embedded",
+    "CH32",
+    "CH58x",
+    "CH59x"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/.project",
+    "workspaceContains:**/*.wvproj",
+    "onCommand:mrs2.openProject"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "MRVC",
+      "properties": {
+        "mrvc.mrs2InstallPath": {
+          "type": "string",
+          "default": "C:\\MounRiver\\MounRiver_Studio2",
+          "description": "MRS2 (MounRiver Studio 2) installation path. Provides the RISC-V toolchain, make, OpenOCD and WCH-LinkUtility used by this extension. Example: C:\\MounRiver\\MounRiver_Studio2",
+          "order": 0
+        },
+        "mrvc.toolchain": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "GCC8",
+            "GCC12",
+            "GCC15"
+          ],
+          "enumDescriptions": [
+            "Follow the toolchain recorded in each project (.cproject rvGcc option / prefix)",
+            "RISC-V Embedded GCC 8.2 (riscv-none-embed-)",
+            "RISC-V Embedded GCC 12.2 (riscv-wch-elf-)",
+            "RISC-V Embedded GCC 15.2 (riscv32-wch-elf-)"
+          ],
+          "default": "auto",
+          "description": "Toolchain component used for building.",
+          "order": 1
+        },
+        "mrvc.build.parallelJobs": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Number of parallel make jobs (-j). 0 = number of CPU cores.",
+          "order": 2
+        },
+        "mrvc.build.verbose": {
+          "type": "string",
+          "enum": [
+            "concise",
+            "normal",
+            "full"
+          ],
+          "enumDescriptions": [
+            "Only errors/warnings",
+            "Per-file compile lines (default)",
+            "Echo every gcc command line"
+          ],
+          "default": "normal",
+          "description": "Build output verbosity. 'full' passes VERBOSE=1 style echoing.",
+          "order": 3
+        },
+        "mrvc.openocd.path": {
+          "type": "string",
+          "default": "",
+          "description": "Override path of openocd.exe. Empty = use the one from the MounRiver installation.",
+          "order": 4
+        },
+        "mrvc.openocd.config": {
+          "type": "string",
+          "default": "",
+          "description": "Override OpenOCD config file for flashing (default: wch-riscv.cfg shipped with MounRiver).",
+          "order": 5
+        },
+        "mrvc.flash.address": {
+          "type": "string",
+          "default": "",
+          "description": "Flash start address override for OpenOCD 'program' (e.g. 0x00000000). Empty = use the address from the project's .template file.",
+          "order": 6
+        },
+        "mrvc.flash.verify": {
+          "type": "boolean",
+          "default": true,
+          "description": "Verify flash after download.",
+          "order": 7
+        },
+        "mrvc.flash.reset": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reset target after download.",
+          "order": 8
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mrs2-explorer",
+          "title": "MRVC",
+          "icon": "media/chip.svg"
+        }
+      ]
+    },
+    "views": {
+      "mrs2-explorer": [
+        {
+          "id": "mrs2.projectExplorer",
+          "name": "Project Explorer",
+          "when": "true"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "mrs2.projectExplorer",
+        "contents": "No MRS project loaded.\n[Open MRS Project](command:mrs2.openProject)\n\nOpen a folder that contains an MRS/MounRiver project (a `.project` / `.cproject` pair or a `.wvproj` file)."
+      }
+    ],
+    "commands": [
+      {
+        "command": "mrs2.openProject",
+        "title": "Open MRS Project",
+        "category": "MRVC",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "mrs2.setActiveProject",
+        "title": "Set Active Project",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.build",
+        "title": "Build Project",
+        "category": "MRVC",
+        "icon": "media/build_project.svg"
+      },
+      {
+        "command": "mrs2.buildAll",
+        "title": "Build All Projects",
+        "category": "MRVC",
+        "icon": "media/build_all_project.svg"
+      },
+      {
+        "command": "mrs2.cleanAll",
+        "title": "Clean All Projects",
+        "category": "MRVC",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "mrs2.collapseAll",
+        "title": "Collapse All Projects",
+        "category": "MRVC",
+        "icon": "$(collapse-all)"
+      },
+      {
+        "command": "mrs2.rebuild",
+        "title": "Rebuild Project",
+        "category": "MRVC",
+        "icon": "media/rebuild_project.svg"
+      },
+      {
+        "command": "mrs2.clean",
+        "title": "Clean Project",
+        "category": "MRVC",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "mrs2.flash",
+        "title": "Download to Target (Flash)",
+        "category": "MRVC",
+        "icon": "$(arrow-circle-down)"
+      },
+      {
+        "command": "mrs2.flashUtility",
+        "title": "Open WCH-LinkUtility",
+        "category": "MRVC",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "mrs2.configure",
+        "title": "Project Properties",
+        "category": "MRVC",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "mrs2.addLinkedFolder",
+        "title": "Add Linked Folder (external source folder)",
+        "category": "MRVC",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "mrs2.removeLinkedFolder",
+        "title": "Remove Linked Folder",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.openMrsTerminal",
+        "title": "Open MRS Command Terminal",
+        "category": "MRVC",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "mrs2.revealProducts",
+        "title": "Show Build Products in Explorer",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.refreshTree",
+        "title": "Refresh",
+        "category": "MRVC",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mrs2.file.newFile",
+        "title": "New File",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.file.newFolder",
+        "title": "New Folder",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.file.copy",
+        "title": "Copy",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.file.paste",
+        "title": "Paste",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.file.copyPath",
+        "title": "Copy Absolute Path",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.file.copyRelPath",
+        "title": "Copy Project Relative Path",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.file.copyName",
+        "title": "Copy File Name",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.file.rename",
+        "title": "Rename",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.file.delete",
+        "title": "Delete",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.file.reveal",
+        "title": "Open Containing Folder",
+        "category": "MRVC"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "mrs2.buildAll",
+          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mrs2.cleanAll",
+          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mrs2.collapseAll",
+          "when": "view == mrs2.projectExplorer",
+          "group": "navigation@3"
+        },
+        {
+          "command": "mrs2.refreshTree",
+          "when": "view == mrs2.projectExplorer",
+          "group": "navigation@4"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "mrs2.file.newFile",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(folder|linkedFolder|products|project)$/",
+          "group": "file@1"
+        },
+        {
+          "command": "mrs2.file.newFolder",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(folder|linkedFolder|products|project)$/",
+          "group": "file@2"
+        },
+        {
+          "command": "mrs2.file.copy",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|linkedFolder|products|project)$/",
+          "group": "file@3"
+        },
+        {
+          "command": "mrs2.file.paste",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(folder|linkedFolder|products|project)$/",
+          "group": "file@4"
+        },
+        {
+          "command": "mrs2.file.copyPath",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|linkedFolder|products|project)$/",
+          "group": "file@5"
+        },
+        {
+          "command": "mrs2.file.copyRelPath",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|linkedFolder|products|project)$/",
+          "group": "file@6"
+        },
+        {
+          "command": "mrs2.file.copyName",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|linkedFolder|products|project)$/",
+          "group": "file@7"
+        },
+        {
+          "command": "mrs2.file.rename",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|products)$/",
+          "group": "file@8"
+        },
+        {
+          "command": "mrs2.file.delete",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|products)$/",
+          "group": "file@9"
+        },
+        {
+          "command": "mrs2.file.reveal",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|linkedFolder|products|project)$/",
+          "group": "file@10"
+        },
+        {
+          "command": "mrs2.build",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "inline@1"
+        },
+        {
+          "command": "mrs2.rebuild",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "inline@2"
+        },
+        {
+          "command": "mrs2.build",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "mrs2@1"
+        },
+        {
+          "command": "mrs2.rebuild",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "mrs2@2"
+        },
+        {
+          "command": "mrs2.clean",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "mrs2@3"
+        },
+        {
+          "command": "mrs2.flash",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "mrs2@4"
+        },
+        {
+          "command": "mrs2.configure",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "mrs2@5"
+        },
+        {
+          "command": "mrs2.addLinkedFolder",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "mrs2link@1"
+        },
+        {
+          "command": "mrs2.removeLinkedFolder",
+          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "group": "mrs2link@2"
+        },
+        {
+          "command": "mrs2.setActiveProject",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "mrs2@0"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "mrs2.build",
+          "when": "mrs2.hasActiveProject"
+        },
+        {
+          "command": "mrs2.buildAll",
+          "when": "mrs2.hasProjects"
+        },
+        {
+          "command": "mrs2.cleanAll",
+          "when": "mrs2.hasProjects"
+        },
+        {
+          "command": "mrs2.rebuild",
+          "when": "mrs2.hasActiveProject"
+        },
+        {
+          "command": "mrs2.clean",
+          "when": "mrs2.hasActiveProject"
+        },
+        {
+          "command": "mrs2.flash",
+          "when": "mrs2.hasActiveProject"
+        },
+        {
+          "command": "mrs2.configure",
+          "when": "mrs2.hasActiveProject"
+        },
+        {
+          "command": "mrs2.addLinkedFolder",
+          "when": "mrs2.hasActiveProject"
+        },
+        {
+          "command": "mrs2.revealProducts",
+          "when": "mrs2.hasActiveProject"
+        },
+        {
+          "command": "mrs2.setActiveProject",
+          "when": "mrs2.hasProjects"
+        },
+        {
+          "command": "mrs2.removeLinkedFolder",
+          "when": "false"
+        },
+        {
+          "command": "mrs2.file.newFile",
+          "when": "false"
+        },
+        {
+          "command": "mrs2.file.newFolder",
+          "when": "false"
+        },
+        {
+          "command": "mrs2.file.copy",
+          "when": "false"
+        },
+        {
+          "command": "mrs2.file.paste",
+          "when": "false"
+        },
+        {
+          "command": "mrs2.file.copyPath",
+          "when": "false"
+        },
+        {
+          "command": "mrs2.file.copyRelPath",
+          "when": "false"
+        },
+        {
+          "command": "mrs2.file.copyName",
+          "when": "false"
+        },
+        {
+          "command": "mrs2.file.rename",
+          "when": "false"
+        },
+        {
+          "command": "mrs2.file.delete",
+          "when": "false"
+        },
+        {
+          "command": "mrs2.file.reveal",
+          "when": "false"
+        },
+        {
+          "command": "mrs2.refreshTree",
+          "when": "false"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "mrs2.build",
+        "key": "f7",
+        "when": "mrs2.hasActiveProject"
+      },
+      {
+        "command": "mrs2.rebuild",
+        "key": "shift+f7",
+        "when": "mrs2.hasActiveProject"
+      },
+      {
+        "command": "mrs2.flash",
+        "key": "f8",
+        "when": "mrs2.hasActiveProject"
+      }
+    ],
+    "colors": [
+      {
+        "id": "mrvc.outputDirectory",
+        "description": "Color of the build output directory row in the MRVC project tree.",
+        "defaults": {
+          "dark": "#f14c4c",
+          "light": "#c72e2e"
+        }
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "mrvc-build",
+        "properties": {
+          "task": { "type": "string" },
+          "project": { "type": "string" }
+        }
+      },
+      { "type": "mrvc-clean" },
+      { "type": "mrvc-build-all" },
+      { "type": "mrvc-flash" },
+      { "type": "mrvc-tool" }
+    ],
+    "problemMatchers": [
+      {
+        "name": "mrvcgcc",
+        "label": "MRVC GCC",
+        "owner": "mrvc",
+        "pattern": {
+          "regexp": "^(.*?):(\\d+):(\\d*):?\\s+(?:fatal\\s+)?(warning|error|note):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "test": "node --test tools/core.test.mjs",
+    "golden": "node tools/golden-check.mjs",
+    "package": "npx @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.21.5",
+    "typescript": "^5.4.5"
+  }
+}

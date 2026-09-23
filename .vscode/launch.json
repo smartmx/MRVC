@@ -1,0 +1,36 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "运行扩展 (Extension Development Host)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      "outFiles": ["${workspaceFolder}/out/**/*.js"],
+      "preLaunchTask": "npm: compile",
+      "sourceMaps": true
+    },
+    {
+      "name": "调试核心: 金标比对 (golden-check)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/golden-check.mjs",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "调试核心: 往返测试 (roundtrip)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/roundtrip-test.js",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "调试核心: 单工程编译 (build-test LED)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/build-test.mjs",
+      "args": ["F:/CH585/EVT/V1_2/EXAM/LED"],
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}
