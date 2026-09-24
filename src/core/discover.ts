@@ -41,3 +41,32 @@ function isProjectRoot(entries: fs.Dirent[]): boolean {
   }
   return false;
 }
+
+/**
+ * Collect every `.wvsln` (MRS solution) file under a tree. Solutions group
+ * standard projects via relative/absolute member paths, so a solution dir
+ * is NOT a project root itself — the walk descends into it to find the
+ * member projects (and nested solutions), but stops at project roots.
+ */
+export function findSolutionFiles(dir: string, depth: number = DEFAULT_DISCOVERY_DEPTH): string[] {
+  const out: string[] = [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  if (isProjectRoot(entries)) return out; // a project never contains a solution
+  for (const e of entries) {
+    if (e.isFile() && e.name.toLowerCase().endsWith('.wvsln')) {
+      out.push(path.join(dir, e.name));
+    }
+  }
+  if (depth <= 0) return out;
+  for (const e of entries) {
+    if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'obj') {
+      out.push(...findSolutionFiles(path.join(dir, e.name), depth - 1));
+    }
+  }
+  return out;
+}

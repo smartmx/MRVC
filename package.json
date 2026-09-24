@@ -1,11 +1,15 @@
 {
   "name": "mrvc",
   "displayName": "MRVC",
-  "description": "MRVC — open, configure, build and flash MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.1.0",
+  "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
+  "version": "0.1.1",
   "publisher": "mrvc",
   "private": true,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/smartmx/MRVC.git"
+  },
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -138,15 +142,16 @@
     ],
     "commands": [
       {
+        "command": "mrs2.openFolder",
+        "title": "Open MRS Folder",
+        "category": "MRVC",
+        "icon": "$(folder)"
+      },
+      {
         "command": "mrs2.openProject",
         "title": "Open MRS Project",
         "category": "MRVC",
         "icon": "$(folder-opened)"
-      },
-      {
-        "command": "mrs2.setActiveProject",
-        "title": "Set Active Project",
-        "category": "MRVC"
       },
       {
         "command": "mrs2.build",
@@ -167,6 +172,38 @@
         "icon": "$(clear-all)"
       },
       {
+        "command": "mrs2.generateSolution",
+        "title": "Generate Solution From All Projects",
+        "category": "MRVC",
+        "icon": "$(layers)"
+      },
+      {
+        "command": "mrs2.rebuildAll",
+        "title": "Rebuild All Projects",
+        "category": "MRVC",
+        "icon": "media/rebuild_project.svg"
+      },
+      {
+        "command": "mrs2.deleteOutputKeepImages",
+        "title": "Delete Output Files (Keep hex/bin)",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.deleteOutputDirs",
+        "title": "Delete Output Directories",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.buildSolution",
+        "title": "Build Solution",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.cleanSolution",
+        "title": "Clean Solution",
+        "category": "MRVC"
+      },
+      {
         "command": "mrs2.collapseAll",
         "title": "Collapse All Projects",
         "category": "MRVC",
@@ -185,12 +222,6 @@
         "icon": "$(trash)"
       },
       {
-        "command": "mrs2.flash",
-        "title": "Download to Target (Flash)",
-        "category": "MRVC",
-        "icon": "$(arrow-circle-down)"
-      },
-      {
         "command": "mrs2.flashUtility",
         "title": "Open WCH-LinkUtility",
         "category": "MRVC",
@@ -201,6 +232,16 @@
         "title": "Project Properties",
         "category": "MRVC",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "mrs2.renameProject",
+        "title": "Rename Project",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.syncProjectName",
+        "title": "Sync Project Name from Folder",
+        "category": "MRVC"
       },
       {
         "command": "mrs2.addLinkedFolder",
@@ -279,18 +320,28 @@
         "command": "mrs2.file.reveal",
         "title": "Open Containing Folder",
         "category": "MRVC"
+      },
+      {
+        "command": "mrs2.excludeFromBuild",
+        "title": "Exclude From Build",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.includeFromBuild",
+        "title": "Include From Build",
+        "category": "MRVC"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "mrs2.buildAll",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrs2.openProject",
+          "when": "view == mrs2.projectExplorer",
           "group": "navigation@1"
         },
         {
-          "command": "mrs2.cleanAll",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrs2.openFolder",
+          "when": "view == mrs2.projectExplorer",
           "group": "navigation@2"
         },
         {
@@ -302,9 +353,59 @@
           "command": "mrs2.refreshTree",
           "when": "view == mrs2.projectExplorer",
           "group": "navigation@4"
+        },
+        {
+          "command": "mrs2.buildAll",
+          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "group": "1_build@1"
+        },
+        {
+          "command": "mrs2.rebuildAll",
+          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "group": "1_build@2"
+        },
+        {
+          "command": "mrs2.cleanAll",
+          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "group": "1_build@3"
+        },
+        {
+          "command": "mrs2.deleteOutputKeepImages",
+          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "group": "2_delete@1"
+        },
+        {
+          "command": "mrs2.deleteOutputDirs",
+          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "group": "2_delete@2"
+        },
+        {
+          "command": "mrs2.generateSolution",
+          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "group": "3_generate@1"
         }
       ],
       "view/item/context": [
+        {
+          "command": "mrs2.buildSolution",
+          "when": "view == mrs2.projectExplorer && viewItem == solution",
+          "group": "mrs2@1"
+        },
+        {
+          "command": "mrs2.cleanSolution",
+          "when": "view == mrs2.projectExplorer && viewItem == solution",
+          "group": "mrs2@2"
+        },
+        {
+          "command": "mrs2.excludeFromBuild",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder)$/",
+          "group": "buildcfg@1"
+        },
+        {
+          "command": "mrs2.includeFromBuild",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file\\.excluded|folder\\.excluded)$/",
+          "group": "buildcfg@1"
+        },
         {
           "command": "mrs2.file.newFile",
           "when": "view == mrs2.projectExplorer && viewItem =~ /^(folder|linkedFolder|products|project)$/",
@@ -317,7 +418,7 @@
         },
         {
           "command": "mrs2.file.copy",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|linkedFolder|products|project)$/",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|linkedFolder|products|project)$/",
           "group": "file@3"
         },
         {
@@ -327,32 +428,32 @@
         },
         {
           "command": "mrs2.file.copyPath",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|linkedFolder|products|project)$/",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|linkedFolder|products|project)$/",
           "group": "file@5"
         },
         {
           "command": "mrs2.file.copyRelPath",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|linkedFolder|products|project)$/",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|linkedFolder|products|project)$/",
           "group": "file@6"
         },
         {
           "command": "mrs2.file.copyName",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|linkedFolder|products|project)$/",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|linkedFolder|products|project)$/",
           "group": "file@7"
         },
         {
           "command": "mrs2.file.rename",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|products)$/",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|products)$/",
           "group": "file@8"
         },
         {
           "command": "mrs2.file.delete",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|products)$/",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|products)$/",
           "group": "file@9"
         },
         {
           "command": "mrs2.file.reveal",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder|linkedFolder|products|project)$/",
+          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|linkedFolder|products|project)$/",
           "group": "file@10"
         },
         {
@@ -381,14 +482,19 @@
           "group": "mrs2@3"
         },
         {
-          "command": "mrs2.flash",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "mrs2@4"
-        },
-        {
           "command": "mrs2.configure",
           "when": "view == mrs2.projectExplorer && viewItem == project",
           "group": "mrs2@5"
+        },
+        {
+          "command": "mrs2.renameProject",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "mrs2@6"
+        },
+        {
+          "command": "mrs2.syncProjectName",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "mrs2@7"
         },
         {
           "command": "mrs2.addLinkedFolder",
@@ -399,11 +505,6 @@
           "command": "mrs2.removeLinkedFolder",
           "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
           "group": "mrs2link@2"
-        },
-        {
-          "command": "mrs2.setActiveProject",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "mrs2@0"
         }
       ],
       "commandPalette": [
@@ -428,10 +529,6 @@
           "when": "mrs2.hasActiveProject"
         },
         {
-          "command": "mrs2.flash",
-          "when": "mrs2.hasActiveProject"
-        },
-        {
           "command": "mrs2.configure",
           "when": "mrs2.hasActiveProject"
         },
@@ -442,10 +539,6 @@
         {
           "command": "mrs2.revealProducts",
           "when": "mrs2.hasActiveProject"
-        },
-        {
-          "command": "mrs2.setActiveProject",
-          "when": "mrs2.hasProjects"
         },
         {
           "command": "mrs2.removeLinkedFolder",
@@ -507,11 +600,6 @@
         "command": "mrs2.rebuild",
         "key": "shift+f7",
         "when": "mrs2.hasActiveProject"
-      },
-      {
-        "command": "mrs2.flash",
-        "key": "f8",
-        "when": "mrs2.hasActiveProject"
       }
     ],
     "colors": [
@@ -521,6 +609,14 @@
         "defaults": {
           "dark": "#f14c4c",
           "light": "#c72e2e"
+        }
+      },
+      {
+        "id": "mrvc.excludedFromBuild",
+        "description": "Color of files and folders excluded from the build in the MRVC project tree.",
+        "defaults": {
+          "dark": "#8a8a8a",
+          "light": "#767676"
         }
       }
     ],
@@ -534,7 +630,6 @@
       },
       { "type": "mrvc-clean" },
       { "type": "mrvc-build-all" },
-      { "type": "mrvc-flash" },
       { "type": "mrvc-tool" }
     ],
     "problemMatchers": [
@@ -556,7 +651,6 @@
   "scripts": {
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "test": "node --test tools/core.test.mjs",
     "golden": "node tools/golden-check.mjs",
     "package": "npx @vscode/vsce package --no-dependencies"
   },

@@ -2,10 +2,12 @@
  * MRVC for WCH — extension entry point.
  */
 import * as vscode from 'vscode';
-import { ProjectStore, MrsProject } from './vscode/projects';
+import * as fs from 'fs';
+import * as path from 'path';
+import { ProjectStore, MrsProject, MrsSolution, msg } from './vscode/projects';
 import { ProjectTreeProvider, TreeDecorations } from './vscode/tree';
 import { BuildManager } from './vscode/tasks';
-import { flashProject, openLinkUtility, openMrsTerminal } from './vscode/flash';
+import { openLinkUtility, openMrsTerminal } from './vscode/flash';
 import { ConfigView } from './vscode/configView';
 import { addLinkedFolderCmd, removeLinkedFolderCmd, revealProducts } from './vscode/linkedFolders';
 import {
@@ -20,13 +22,16 @@ import {
   renameNode,
   deleteNode,
 } from './vscode/fileOps';
+import { excludeFromBuild, includeFromBuild, excludedResourcePaths } from './vscode/exclude';
+import { renameProjectCmd, syncProjectNameFromFolder } from './vscode/renameProject';
+import { writeSolution } from './core/solution';
 
 export function activate(context: vscode.ExtensionContext): void {
   const store = new ProjectStore(context);
   context.subscriptions.push(store);
   store.restoreState();
 
-  const tree = new ProjectTreeProvider(store);
+  const tree = new ProjectTreeProvider(store, context.extensionUri);
   const treeView = vscode.window.createTreeView('mrs2.projectExplorer', { treeDataProvider: tree, dragAndDropController: undefined });
   context.subscriptions.push(treeView);
 
@@ -38,6 +43,7 @@ export function activate(context: vscode.ExtensionContext): void {
       store.all.flatMap((p) => p.projectFile.linkedResources.filter((l) => l.type === 2).map((l) => l.location))
     );
     treeDecorations.setOutputs(store.all.map((p) => p.buildDir));
+    treeDecorations.setExcludedByProject(new Map(store.all.map((p) => [ProjectStore.key(p.root), excludedResourcePaths(p)] as const)));
   };
   store.onDidChange(updateTreeDecorations);
   updateTreeDecorations();
@@ -45,54 +51,42 @@ export function activate(context: vscode.ExtensionContext): void {
   const build = new BuildManager(store);
   const configView = new ConfigView(store, context);
 
-  // ---- status bar ----
-  const statusBuild = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
-  statusBuild.name = 'MRVC Build';
-  statusBuild.command = 'mrs2.build';
-  context.subscriptions.push(statusBuild);
-
-  const statusTarget = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
-  statusTarget.name = 'MRVC Target';
-  statusTarget.command = 'mrs2.configure';
-  context.subscriptions.push(statusTarget);
-
-  const refreshStatus = () => {
-    const p = store.active;
-    if (p) {
-      statusBuild.text = `$(debug-start) ${p.projectName}`;
-      statusBuild.tooltip = `Build ${p.projectName} (F7)`;
-      statusBuild.show();
-      const tcName = p.cproject.rvGccVersion ? `GCC${p.cproject.rvGccVersion}` : p.cproject.storedPrefix.replace(/-$/, '');
-      statusTarget.text = `$(chip) ${p.projectName} · ${tcName} · ${p.cproject.configName}`;
-      statusTarget.tooltip = `${p.root}\nClick to open project properties`;
-      statusTarget.show();
-    } else {
-      statusBuild.hide();
-      statusTarget.hide();
-    }
-    vscode.commands.executeCommand('setContext', 'mrs2.hasActiveProject', !!p);
+  // ---- global UI context keys (menu/keybinding gating) ----
+  // no status bar items: the tree stays the single MRVC surface
+  const refreshContext = () => {
+    vscode.commands.executeCommand('setContext', 'mrs2.hasActiveProject', !!store.active);
     vscode.commands.executeCommand('setContext', 'mrs2.hasProjects', store.all.length > 0);
   };
-  store.onDidChange(refreshStatus);
-  refreshStatus();
+  store.onDidChange(refreshContext);
+  refreshContext();
+
+  // a solution workspace (generated when a .wvsln was opened) reloads its
+  // solution on activation — the persisted "explicitly opened this solution"
+  // state; plain folder windows never have this setting
+  const slnSetting = vscode.workspace.getConfiguration('mrvc').get<string>('solution');
+  if (slnSetting && fs.existsSync(slnSetting)) {
+    store.addSolution(slnSetting);
+  }
 
   // ---- commands ----
   const reg = (id: string, fn: (...a: never[]) => unknown) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, fn as (...a: unknown[]) => unknown));
 
-  reg('mrs2.openProject', async () => {
-    const proj = await store.openProject();
-    if (proj) {
-      store.setActive(proj);
-      vscode.window.showInformationMessage(`MRVC: opened ${proj.projectName} (${proj.root})`);
-    }
-  });
-  reg('mrs2.setActiveProject', async (item?: { project?: unknown }) => {
-    const proj = (item as { project?: MrsProject })?.project ?? (await pickFrom(store));
-    if (proj) store.setActive(proj);
-  });
+  reg('mrs2.openProject', () => store.openProject());
+  reg('mrs2.openFolder', () => store.openFolder());
   reg('mrs2.build', (item?: { project?: unknown }) => build.run('build', (item as { project?: MrsProject })?.project));
   reg('mrs2.buildAll', () => build.buildAll());
+  reg('mrs2.rebuildAll', () => build.rebuildAll());
+  reg('mrs2.deleteOutputKeepImages', () => build.deleteOutputFiles());
+  reg('mrs2.deleteOutputDirs', () => build.deleteOutputDirs());
+  reg('mrs2.buildSolution', (item?: { solution?: unknown }) => {
+    const sol = (item as { solution?: MrsSolution })?.solution;
+    if (sol) void build.buildSolution(sol);
+  });
+  reg('mrs2.cleanSolution', (item?: { solution?: unknown }) => {
+    const sol = (item as { solution?: MrsSolution })?.solution;
+    if (sol) void build.cleanSolution(sol);
+  });
   reg('mrs2.cleanAll', () => build.cleanAll());
   // collapse every project/folder row via the tree view's built-in command
   reg('mrs2.collapseAll', () =>
@@ -100,14 +94,54 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   reg('mrs2.rebuild', (item?: { project?: unknown }) => build.run('rebuild', (item as { project?: MrsProject })?.project));
   reg('mrs2.clean', (item?: { project?: unknown }) => build.run('clean', (item as { project?: MrsProject })?.project));
-  reg('mrs2.flash', (item?: { project?: unknown }) => flashProject(store, (item as { project?: MrsProject })?.project));
   reg('mrs2.flashUtility', () => openLinkUtility());
   reg('mrs2.configure', (item?: { project?: unknown }) => configView.show((item as { project?: MrsProject })?.project));
   reg('mrs2.addLinkedFolder', (item?: { project?: unknown }) => addLinkedFolderCmd(store, (item as { project?: MrsProject })?.project));
   reg('mrs2.removeLinkedFolder', (item?: unknown) => removeLinkedFolderCmd(store, item as { linkedName?: string; project?: MrsProject } | undefined));
   reg('mrs2.openMrsTerminal', () => openMrsTerminal(store));
   reg('mrs2.revealProducts', () => revealProducts(store));
-  reg('mrs2.refreshTree', () => tree.refresh());
+  reg('mrs2.refreshTree', async () => {
+    // refresh = full re-scan of the workspace folders: projects renamed or
+    // deleted outside MRVC are dropped, new/renamed ones are discovered
+    await store.refreshWorkspace();
+  });
+
+  // generate a .wvsln grouping every discovered project (writes next to the
+  // workspace root; members stay in BuildOrder-less file order)
+  reg('mrs2.generateSolution', async () => {
+    const all = store.all;
+    if (!all.length) {
+      vscode.window.showErrorMessage('No MRS project loaded. Use "MRVC: Open MRS Project" first.');
+      return;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      vscode.window.showErrorMessage('MRVC: open a workspace folder first — the solution is saved in it.');
+      return;
+    }
+    const name = await vscode.window.showInputBox({
+      prompt: `Save solution as (in ${folder.uri.fsPath})`,
+      value: path.basename(folder.uri.fsPath),
+      placeHolder: 'solution file name',
+      validateInput: (v) => (!v || /[\\/:*?"<>|]/.test(v) ? 'Invalid file name' : undefined),
+    });
+    if (!name) return;
+    const base = name.toLowerCase().endsWith('.wvsln') ? name : `${name}.wvsln`;
+    const file = path.join(folder.uri.fsPath, base);
+    if (fs.existsSync(file)) {
+      const pick = await vscode.window.showWarningMessage(`"${base}" already exists. Overwrite?`, { modal: true }, 'Overwrite');
+      if (pick !== 'Overwrite') return;
+    }
+    try {
+      writeSolution(file, all.map((p) => p.root));
+    } catch (e) {
+      vscode.window.showErrorMessage(`MRVC: writing solution failed — ${msg(e)}`);
+      return;
+    }
+    store.removeSolution(file); // overwrite: drop the stale loaded instance
+    store.addSolution(file);
+    vscode.window.showInformationMessage(`MRVC: solution "${base}" created with ${all.length} projects.`);
+  });
 
   // file management (tree context menu)
   reg('mrs2.file.copy', (item?: unknown) => copyNode(item as never));
@@ -120,6 +154,12 @@ export function activate(context: vscode.ExtensionContext): void {
   reg('mrs2.file.reveal', (item?: unknown) => revealInExplorer(item as never));
   reg('mrs2.file.rename', (item?: unknown) => renameNode(item as never));
   reg('mrs2.file.delete', (item?: unknown) => deleteNode(item as never));
+  reg('mrs2.renameProject', (item?: unknown) => renameProjectCmd(store, item as never));
+  reg('mrs2.syncProjectName', (item?: unknown) => syncProjectNameFromFolder(store, item as never));
+
+  // exclude/include from build (CDT sourceEntries excluding)
+  reg('mrs2.excludeFromBuild', (item?: unknown) => excludeFromBuild(store, item as never));
+  reg('mrs2.includeFromBuild', (item?: unknown) => includeFromBuild(store, item as never));
 
   // discover projects already inside the workspace (debounced once at start)
   setTimeout(() => {
@@ -129,21 +169,11 @@ export function activate(context: vscode.ExtensionContext): void {
   // build dir watcher: refresh products after a build finishes
   context.subscriptions.push(
     vscode.tasks.onDidEndTaskProcess((e) => {
-      if (e.execution.task.definition.type === 'mrvc-build' || e.execution.task.definition.type === 'mrvc-flash') {
+      if (e.execution.task.definition.type === 'mrvc-build') {
         tree.refresh();
       }
     })
   );
-
-  async function pickFrom(s: ProjectStore): Promise<MrsProject | undefined> {
-    const all = s.all;
-    if (!all.length) return undefined;
-    const pick = await vscode.window.showQuickPick(
-      all.map((p) => ({ label: p.projectName, description: p.root, project: p })),
-      { placeHolder: 'Select project' }
-    );
-    return pick?.project;
-  }
 }
 
 export function deactivate(): void {

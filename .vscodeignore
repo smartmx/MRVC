@@ -11,3 +11,5 @@ tools/**
 .goldens/**
 .mimosa/**
 **/tsconfig.json
+
+buildlogs/

@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { XElement, parseXml, serializeXml } from './xml';
 import { makeLocationUri, resolveLocationUri } from './macros';
+import { readTemplate, templateSet } from './templateFile';
 
 export interface LinkedResource {
   name: string;
@@ -130,6 +131,76 @@ export function removeLinkedFolder(projectRoot: string, name: string): void {
 
 export function saveProjectFile(projectRoot: string, p: MrsProjectFile): void {
   fs.writeFileSync(projectRoot + '/.project', serializeXml(p.root), 'utf-8');
+}
+
+/**
+ * Rename a project the way MRS2 does — the display name only, the directory
+ * stays put (which keeps .wvsln member paths and PARENT-N linked folders
+ * valid):
+ *   1. .project <projectDescription><name> = newName
+ *   2. every *.wvproj is deleted and an empty `<newName>.wvproj` written
+ *      (the marker/state file embeds the old name and is rebuilt by the IDE)
+ *   3. a `.launch` debug configuration, if present, gets its
+ *      PROGRAM_NAME (…\Old.elf → …\New.elf), PROJECT_ATTR and
+ *      MAPPED_RESOURCE_PATHS (/Old → /New) updated and the file renamed to
+ *      `<newName>.launch`
+ *   4. `.template` Target Path filename segment (obj\Old.hex → obj\New.hex),
+ *      skipped for slave kernels (`isSlave`) whose Target Path belongs to
+ *      the master build
+ */
+export function renameProject(projectRoot: string, newName: string, opts: { isSlave?: boolean } = {}): void {
+  // 1. .project display name
+  const p = readProjectFile(projectRoot);
+  const nameEl = p.root.child('projectDescription')?.child('name');
+  if (!nameEl) {
+    throw new Error('.project: <projectDescription><name> not found');
+  }
+  nameEl.text = newName;
+  saveProjectFile(projectRoot, p);
+
+  // 2. reset .wvproj state under the new name
+  for (const ent of fs.readdirSync(projectRoot)) {
+    if (ent.toLowerCase().endsWith('.wvproj')) {
+      fs.rmSync(path.join(projectRoot, ent), { force: true });
+    }
+  }
+  fs.writeFileSync(path.join(projectRoot, newName + '.wvproj'), '', 'utf-8');
+
+  // 3. debug launch configuration
+  const oldLaunch = fs.readdirSync(projectRoot).find((f) => f.toLowerCase().endsWith('.launch'));
+  if (oldLaunch) {
+    const dom = parseXml(fs.readFileSync(path.join(projectRoot, oldLaunch), 'utf-8'));
+    for (const attr of dom.findAll((e) => e.name === 'stringAttribute')) {
+      const key = attr.attr('key');
+      if (key === 'org.eclipse.cdt.launch.PROGRAM_NAME') {
+        const v = attr.attr('value');
+        if (v) attr.setAttr('value', v.replace(/^(.+[\\|/]).+?(\.elf)$/, '$1' + newName + '$2'));
+      } else if (key === 'org.eclipse.cdt.launch.PROJECT_ATTR') {
+        attr.setAttr('value', newName);
+      }
+    }
+    for (const list of dom.findAll((e) => e.name === 'listAttribute')) {
+      if (list.attr('key') !== 'org.eclipse.debug.core.MAPPED_RESOURCE_PATHS') continue;
+      for (const le of list.findAll((e) => e.name === 'listEntry')) {
+        const v = le.attr('value');
+        if (v && v.startsWith('/')) le.setAttr('value', '/' + newName);
+      }
+    }
+    fs.writeFileSync(path.join(projectRoot, oldLaunch), serializeXml(dom), 'utf-8');
+    fs.renameSync(path.join(projectRoot, oldLaunch), path.join(projectRoot, newName + '.launch'));
+  }
+
+  // 4. .template flash target
+  if (!opts.isSlave) {
+    const tpl = readTemplate(projectRoot);
+    const tp = tpl.values['Target Path'];
+    if (tp) {
+      const m = tp.match(/^(.+[\\/]).+?(\.[^\\/]+)$/); // dir + basename + extension
+      if (m) {
+        templateSet(projectRoot, 'Target Path', m[1] + newName + m[2]);
+      }
+    }
+  }
 }
 
 /**

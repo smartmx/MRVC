@@ -37,6 +37,8 @@ export class Cproject {
   linkedFolders: Map<string, string> = new Map();
   /** true when the project carries the CDT C++ nature */
   cppProject = false;
+  /** .project display name — MRS2's ${ProjName} (may differ from the dir) */
+  private projectDisplayName = '';
   private suffixIndex: Map<string, XElement[]> = new Map();
 
   constructor(file: string) {
@@ -44,6 +46,7 @@ export class Cproject {
     this.projectRoot = path.dirname(file);
     try {
       const proj = readProjectFile(this.projectRoot);
+      this.projectDisplayName = proj.name ?? '';
       this.linkedFolders = linkedFolderMap(proj);
       this.cppProject = proj.natures.includes('org.eclipse.cdt.core.cxxnature');
     } catch {
@@ -124,7 +127,12 @@ export class Cproject {
   }
 
   get projectName(): string {
-    return path.basename(this.projectRoot);
+    // MRS2's ${ProjName}: the .project DISPLAY name, not the directory name.
+    // A project folder may be renamed/copied independently of its display
+    // name ("I2C copy" holding project "I2C") — make targets cannot carry
+    // the directory's spaces, and MRS2 builds such projects cleanly under
+    // the display name.
+    return this.projectDisplayName || path.basename(this.projectRoot);
   }
 
   get artifactType(): 'exe' | 'staticLib' {
@@ -231,6 +239,77 @@ export class Cproject {
   }
 
   /** ---- write accessors ---- */
+
+  /**
+   * Exclude a resource (project-root-relative logic path) from the build.
+   * Writes the token where MRS2 itself writes it: folder-relative into the
+   * named sourceEntry of the top-level folder when one exists (CH585 style),
+   * else as the full logic path into the root entry (CH587 style), creating
+   * that entry if the project has none.
+   */
+  excludeResource(logicPath: string): void {
+    const { entry, token } = this.exclusionTarget(logicPath);
+    const cur = splitExcluding(entry);
+    if (cur.includes(token)) return;
+    cur.push(token);
+    setExcludingAttr(entry, cur.join('|'));
+  }
+
+  /**
+   * Re-include a previously excluded resource: strip the token (full-path
+   * and folder-relative, with and without trailing slash) from the root
+   * entry and from the top folder's named entry. An emptied list keeps the
+   * attribute as excluding="" (MRS2 style).
+   */
+  includeResource(logicPath: string): void {
+    const top = logicPath.includes('/') ? logicPath.slice(0, logicPath.indexOf('/')) : '';
+    const rel = logicPath.includes('/') ? logicPath.slice(logicPath.indexOf('/') + 1) : logicPath;
+    const variants = new Set([logicPath, logicPath + '/', rel, rel + '/']);
+    const targets = [this.namedEntryEl(top), this.rootEntryEl(false)];
+    for (const entry of targets) {
+      if (!entry) continue;
+      const cur = splitExcluding(entry);
+      const next = cur.filter((t) => !variants.has(t));
+      if (next.length !== cur.length) {
+        setExcludingAttr(entry, next.join('|'));
+      }
+    }
+  }
+
+  /** named sourceEntry of the top-level folder, else the root entry */
+  private exclusionTarget(logicPath: string): { entry: XElement; token: string } {
+    const top = logicPath.includes('/') ? logicPath.slice(0, logicPath.indexOf('/')) : '';
+    const named = top ? this.namedEntryEl(top) : undefined;
+    if (named) {
+      return { entry: named, token: logicPath.slice(top.length + 1) };
+    }
+    return { entry: this.rootEntryEl(true)!, token: logicPath };
+  }
+
+  /** first <entry kind="sourcePath" name=""> element, optionally created */
+  private rootEntryEl(create: boolean): XElement | undefined {
+    const existing = this.config.findAll(
+      (e) => e.name === 'entry' && e.attr('kind') === 'sourcePath' && (e.attr('name') ?? '') === ''
+    );
+    if (existing.length) return existing[0];
+    if (!create) return undefined;
+    let wrap = this.config.find((e) => e.name === 'sourceEntries');
+    if (!wrap) {
+      wrap = new XElement('sourceEntries');
+      this.toolChain.append(wrap);
+    }
+    const el = new XElement('entry');
+    el.setAttr('flags', 'VALUE_WORKSPACE_PATH');
+    el.setAttr('kind', 'sourcePath');
+    el.setAttr('name', '');
+    wrap.append(el);
+    return el;
+  }
+
+  private namedEntryEl(name: string): XElement | undefined {
+    if (!name) return undefined;
+    return this.config.findAll((e) => e.name === 'entry' && e.attr('kind') === 'sourcePath' && (e.attr('name') ?? '') === name)[0];
+  }
 
   setOptionValue(suffix: string, value: string | undefined): void {
     const opt = this.option(suffix);
@@ -354,6 +433,30 @@ export class Cproject {
 function guessOptionName(suffix: string): string {
   const last = suffix.split('.').pop() ?? suffix;
   return last.charAt(0).toUpperCase() + last.slice(1);
+}
+
+function splitExcluding(entry: XElement): string[] {
+  return (entry.attr('excluding') ?? '')
+    .split('|')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * Set the excluding attribute; on a previously token-less entry MRS2 writes
+ * `excluding` as the FIRST attribute, so preserve that placement.
+ */
+function setExcludingAttr(entry: XElement, value: string): void {
+  if (entry.attr('excluding') === undefined) {
+    const old = { ...entry.attrs };
+    entry.attrs = {};
+    entry.setAttr('excluding', value);
+    for (const [k, v] of Object.entries(old)) {
+      entry.attrs[k] = v;
+    }
+  } else {
+    entry.setAttr('excluding', value);
+  }
 }
 
 let optionIdSeq = 0;
