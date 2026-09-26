@@ -12,7 +12,7 @@ const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const { findProjectRoots } = require(path.join(here, '..', 'out', 'core', 'discover.js'));
 
-const root = process.argv[2] ?? 'F:/CH585/EVT/V1_2/EXAM';
+const root = process.argv[2] ?? ['E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM', 'F:/CH585/EVT/V1_2/EXAM'].find((r) => fs.existsSync(r));
 const depth = Number(process.argv[3] ?? 6);
 
 // ground truth: every dir with a .wvproj (MRS marker) or .project

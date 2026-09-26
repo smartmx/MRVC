@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "mrvc",
   "private": true,
   "license": "MIT",
@@ -216,6 +216,12 @@
         "icon": "media/rebuild_project.svg"
       },
       {
+        "command": "mrs2.flash",
+        "title": "Download",
+        "category": "MRVC",
+        "icon": "media/flash.svg"
+      },
+      {
         "command": "mrs2.clean",
         "title": "Clean Project",
         "category": "MRVC",
@@ -241,6 +247,11 @@
       {
         "command": "mrs2.syncProjectName",
         "title": "Sync Project Name from Folder",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrs2.switchProjectType",
+        "title": "Switch Project Type (C/C++)",
         "category": "MRVC"
       },
       {
@@ -408,53 +419,243 @@
         },
         {
           "command": "mrs2.file.newFile",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(folder|linkedFolder|products|project)$/",
-          "group": "file@1"
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "2_file@1"
         },
         {
           "command": "mrs2.file.newFolder",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(folder|linkedFolder|products|project)$/",
-          "group": "file@2"
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "2_file@2"
         },
         {
           "command": "mrs2.file.copy",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|linkedFolder|products|project)$/",
-          "group": "file@3"
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "2_file@3"
         },
         {
           "command": "mrs2.file.paste",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(folder|linkedFolder|products|project)$/",
-          "group": "file@4"
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "2_file@4"
         },
         {
           "command": "mrs2.file.copyPath",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|linkedFolder|products|project)$/",
-          "group": "file@5"
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "2_file@5"
         },
         {
           "command": "mrs2.file.copyRelPath",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|linkedFolder|products|project)$/",
-          "group": "file@6"
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "2_file@6"
         },
         {
           "command": "mrs2.file.copyName",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|linkedFolder|products|project)$/",
-          "group": "file@7"
-        },
-        {
-          "command": "mrs2.file.rename",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|products)$/",
-          "group": "file@8"
-        },
-        {
-          "command": "mrs2.file.delete",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|products)$/",
-          "group": "file@9"
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "2_file@7"
         },
         {
           "command": "mrs2.file.reveal",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|outputFile|folder|linkedFolder|products|project)$/",
-          "group": "file@10"
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "2_file@10"
+        },
+        {
+          "command": "mrs2.file.copy",
+          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "group": "file@1"
+        },
+        {
+          "command": "mrs2.file.copyPath",
+          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "group": "file@2"
+        },
+        {
+          "command": "mrs2.file.copyRelPath",
+          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "group": "file@3"
+        },
+        {
+          "command": "mrs2.file.copyName",
+          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "group": "file@4"
+        },
+        {
+          "command": "mrs2.file.rename",
+          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "group": "file@5"
+        },
+        {
+          "command": "mrs2.file.delete",
+          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "group": "file@6"
+        },
+        {
+          "command": "mrs2.file.reveal",
+          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "group": "file@7"
+        },
+        {
+          "command": "mrs2.file.newFile",
+          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "group": "folder@1"
+        },
+        {
+          "command": "mrs2.file.newFolder",
+          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "group": "folder@2"
+        },
+        {
+          "command": "mrs2.file.copy",
+          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "group": "folder@3"
+        },
+        {
+          "command": "mrs2.file.paste",
+          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "group": "folder@4"
+        },
+        {
+          "command": "mrs2.file.copyPath",
+          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "group": "folder@5"
+        },
+        {
+          "command": "mrs2.file.copyRelPath",
+          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "group": "folder@6"
+        },
+        {
+          "command": "mrs2.file.copyName",
+          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "group": "folder@7"
+        },
+        {
+          "command": "mrs2.file.rename",
+          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "group": "folder@8"
+        },
+        {
+          "command": "mrs2.file.delete",
+          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "group": "folder@9"
+        },
+        {
+          "command": "mrs2.file.reveal",
+          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "group": "folder@10"
+        },
+        {
+          "command": "mrs2.file.newFile",
+          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "group": "linkdir@1"
+        },
+        {
+          "command": "mrs2.file.newFolder",
+          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "group": "linkdir@2"
+        },
+        {
+          "command": "mrs2.file.copy",
+          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "group": "linkdir@3"
+        },
+        {
+          "command": "mrs2.file.paste",
+          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "group": "linkdir@4"
+        },
+        {
+          "command": "mrs2.file.copyPath",
+          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "group": "linkdir@5"
+        },
+        {
+          "command": "mrs2.file.copyRelPath",
+          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "group": "linkdir@6"
+        },
+        {
+          "command": "mrs2.file.copyName",
+          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "group": "linkdir@7"
+        },
+        {
+          "command": "mrs2.file.reveal",
+          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "group": "linkdir@8"
+        },
+        {
+          "command": "mrs2.file.newFile",
+          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "group": "products@1"
+        },
+        {
+          "command": "mrs2.file.newFolder",
+          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "group": "products@2"
+        },
+        {
+          "command": "mrs2.file.copy",
+          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "group": "products@3"
+        },
+        {
+          "command": "mrs2.file.paste",
+          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "group": "products@4"
+        },
+        {
+          "command": "mrs2.file.copyPath",
+          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "group": "products@5"
+        },
+        {
+          "command": "mrs2.file.copyRelPath",
+          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "group": "products@6"
+        },
+        {
+          "command": "mrs2.file.copyName",
+          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "group": "products@7"
+        },
+        {
+          "command": "mrs2.file.rename",
+          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "group": "products@8"
+        },
+        {
+          "command": "mrs2.file.delete",
+          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "group": "products@9"
+        },
+        {
+          "command": "mrs2.file.reveal",
+          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "group": "products@10"
+        },
+        {
+          "command": "mrs2.file.copy",
+          "when": "view == mrs2.projectExplorer && viewItem == outputFile",
+          "group": "outfile@1"
+        },
+        {
+          "command": "mrs2.file.copyPath",
+          "when": "view == mrs2.projectExplorer && viewItem == outputFile",
+          "group": "outfile@2"
+        },
+        {
+          "command": "mrs2.file.copyRelPath",
+          "when": "view == mrs2.projectExplorer && viewItem == outputFile",
+          "group": "outfile@3"
+        },
+        {
+          "command": "mrs2.file.copyName",
+          "when": "view == mrs2.projectExplorer && viewItem == outputFile",
+          "group": "outfile@4"
+        },
+        {
+          "command": "mrs2.file.reveal",
+          "when": "view == mrs2.projectExplorer && viewItem == outputFile",
+          "group": "outfile@5"
         },
         {
           "command": "mrs2.build",
@@ -467,39 +668,54 @@
           "group": "inline@2"
         },
         {
+          "command": "mrs2.flash",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "inline@3"
+        },
+        {
           "command": "mrs2.build",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "mrs2@1"
+          "group": "1_project@1"
         },
         {
           "command": "mrs2.rebuild",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "mrs2@2"
+          "group": "1_project@2"
         },
         {
           "command": "mrs2.clean",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "mrs2@3"
+          "group": "1_project@3"
+        },
+        {
+          "command": "mrs2.flash",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "1_project@4"
         },
         {
           "command": "mrs2.configure",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "mrs2@5"
+          "group": "9_props@1"
         },
         {
           "command": "mrs2.renameProject",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "mrs2@6"
+          "group": "1_project@5"
         },
         {
           "command": "mrs2.syncProjectName",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "mrs2@7"
+          "group": "1_project@6"
+        },
+        {
+          "command": "mrs2.switchProjectType",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "1_project@7"
         },
         {
           "command": "mrs2.addLinkedFolder",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "mrs2link@1"
+          "group": "3_link@1"
         },
         {
           "command": "mrs2.removeLinkedFolder",
@@ -525,11 +741,19 @@
           "when": "mrs2.hasActiveProject"
         },
         {
+          "command": "mrs2.flash",
+          "when": "mrs2.hasActiveProject"
+        },
+        {
           "command": "mrs2.clean",
           "when": "mrs2.hasActiveProject"
         },
         {
           "command": "mrs2.configure",
+          "when": "mrs2.hasActiveProject"
+        },
+        {
+          "command": "mrs2.switchProjectType",
           "when": "mrs2.hasActiveProject"
         },
         {
@@ -630,6 +854,8 @@
       },
       { "type": "mrvc-clean" },
       { "type": "mrvc-build-all" },
+      { "type": "mrvc-clean-all" },
+      { "type": "mrvc-flash" },
       { "type": "mrvc-tool" }
     ],
     "problemMatchers": [

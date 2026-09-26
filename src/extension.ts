@@ -7,7 +7,7 @@ import * as path from 'path';
 import { ProjectStore, MrsProject, MrsSolution, msg } from './vscode/projects';
 import { ProjectTreeProvider, TreeDecorations } from './vscode/tree';
 import { BuildManager } from './vscode/tasks';
-import { openLinkUtility, openMrsTerminal } from './vscode/flash';
+import { flashProject, openLinkUtility, openMrsTerminal } from './vscode/flash';
 import { ConfigView } from './vscode/configView';
 import { addLinkedFolderCmd, removeLinkedFolderCmd, revealProducts } from './vscode/linkedFolders';
 import {
@@ -25,6 +25,7 @@ import {
 import { excludeFromBuild, includeFromBuild, excludedResourcePaths } from './vscode/exclude';
 import { renameProjectCmd, syncProjectNameFromFolder } from './vscode/renameProject';
 import { writeSolution } from './core/solution';
+import { setCppNature } from './core/projectFile';
 
 export function activate(context: vscode.ExtensionContext): void {
   const store = new ProjectStore(context);
@@ -95,6 +96,7 @@ export function activate(context: vscode.ExtensionContext): void {
   reg('mrs2.rebuild', (item?: { project?: unknown }) => build.run('rebuild', (item as { project?: MrsProject })?.project));
   reg('mrs2.clean', (item?: { project?: unknown }) => build.run('clean', (item as { project?: MrsProject })?.project));
   reg('mrs2.flashUtility', () => openLinkUtility());
+  reg('mrs2.flash', (item?: { project?: unknown }) => flashProject(store, (item as { project?: MrsProject })?.project));
   reg('mrs2.configure', (item?: { project?: unknown }) => configView.show((item as { project?: MrsProject })?.project));
   reg('mrs2.addLinkedFolder', (item?: { project?: unknown }) => addLinkedFolderCmd(store, (item as { project?: MrsProject })?.project));
   reg('mrs2.removeLinkedFolder', (item?: unknown) => removeLinkedFolderCmd(store, item as { linkedName?: string; project?: MrsProject } | undefined));
@@ -156,6 +158,23 @@ export function activate(context: vscode.ExtensionContext): void {
   reg('mrs2.file.delete', (item?: unknown) => deleteNode(item as never));
   reg('mrs2.renameProject', (item?: unknown) => renameProjectCmd(store, item as never));
   reg('mrs2.syncProjectName', (item?: unknown) => syncProjectNameFromFolder(store, item as never));
+  // C/C++ toggle = the CDT cxx nature in .project: it drives which property
+  // pages show (C++ compiler/linker), which source extensions the scanner
+  // picks and how makefiles treat .cpp — same key MRS2/CDT use
+  reg('mrs2.switchProjectType', (item?: { project?: unknown }) => {
+    const project = (item as { project?: MrsProject })?.project ?? store.active;
+    if (!project) {
+      vscode.window.showErrorMessage('No active MRS project.');
+      return;
+    }
+    try {
+      setCppNature(project.root, !project.cproject.isCpp);
+    } catch (e) {
+      vscode.window.showErrorMessage(`MRVC: switching project type failed — ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    store.reloadProject(project);
+  });
 
   // exclude/include from build (CDT sourceEntries excluding)
   reg('mrs2.excludeFromBuild', (item?: unknown) => excludeFromBuild(store, item as never));
@@ -166,10 +185,12 @@ export function activate(context: vscode.ExtensionContext): void {
     void store.discoverInWorkspace();
   }, 800);
 
-  // build dir watcher: refresh products after a build finishes
+  // build dir watcher: refresh products after a build finishes (single and
+  // batch tasks alike — artifacts land outside the source-file watcher)
   context.subscriptions.push(
     vscode.tasks.onDidEndTaskProcess((e) => {
-      if (e.execution.task.definition.type === 'mrvc-build') {
+      const t = e.execution.task.definition.type;
+      if (t === 'mrvc-build' || t === 'mrvc-build-all' || t === 'mrvc-clean-all' || t === 'mrvc-flash') {
         tree.refresh();
       }
     })

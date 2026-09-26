@@ -168,6 +168,18 @@ function findLink(cp: Cproject, name: string): string | undefined {
   return undefined;
 }
 
+/** folded names of non-root sourceEntries. CDT treats source entries as a
+ * union: a named entry re-includes its folder, so a matching root-entry
+ * token is a "don't double-scan" marker rather than an exclusion (CH585 EVT
+ * writes both: root `excluding="...|Startup|..."` + `<entry name="Startup"/>`). */
+function namedEntryNames(cp: Cproject): Set<string> {
+  const names = new Set<string>();
+  for (const entry of cp.sourceEntries) {
+    if (entry.name !== '') names.add(fold(entry.name));
+  }
+  return names;
+}
+
 function isExcluded(relPosix: string, tokens: string[]): boolean {
   const hay = fold(relPosix);
   for (const t of tokens) {
@@ -210,24 +222,39 @@ export function exclusionTokens(cp: Cproject): ExclusionTokens {
  */
 export function isLogicExcluded(cp: Cproject, logic: string): boolean {
   const { rootTokens, dirTokens } = exclusionTokens(cp);
+  const named = namedEntryNames(cp);
+  // folded dir-token lookup: entry names sometimes differ in case from the
+  // .project link names (the scanner's marker filter already folds)
+  const dirTokensFor = (top: string): string[] => {
+    const direct = dirTokens.get(top);
+    if (direct) return direct;
+    for (const [k, v] of dirTokens) {
+      if (fold(k) === fold(top)) return v;
+    }
+    return [];
+  };
   const top = logic.includes('/') ? logic.slice(0, logic.indexOf('/')) : logic;
   if (logic === top) {
-    // the top-level resource itself: only root-walk tokens apply
+    // A named sourceEntry re-includes the folder and linked folders are
+    // always scanned, so a matching root token is just a "don't double-scan"
+    // marker, not an exclusion
+    if (named.has(fold(top)) || findLink(cp, top)) return false;
     return isExcluded(logic, rootTokens);
   }
   const rel = logic.slice(top.length + 1);
-  if (cp.linkedFolders.has(top)) {
+  if (findLink(cp, top)) {
     // linked walks ignore root tokens equal to the link's own name
     // ("don't double-scan" markers, folded compare) and carry their named
     // entry tokens
-    const tokens = [...rootTokens.filter((t) => fold(t) !== fold(top)), ...(dirTokens.get(top) ?? [])];
+    const tokens = [...rootTokens.filter((t) => fold(t) !== fold(top)), ...dirTokensFor(top)];
     return isExcluded(rel, tokens) || isExcluded(logic, tokens);
   }
-  if (dirTokens.has(top) && fs.existsSync(path.join(cp.projectRoot, top))) {
-    // real folder with its own named entry: root tokens apply project-wide
-    // (walk 1), the named entry's tokens apply inside the folder
-    const toks = dirTokens.get(top)!;
-    return isExcluded(logic, rootTokens) || isExcluded(rel, toks) || isExcluded(logic, toks);
+  if (named.has(fold(top)) && fs.existsSync(path.join(cp.projectRoot, top))) {
+    // real folder with its own named entry: the root walk prunes the folder
+    // (its root token is a marker) and the entry walk re-scans it with only
+    // the entry's own tokens, so those are all that decide inside the folder
+    const toks = dirTokensFor(top);
+    return isExcluded(rel, toks) || isExcluded(logic, toks);
   }
   return isExcluded(logic, rootTokens);
 }
@@ -244,6 +271,7 @@ export function isLogicExcluded(cp: Cproject, logic: string): boolean {
 export function exclusionFsPaths(cp: Cproject, projectRoot: string): string[] {
   const out: string[] = [];
   const bare: string[] = [];
+  const named = namedEntryNames(cp);
   for (const entry of cp.sourceEntries) {
     for (const tok of entry.excluding) {
       const segs = tok.split('/');
@@ -254,6 +282,8 @@ export function exclusionFsPaths(cp: Cproject, projectRoot: string): string[] {
         if (linkLoc) {
           if (segs.length === 1) continue; // marker, not an exclusion
           out.push(path.join(linkLoc, ...segs.slice(1)));
+        } else if (segs.length === 1 && named.has(fold(segs[0]))) {
+          continue; // marker: a named sourceEntry re-includes this folder
         } else {
           out.push(path.join(projectRoot, ...segs));
           if (segs.length === 1) bare.push(tok); // may also name linked content
@@ -265,18 +295,24 @@ export function exclusionFsPaths(cp: Cproject, projectRoot: string): string[] {
     }
   }
   for (const tok of bare) {
+    // bare-name root tokens name content ANYWHERE below a linked folder
+    // (the scanner's suffix matching is depth-agnostic) — walk each link,
+    // bounded, so every location the scanner excludes gets decorated
     for (const loc of cp.linkedFolders.values()) {
-      let names: string[];
-      try {
-        names = fs.readdirSync(loc);
-      } catch {
-        continue;
-      }
-      for (const name of names) {
-        if (fold(name) === fold(tok)) {
-          out.push(path.join(loc, name));
+      const walk = (dir: string, depth: number): void => {
+        if (depth > 6) return;
+        let entries: fs.Dirent[];
+        try {
+          entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+          return;
         }
-      }
+        for (const e of entries) {
+          if (e.isDirectory()) walk(path.join(dir, e.name), depth + 1);
+          else if (fold(e.name) === fold(tok)) out.push(path.join(dir, e.name));
+        }
+      };
+      walk(loc, 0);
     }
   }
   return out;

@@ -30,7 +30,13 @@ export function clearOutputDir(projectRoot: string, dir: string, keepNames: stri
   const d = contained(projectRoot, dir);
   const keep = new Set(keepNames.map(fold));
   let removed = 0;
-  for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(d, { withFileTypes: true });
+  } catch {
+    return 0; // never built — nothing to clear
+  }
+  for (const ent of entries) {
     if (ent.isFile() && keep.has(fold(ent.name))) continue;
     fs.rmSync(path.join(d, ent.name), { recursive: true, force: true });
     removed++;

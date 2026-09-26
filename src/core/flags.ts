@@ -286,7 +286,10 @@ function resolveList(cp: Cproject, suffix: string, quotedKeep: (raw: string) => 
   const out: string[] = [];
   for (const raw of cp.listOption(suffix).values) {
     const abs = convertLogicToFullPath(cp.projectRoot, cp.projectName, raw, linked);
-    if (abs && fs.existsSync(abs)) {
+    if (abs) {
+      // a resolved path wins even when not on disk: MRS2 emits such -I/-T
+      // entries and gcc tolerates/errs on them far better than a raw
+      // unresolved ${workspace_loc} string ever would
       out.push(quotedKeep(toNative(abs)));
       continue;
     }

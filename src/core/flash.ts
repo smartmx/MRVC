@@ -4,11 +4,12 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { MrsProject } from '../vscode/projects';
 
 export const ADDRESS_RE = /^0x[0-9a-fA-F]{1,8}$/;
 
 export interface FlashOptions {
+  /** project build dir (obj/) — the generated script lands here */
+  buildDir: string;
   address: string;
   verify: boolean;
   reset: boolean;
@@ -21,19 +22,25 @@ export interface FlashPlan {
   args: string[];
 }
 
-/** Build (and write) the OpenOCD flash script; returns the argv to run. */
-export function prepareFlash(project: MrsProject, opts: FlashOptions): FlashPlan {
+/**
+ * Build (and write) the OpenOCD flash script; returns the argv to run.
+ * The script is loaded after the board cfg so `wlink_set_address` overrides
+ * the cfg's default (CH58x boots at 0x00000000, CH32V3xx/CH32H417 at
+ * 0x08000000 — the address comes from the project's .template).
+ */
+export function prepareFlash(opts: FlashOptions): FlashPlan {
   if (!ADDRESS_RE.test(opts.address)) {
     throw new Error(`Invalid flash address "${opts.address}" (expected form 0x00000000)`);
   }
   const steps = [`wlink_set_address ${opts.address}`];
-  const prog = ['program', opts.firmware];
+  // Tcl-quoted: firmware paths with spaces must stay one argument
+  const prog = ['program', `"${opts.firmware}"`];
   if (opts.verify) prog.push('verify');
   if (opts.reset) prog.push('reset');
   prog.push('exit');
   steps.push(prog.join(' '));
 
-  const scriptPath = path.join(project.buildDir, 'mrs2_flash.cfg');
+  const scriptPath = path.join(opts.buildDir, 'mrs2_flash.cfg');
   fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
   fs.writeFileSync(scriptPath, steps.join('\n') + '\n', 'utf-8');
   return { scriptPath, args: ['-f', opts.boardCfg, '-f', scriptPath] };

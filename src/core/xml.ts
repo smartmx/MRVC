@@ -37,6 +37,9 @@ export class XElement {
 
   append(child: XElement): XElement {
     child.parent = this;
+    // NOTE: no ws slot management here — the parser pairs flushWs() with
+    // append(); manual appends leave ws[idx] undefined and the serializer
+    // falls back to a fresh CRLF indent for those children
     this.children.push(child);
     return child;
   }
@@ -45,7 +48,17 @@ export class XElement {
     const i = this.children.indexOf(child);
     if (i >= 0) {
       this.children.splice(i, 1);
+      // keep the recorded whitespace aligned with the children
+      this.ws.splice(i, 1);
     }
+  }
+
+  /** insert at an index keeping `ws` aligned (no whitespace recorded for
+   * the newcomer — serialization falls back to a fresh CRLF indent) */
+  insertChild(child: XElement, index: number): void {
+    child.parent = this;
+    this.children.splice(index, 0, child);
+    this.ws.splice(index, 0, undefined as unknown as string);
   }
 
   /** depth-first search for first element matching predicate */
@@ -79,12 +92,19 @@ const ENTITIES: Record<string, string> = {
 };
 
 function decodeEntities(s: string): string {
-  return s.replace(/&(quot|amp|lt|gt|apos|#10|#13|#9);/g, (m) => ENTITIES[m]);
+  return s.replace(/&(quot|amp|lt|gt|apos|#x[0-9a-fA-F]+|#\d+);/g, (m, g: string) => {
+    if (ENTITIES[m] !== undefined) return ENTITIES[m];
+    // numeric entities, decimal and hex
+    return String.fromCodePoint(parseInt(g.startsWith('#x') ? g.slice(2) : g.slice(1), g.startsWith('#x') ? 16 : 10));
+  });
 }
 
 export function encodeAttrValue(s: string): string {
   return s
     .replace(/&/g, '&amp;')
+    .replace(/\r/g, '&#xD;')
+    .replace(/\n/g, '&#xA;')
+    .replace(/\t/g, '&#x9;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
@@ -102,16 +122,23 @@ export function parseXml(src: string): XElement {
 
   const stack: XElement[] = [root];
   const top = (): XElement => stack[stack.length - 1];
+  // ws[i] must be the whitespace BEFORE children[i] — push unconditionally
+  // (empty string when none) so ws.length === children.length stays true;
+  // a compacted array shifts every later index and corrupts serialization
   const flushWs = () => {
-    if (pendingWs.length) {
-      top().ws.push(pendingWs.join(''));
-      pendingWs.length = 0;
-    }
+    top().ws.push(pendingWs.join(''));
+    pendingWs.length = 0;
   };
 
   while (i < n) {
     const lt = src.indexOf('<', i);
-    if (lt < 0) break;
+    if (lt < 0) {
+      // trailing content after the last tag: record pure-whitespace tails
+      // (the file's final newline) so serialization keeps them
+      const tail = src.slice(i);
+      if (tail.length && !/\S/.test(tail)) pendingWs.push(tail);
+      break;
+    }
     const between = src.slice(i, lt);
     if (/\S/.test(between)) {
       // non-whitespace text: attach to currently open element
@@ -143,6 +170,13 @@ export function parseXml(src: string): XElement {
       i = end < 0 ? n : end + 2;
       continue;
     }
+    if (src.startsWith('<![CDATA[', lt)) {
+      const end = src.indexOf(']]>', lt);
+      const content = src.slice(lt + 9, end < 0 ? n : end);
+      if (stack.length > 1) top().text += content; // raw, no entity decoding
+      i = end < 0 ? n : end + 3;
+      continue;
+    }
     if (src.startsWith('<!', lt)) {
       const end = src.indexOf('>', lt);
       i = end < 0 ? n : end + 1;
@@ -154,10 +188,15 @@ export function parseXml(src: string): XElement {
     const tagSrc = src.slice(lt + 1, gt);
     if (tagSrc.startsWith('/')) {
       const name = tagSrc.slice(1).trim();
-      if (stack.length > 1 && stack[stack.length - 1].name === name) {
-        flushWs();
-        // trailing whitespace inside the element belongs after its last child
-        stack.pop();
+      if (stack.length > 1) {
+        // lenient recovery: pop to the matching open tag even when inner
+        // elements were left unclosed — keeps the tree depth correct
+        // instead of silently nesting everything one level deeper
+        const idx = stack.map((e) => e.name).lastIndexOf(name);
+        if (idx > 0) {
+          flushWs();
+          stack.length = idx;
+        }
       }
       i = gt + 1;
       continue;
@@ -176,8 +215,11 @@ export function parseXml(src: string): XElement {
     if (!selfClose) {
       stack.push(el);
     }
-    i = gt + 1;
+      i = gt + 1;
   }
+  // file-level trailing whitespace recorded on #doc (top() === root when
+  // every element closed properly)
+  flushWs();
   return root;
 }
 
@@ -215,7 +257,15 @@ function encodeText(s: string): string {
  */
 export function serializeXml(el: XElement, depth = 0): string {
   if (el.name === '#doc') {
-    return el.children.map((c) => serializeXml(c, depth)).join('');
+    // preserve document-level whitespace (the newline after the declaration,
+    // trailing newline) so rewrites stay byte-faithful at the file edges
+    let out = '';
+    for (let idx = 0; idx < el.children.length; idx++) {
+      if (el.ws[idx] !== undefined) out += el.ws[idx];
+      out += serializeXml(el.children[idx], depth);
+    }
+    if (el.ws[el.children.length] !== undefined) out += el.ws[el.children.length];
+    return out;
   }
   if (el.name === '!--') {
     return `<!--${el.text}-->`;
@@ -238,13 +288,17 @@ export function serializeXml(el: XElement, depth = 0): string {
     if (ws !== undefined) {
       out += ws;
     } else if (idx > 0 || el.text === '') {
-      out += '\n\t';
-      if (depth > 0) out += '\t'.repeat(depth);
+      // newly created children: CRLF + one tab per depth, matching the
+      // MRS/CDT file convention
+      out += '\r\n' + '\t'.repeat(depth + 1);
     }
     out += serializeXml(el.children[idx], depth + 1);
   }
   if (el.ws[el.children.length] !== undefined) {
     out += el.ws[el.children.length];
+  } else {
+    // keep the closing tag on its own line for freshly appended children
+    out += '\r\n' + '\t'.repeat(depth);
   }
   out += `</${el.name}>`;
   return out;

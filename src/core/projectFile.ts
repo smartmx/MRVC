@@ -44,7 +44,7 @@ export function readProjectFile(projectRoot: string): MrsProjectFile {
   if (lr) {
     for (const link of lr.childrenNamed('link')) {
       const lname = link.child('name')?.text ?? '';
-      const ltype = Number(link.child('type')?.text ?? '2');
+      const ltype = Number(link.child('type')?.text ?? '2') || 2;
       const locEl = link.child('location') ?? link.child('locationURI');
       const uri = locEl?.text ?? '';
       linkedResources.push({
@@ -133,6 +133,39 @@ export function saveProjectFile(projectRoot: string, p: MrsProjectFile): void {
   fs.writeFileSync(projectRoot + '/.project', serializeXml(p.root), 'utf-8');
 }
 
+const NATURE_CXX = 'org.eclipse.cdt.core.cxxnature';
+
+/**
+ * Toggle the CDT C++ nature — the "C++ project" switch MRS2/CDT key off in
+ * `.project <natures>`: only C++ projects show the C++ compiler/linker
+ * property pages, and MRVC's scanner/build pick .cpp sources for them.
+ * The nature is inserted right after cnature; the file stays MRS2-openable.
+ */
+export function setCppNature(projectRoot: string, on: boolean): void {
+  const p = readProjectFile(projectRoot);
+  const has = p.natures.includes(NATURE_CXX);
+  if (on === has) return;
+  const natures = p.root.child('projectDescription')?.child('natures');
+  if (!natures) {
+    throw new Error('.project: <natures> not found');
+  }
+  const items = natures.childrenNamed('nature');
+  if (on) {
+    const el = new XElement('nature');
+    el.text = NATURE_CXX;
+    const cnature = items.find((n) => n.text === 'org.eclipse.cdt.core.cnature');
+    if (cnature) {
+      natures.insertChild(el, natures.children.indexOf(cnature) + 1);
+    } else {
+      natures.append(el);
+    }
+  } else {
+    const el = items.find((n) => n.text === NATURE_CXX);
+    if (el) natures.removeChild(el);
+  }
+  saveProjectFile(projectRoot, p);
+}
+
 /**
  * Rename a project the way MRS2 does — the display name only, the directory
  * stays put (which keeps .wvsln member paths and PARENT-N linked folders
@@ -149,12 +182,18 @@ export function saveProjectFile(projectRoot: string, p: MrsProjectFile): void {
  *      the master build
  */
 export function renameProject(projectRoot: string, newName: string, opts: { isSlave?: boolean } = {}): void {
+  // newName lands in file names (.wvproj/.launch) and make targets — reject
+  // illegal filename characters and whitespace up front
+  if (!newName || !newName.trim() || /[\\/:*?"<>|\s]/.test(newName)) {
+    throw new Error(`Invalid project name "${newName}" (no spaces or \\ / : * ? " < > |)`);
+  }
   // 1. .project display name
   const p = readProjectFile(projectRoot);
   const nameEl = p.root.child('projectDescription')?.child('name');
   if (!nameEl) {
     throw new Error('.project: <projectDescription><name> not found');
   }
+  const oldName = nameEl.text;
   nameEl.text = newName;
   saveProjectFile(projectRoot, p);
 
@@ -174,7 +213,7 @@ export function renameProject(projectRoot: string, newName: string, opts: { isSl
       const key = attr.attr('key');
       if (key === 'org.eclipse.cdt.launch.PROGRAM_NAME') {
         const v = attr.attr('value');
-        if (v) attr.setAttr('value', v.replace(/^(.+[\\|/]).+?(\.elf)$/, '$1' + newName + '$2'));
+        if (v) attr.setAttr('value', v.replace(/^(.+[\\/]).+?(\.elf)$/, '$1' + newName + '$2'));
       } else if (key === 'org.eclipse.cdt.launch.PROJECT_ATTR') {
         attr.setAttr('value', newName);
       }
@@ -183,7 +222,17 @@ export function renameProject(projectRoot: string, newName: string, opts: { isSl
       if (list.attr('key') !== 'org.eclipse.debug.core.MAPPED_RESOURCE_PATHS') continue;
       for (const le of list.findAll((e) => e.name === 'listEntry')) {
         const v = le.attr('value');
-        if (v && v.startsWith('/')) le.setAttr('value', '/' + newName);
+        // replace only the leading project segment, keep sub-paths intact;
+        // real .launch files use the bare form ("Proj"), CDT also allows "/Proj"
+        if (v) {
+          const slashed = v.startsWith('/');
+          const body = slashed ? v.slice(1) : v;
+          const slash = body.indexOf('/');
+          const head = slash >= 0 ? body.slice(0, slash) : body;
+          if (head === oldName) {
+            le.setAttr('value', (slashed ? '/' : '') + newName + (slash >= 0 ? body.slice(slash) : ''));
+          }
+        }
       }
     }
     fs.writeFileSync(path.join(projectRoot, oldLaunch), serializeXml(dom), 'utf-8');
@@ -238,6 +287,11 @@ export function repairLinkedResources(projectRoot: string, p: MrsProjectFile): n
     const uri = makeLocationUri(projectRoot, fixed);
     const locEl = link.element.child('location') ?? link.element.child('locationURI');
     if (locEl) {
+      // a variable URI only belongs in <locationURI>; a plain <location>
+      // element (MRS1-style absolute path) must be converted, not reused —
+      // otherwise Eclipse/CDT resolves the link as a relative filesystem
+      // path and MRS2 shows the folder as broken
+      locEl.name = 'locationURI';
       locEl.text = uri;
     } else {
       continue;

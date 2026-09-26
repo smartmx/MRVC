@@ -22,6 +22,11 @@ export function toNative(p: string): string {
  */
 export function resolveLocationUri(projectRoot: string, uri: string): string {
   const u = uri.replace(/\\/g, '/').trim();
+  const fileMatch = u.match(/^file:\/(.*)$/i);
+  if (fileMatch) {
+    // cross-drive absolute target (see makeLocationUri)
+    return path.normalize(fileMatch[1].replace(/^\/+/, ''));
+  }
   const parentMatch = u.match(/^PARENT-(\d+)-PROJECT_LOC(?:(\/.*))?$/);
   if (parentMatch) {
     const levels = Number(parentMatch[1]);
@@ -48,6 +53,11 @@ export function resolveLocationUri(projectRoot: string, uri: string): string {
  */
 export function makeLocationUri(projectRoot: string, target: string): string {
   const rel = path.relative(projectRoot, target);
+  if (path.isAbsolute(rel)) {
+    // different drive (Windows): path.relative returns an absolute path and
+    // PARENT-N cannot express it — use a file URI
+    return 'file:/' + toPosix(target).replace(/^\/+/, '');
+  }
   if (!rel.startsWith('..')) {
     return toPosix(rel);
   }

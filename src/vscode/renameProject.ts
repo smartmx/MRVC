@@ -20,7 +20,7 @@ export async function renameProjectCmd(store: ProjectStore, node?: TreeNode): Pr
     prompt: `Rename project "${oldName}"`,
     value: oldName,
     placeHolder: 'new project name',
-    validateInput: (v) => (!v || /[\\/:*?"<>|]/.test(v) ? 'Invalid project name' : undefined),
+    validateInput: (v) => (!v || /[\\/:*?"<>|\s]/.test(v) ? 'Invalid project name (no spaces or \\ / : * ? " < > |)' : undefined),
   });
   if (!name || name === oldName) return;
   try {

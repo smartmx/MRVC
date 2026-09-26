@@ -75,7 +75,7 @@ export async function addLinkedFolderCmd(store: ProjectStore, proj?: MrsProject)
     );
   }
 
-  project.reload();
+  store.reloadProject(project);
   vscode.window.showInformationMessage(`MRVC: linked folder "${name}" added (${target})`);
 }
 
@@ -134,14 +134,16 @@ export async function removeLinkedFolderCmd(store: ProjectStore, node?: { linked
     // .cproject may not reference the folder
   }
 
-  project.reload();
+  store.reloadProject(project);
   vscode.window.showInformationMessage(`MRVC: linked folder "${name}" removed`);
 }
 
 export function revealProducts(store: ProjectStore): void {
   const project = store.active;
   if (!project) return;
-  if (fs.existsSync(project.buildDir)) {
-    vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(path.join(project.buildDir, `${project.cproject.targetName}.elf`)));
-  }
+  if (!fs.existsSync(project.buildDir)) return; // never built
+  const elf = path.join(project.buildDir, `${project.cproject.targetName}.elf`);
+  // reveal the elf only when it exists — otherwise locate the build dir
+  const target = fs.existsSync(elf) ? elf : project.buildDir;
+  vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(target));
 }

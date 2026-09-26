@@ -58,8 +58,10 @@ const TOOLCHAIN_LINES = [
  * projects that cannot be expressed relatively (other drive) fall back to
  * absolute lines.
  */
-export function writeSolution(file: string, projectRoots: string[]): void {
+export function writeSolution(file: string, projectRoots: string[], buildOrder?: string[]): void {
   const lines: string[] = [...TOOLCHAIN_LINES];
+  // preserve/emit the build order line the parser understands
+  if (buildOrder?.length) lines.push(`BuildOrder=${buildOrder.join(',')}`);
   for (const root of projectRoots) {
     let line = path.relative(file, root);
     if (!line || path.isAbsolute(line)) line = root; // cross-drive etc.

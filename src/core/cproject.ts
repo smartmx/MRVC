@@ -60,7 +60,12 @@ export class Cproject {
       throw new Error('.cproject: no <cconfiguration> found');
     }
     this.config = cfg;
-    this.configName = cfg.attr('name') ?? 'obj';
+    // the name lives on the inner <configuration> in real files (the
+    // cconfiguration wrapper carries no name)
+    // sanitize: the name becomes a directory under the project root, so
+    // path separators / .. are refused (falls back to the CDT default 'obj')
+    const rawName = cfg.find((e) => e.name === 'configuration')?.attr('name') ?? cfg.attr('name') ?? 'obj';
+    this.configName = /^[\w .-]+$/.test(rawName) ? rawName : 'obj';
     const tc = cfg.find((e) => e.name === 'toolChain');
     if (!tc) {
       throw new Error('.cproject: no <toolChain> found');
@@ -122,7 +127,7 @@ export class Cproject {
   }
 
   get artifactName(): string {
-    const cfgAttr = this.config.attr('artifactName') ?? '${ProjName}';
+    const cfgAttr = this.buildConfigEl.attr('artifactName') ?? '${ProjName}';
     return cfgAttr === '${ProjName}' ? this.projectName : cfgAttr;
   }
 
@@ -135,14 +140,117 @@ export class Cproject {
     return this.projectDisplayName || path.basename(this.projectRoot);
   }
 
+  /**
+   * The inner <configuration> element carrying the build identity
+   * attributes (artifactName / buildArtefactType / buildProperties / name).
+   * Real CDT files nest it under <storageModule moduleId="cdtBuildSystem">;
+   * synthetic fixtures may put the attributes straight on <cconfiguration>.
+   */
+  private get buildConfigEl(): XElement {
+    return this.config.find((e) => e.name === 'configuration') ?? this.config;
+  }
+
   get artifactType(): 'exe' | 'staticLib' {
-    const bp = this.config.attr('buildProperties') ?? '';
+    const bp = this.buildConfigEl.attr('buildProperties') ?? '';
     return bp.includes('buildArtefactType.staticLibrary') ? 'staticLib' : 'exe';
+  }
+
+  /** artifact extension (inner configuration attribute, default "elf") */
+  get artifactExtension(): string {
+    return this.buildConfigEl.attr('artifactExtension') ?? 'elf';
+  }
+
+  /** C/C++ linker <tool> elements — where MRS2 stores outputPrefix */
+  private linkerToolEls(): XElement[] {
+    if (!this.toolChain) return [];
+    return this.toolChain.childrenNamed('tool').filter((t) => {
+      const sc = t.attr('superClass') ?? '';
+      return sc.endsWith('.tool.c.linker') || sc.endsWith('.tool.cpp.linker');
+    });
+  }
+
+  /** artifact output prefix (linker tool attribute, default empty) */
+  get outputPrefix(): string {
+    const linkers = this.linkerToolEls();
+    for (const t of linkers) {
+      const v = t.attr('outputPrefix');
+      if (v !== undefined) return v;
+    }
+    return '';
+  }
+
+  /** pre/post build steps live as attributes on the <builder> element */
+  private get builderEl(): XElement | undefined {
+    return this.toolChain?.child('builder');
+  }
+
+  get prebuildStep(): string {
+    return this.builderEl?.attr('prebuildStep') ?? '';
+  }
+
+  get prebuildAnnounce(): string {
+    return this.builderEl?.attr('preannouncebuildStep') ?? '';
+  }
+
+  get postbuildStep(): string {
+    return this.builderEl?.attr('postbuildStep') ?? '';
+  }
+
+  get postbuildAnnounce(): string {
+    return this.builderEl?.attr('postannouncebuildStep') ?? '';
+  }
+
+  /** batched write for the Build Steps / Build Artifact pages */
+  setBuildIdentity(v: {
+    prebuildStep?: string;
+    prebuildAnnounce?: string;
+    postbuildStep?: string;
+    postbuildAnnounce?: string;
+    artifactName?: string;
+    artifactExtension?: string;
+    outputPrefix?: string;
+    artifactType?: 'exe' | 'staticLib';
+  }): void {
+    const b = this.builderEl;
+    const setB = (name: string, value?: string): void => {
+      if (value === undefined) return;
+      if (!b) throw new Error('.cproject: <builder> not found');
+      b.setAttr(name, value);
+    };
+    // CDT property names: preannouncebuildStep/postannouncebuildStep
+    setB('prebuildStep', v.prebuildStep);
+    setB('preannouncebuildStep', v.prebuildAnnounce);
+    setB('postbuildStep', v.postbuildStep);
+    setB('postannouncebuildStep', v.postbuildAnnounce);
+    const bc = this.buildConfigEl;
+    if (v.artifactName !== undefined) bc.setAttr('artifactName', v.artifactName);
+    if (v.artifactExtension !== undefined) bc.setAttr('artifactExtension', v.artifactExtension);
+    if (v.outputPrefix !== undefined) {
+      for (const t of this.linkerToolEls()) t.setAttr('outputPrefix', v.outputPrefix);
+      delete bc.attrs['outputPrefix']; // never leave it on the configuration
+    }
+    if (v.artifactType !== undefined) {
+      const kind = v.artifactType === 'staticLib' ? 'staticLibrary' : 'exe';
+      // MRS2 reads the standalone buildArtefactType attribute FIRST — keep
+      // it in sync with the buildProperties comma list
+      bc.setAttr('buildArtefactType', `org.eclipse.cdt.build.core.buildArtefactType.${kind}`);
+      const target = `org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.${kind}`;
+      const cur = bc.attr('buildProperties') ?? '';
+      const parts = cur.split(',').filter((p) => p && !p.startsWith('org.eclipse.cdt.build.core.buildArtefactType='));
+      parts.unshift(target);
+      bc.setAttr('buildProperties', parts.join(','));
+    }
   }
 
   /** artifact base name without extension, e.g. "LED" */
   get targetName(): string {
     return this.artifactName;
+  }
+
+  /** the raw stored artifact name (${ProjName} stays symbolic) — for the
+   * Build Artifact page, which must show variables the MRS way */
+  get artifactNameRaw(): string {
+    return this.buildConfigEl.attr('artifactName') ?? '${ProjName}';
   }
 
   /** raw command prefix stored in .cproject (informational only) */
@@ -296,7 +404,10 @@ export class Cproject {
     let wrap = this.config.find((e) => e.name === 'sourceEntries');
     if (!wrap) {
       wrap = new XElement('sourceEntries');
-      this.toolChain.append(wrap);
+      // real CDT files keep <sourceEntries> as a sibling of <folderInfo>,
+      // i.e. a child of the inner <configuration> (the toolChain's
+      // grandparent); synthetic fixtures nest it under <cconfiguration>
+      (this.toolChain?.parent?.parent ?? this.config).append(wrap);
     }
     const el = new XElement('entry');
     el.setAttr('flags', 'VALUE_WORKSPACE_PATH');
@@ -345,6 +456,9 @@ export class Cproject {
     for (const c of opt!.childrenNamed('listOptionValue')) {
       opt!.removeChild(c);
     }
+    // a rewritten list is no longer empty — clear the CDT emptiness markers
+    delete opt!.attrs['IS_VALUE_EMPTY'];
+    delete opt!.attrs['IS_BUILTIN_EMPTY'];
     for (const v of values) {
       const e = new XElement('listOptionValue');
       e.setAttr('builtIn', 'false');

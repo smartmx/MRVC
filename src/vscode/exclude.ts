@@ -41,7 +41,6 @@ export async function excludeFromBuild(store: ProjectStore, node?: TreeNode): Pr
     return;
   }
   store.reloadProject(t.proj);
-  vscode.window.showInformationMessage(`MRVC: "${t.label}" excluded from build (${t.proj.projectName}). Rebuild to apply.`);
 }
 
 export async function includeFromBuild(store: ProjectStore, node?: TreeNode): Promise<void> {
@@ -62,7 +61,6 @@ export async function includeFromBuild(store: ProjectStore, node?: TreeNode): Pr
     return;
   }
   store.reloadProject(t.proj);
-  vscode.window.showInformationMessage(`MRVC: "${t.label}" included in build (${t.proj.projectName}). Rebuild to apply.`);
 }
 
 /**

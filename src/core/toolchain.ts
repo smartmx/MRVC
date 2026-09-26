@@ -41,14 +41,15 @@ export function locateInstall(configuredPath?: string): MrsInstall | null {
   if (configuredPath) candidates.push(configuredPath);
   candidates.push(...DEFAULT_INSTALL_PATHS);
   for (const root of candidates) {
+    // regular layout: <install>/resources/app/resources/win32
     const res = path.join(root, 'resources', 'app', 'resources', 'win32');
-    const flat = path.join(root, 'resources', 'app', 'resources', 'win32');
     if (fs.existsSync(path.join(res, 'components', 'WCH', 'manifest.json'))) {
       return buildInstall(root, res);
     }
-    // configuredPath may already be the win32 resources dir
-    if (fs.existsSync(path.join(flat, 'components', 'WCH', 'manifest.json'))) {
-      return buildInstall(path.dirname(path.dirname(path.dirname(root))), flat);
+    // the configured path may already BE the win32 resources dir
+    if (fs.existsSync(path.join(root, 'components', 'WCH', 'manifest.json'))) {
+      // win32 -> resources -> app -> <install>: four dirname hops
+      return buildInstall(path.dirname(path.dirname(path.dirname(path.dirname(root)))), root);
     }
   }
   return null;

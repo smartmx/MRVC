@@ -7,7 +7,7 @@ import * as path from 'path';
 import { ProjectStore, MrsProject, MrsSolution } from './projects';
 import { isLogicExcluded } from '../core/scan';
 
-type NodeType = 'project' | 'solution' | 'linkedFolder' | 'folder' | 'file' | 'products' | 'empty';
+type NodeType = 'project' | 'solution' | 'linkedFolder' | 'folder' | 'file' | 'products' | 'empty' | 'loose';
 
 export class TreeNode extends vscode.TreeItem {
   constructor(
@@ -45,8 +45,8 @@ export class TreeDecorations implements vscode.FileDecorationProvider {
   private excludedAll = new Set<string>();
 
   private fireChanged(next: Set<string>, prev: Set<string>): void {
-    const changed = [...new Set([...next, ...prev])].map((p) => vscode.Uri.file(p));
-    this._onDidChange.fire(changed);
+    const changed = [...new Set([...next, ...prev])];
+    if (changed.length) this._onDidChange.fire(undefined);
   }
 
   setLinks(paths: Iterable<string>): void {
@@ -77,7 +77,10 @@ export class TreeDecorations implements vscode.FileDecorationProvider {
     this.excludedByProject = next;
     this.excludedAll = all;
     if (changed.size) {
-      this._onDidChange.fire([...changed].map((p) => vscode.Uri.file(p)));
+      // fire undefined (= all decorations changed): tree nodes carry the
+      // project key in their resourceUri query, so firing bare file URIs
+      // would miss the per-node cache entries and greying would never update
+      this._onDidChange.fire(undefined);
     }
   }
 
@@ -123,6 +126,34 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       this.duplicateNames = new Set([...counts.entries()].filter(([, n]) => n > 1).map(([k]) => k));
       this.refresh();
     });
+  }
+
+  /** source files sitting NEXT TO projects (in their parent directories) —
+   * not part of any project, but users keep shared code there and need to
+   * see/edit it from the tree. A directory that is itself a project root is
+   * skipped: its files belong to that project. */
+  private looseFileNodes(): TreeNode[] {
+    const srcExt = new Set(['.c', '.h', '.cpp', '.hpp', '.s', '.S']);
+    const projectRoots = new Set(this.store.all.map((p) => ProjectStore.key(p.root)));
+    const dirs = new Set<string>();
+    for (const p of this.store.all) {
+      const dir = path.dirname(p.root);
+      if (!projectRoots.has(ProjectStore.key(dir))) dirs.add(dir);
+    }
+    const nodes: TreeNode[] = [];
+    for (const dir of dirs) {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const e of entries) {
+        if (!e.isFile() || !srcExt.has(path.extname(e.name))) continue;
+        nodes.push(new TreeNode('file', e.name, vscode.TreeItemCollapsibleState.None, path.join(dir, e.name)));
+      }
+    }
+    return nodes.sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? '')));
   }
 
   refresh(): void {
@@ -209,6 +240,10 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         // multi-project workspaces unreadable
         nodes.push(new TreeNode('project', p.projectName, vscode.TreeItemCollapsibleState.Collapsed, p.root, p));
       }
+      const loose = this.looseFileNodes();
+      if (loose.length) {
+        nodes.push(new TreeNode('loose', 'Workspace Files', vscode.TreeItemCollapsibleState.Collapsed));
+      }
       return nodes;
     }
     if (el.nodeType === 'solution' && el.solution) {
@@ -217,13 +252,15 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         (p) => new TreeNode('project', p.projectName, vscode.TreeItemCollapsibleState.Collapsed, p.root, p)
       );
     }
+    if (el.nodeType === 'loose') {
+      return this.looseFileNodes();
+    }
     const proj = el.project;
     if (!proj) return [];
-    try {
-      proj.reload();
-    } catch {
-      return [];
-    }
+    // NOTE: no re-parse here — the per-project config + source watchers in
+    // ProjectStore keep MrsProject fresh and fire the tree refresh; parsing
+    // every expanded project's XML on each render made saves O(projects)
+    if (!proj.cproject || !proj.projectFile) return [];
 
     if (el.nodeType === 'project') {
       const nodes: TreeNode[] = [];
@@ -263,6 +300,18 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         })
         .map(({ e, full }) => new TreeNode('folder', e.name, vscode.TreeItemCollapsibleState.Collapsed, full, proj));
       nodes.push(...realFolders);
+      // root-level files (11.c etc.) — the scanner compiles them, the tree
+      // must show them too; project management files (.wvproj/.template/
+      // .launch) stay hidden; excluded ones sink below the included ones
+      const rootFiles = entries
+        .filter((e) => e.isFile() && !e.name.startsWith('.') && !/\.(wvproj|template|launch)$/i.test(e.name))
+        .map((e) => ({ e, full: path.join(proj.root, e.name) }))
+        .sort((a, b) => {
+          const ex = (isNodeExcluded(a.full) ? 1 : 0) - (isNodeExcluded(b.full) ? 1 : 0);
+          return ex || a.e.name.localeCompare(b.e.name);
+        })
+        .map(({ e, full }) => new TreeNode('file', e.name, vscode.TreeItemCollapsibleState.None, full, proj));
+      nodes.push(...rootFiles);
       nodes.push(new TreeNode('products', proj.cproject.configName, vscode.TreeItemCollapsibleState.Collapsed, proj.buildDir, proj));
       return nodes;
     }

@@ -147,10 +147,14 @@ export class ProjectStore implements vscode.Disposable {
   private solutions = new Map<string, MrsSolution>(); // key: .wvsln path (lowercase on win)
   private _active: MrsProject | null = null;
   private watchers = new Map<string, vscode.Disposable[]>(); // per project root
+  private srcWatchers: vscode.Disposable[] = []; // workspace-wide source files
+  private srcRefreshTimer: NodeJS.Timeout | undefined;
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
-  constructor(private context: vscode.ExtensionContext) {}
+  constructor(private context: vscode.ExtensionContext) {
+    this.watchWorkspaceSources();
+  }
 
   get active(): MrsProject | null {
     return this._active;
@@ -264,8 +268,12 @@ export class ProjectStore implements vscode.Disposable {
       return null;
     }
     try {
-      const proj = new MrsProject(root);
       const key = ProjectStore.key(root);
+      // re-adding an existing root must reuse the instance: replacing it
+      // would orphan store.active (the old object stops receiving reloads)
+      const existing = this.projects.get(key);
+      if (existing) return existing;
+      const proj = new MrsProject(root);
       this.projects.set(key, proj);
       // NOTE: the active project is NOT auto-assigned here — discovery sets
       // it once, after the full scan, so the marker never flickers
@@ -411,7 +419,51 @@ export class ProjectStore implements vscode.Disposable {
         this._onDidChange.fire();
       }
     };
-    this.watchers.set(key, [watcher, watcher.onDidChange(onChange), watcher.onDidCreate(onChange)]);
+    const onDelete = () => {
+      // a deleted .project means the project is gone (renamed/removed
+      // externally) — drop it from the store instead of keeping a zombie
+      if (!fs.existsSync(path.join(root, '.project')) && !fs.existsSync(path.join(root, '.cproject'))) {
+        this.remove(root);
+      }
+    };
+    // source-file watcher per project root: covers solution members that
+    // live OUTSIDE the workspace folders (the workspace-wide watcher in
+    // watchWorkspaceSources cannot see them)
+    const srcWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{c,h,cpp,hpp,s,S}'));
+    const bump = () => {
+      if (this.srcRefreshTimer) clearTimeout(this.srcRefreshTimer);
+      this.srcRefreshTimer = setTimeout(() => this._onDidChange.fire(), 400);
+    };
+    this.watchers.set(key, [
+      watcher,
+      watcher.onDidChange(onChange),
+      watcher.onDidCreate(onChange),
+      watcher.onDidDelete(onDelete),
+      srcWatcher,
+      srcWatcher.onDidChange(bump),
+      srcWatcher.onDidCreate(bump),
+      srcWatcher.onDidDelete(bump),
+    ]);
+  }
+
+  /**
+   * Workspace-wide watcher over source files: creating/deleting/renaming a
+   * .c/.h/... must refresh the tree without a manual refresh (config files
+   * have their own per-project watcher in watchProject). Fires are debounced
+   * because build steps can touch many files at once.
+   */
+  private watchWorkspaceSources(): void {
+    if (this.srcWatchers.length) return;
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(folder, '**/*.{c,h,cpp,hpp,s,S}')
+      );
+      const bump = () => {
+        if (this.srcRefreshTimer) clearTimeout(this.srcRefreshTimer);
+        this.srcRefreshTimer = setTimeout(() => this._onDidChange.fire(), 400);
+      };
+      this.srcWatchers.push(watcher, watcher.onDidChange(bump), watcher.onDidCreate(bump), watcher.onDidDelete(bump));
+    }
   }
 
   private unwatchProject(root: string): void {
@@ -428,6 +480,9 @@ export class ProjectStore implements vscode.Disposable {
       for (const d of list) d.dispose();
     }
     this.watchers.clear();
+    for (const d of this.srcWatchers) d.dispose();
+    this.srcWatchers = [];
+    if (this.srcRefreshTimer) clearTimeout(this.srcRefreshTimer);
     this._onDidChange.dispose();
   }
 }

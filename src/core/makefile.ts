@@ -72,7 +72,7 @@ export function generateMakefiles(
   const dirsDesc = [...map.keys()].sort((a, b) => (a > b ? -1 : 1));
   const dirsAsc = [...map.keys()].sort((a, b) => (a > b ? 1 : -1));
 
-  const target = cp.targetName;
+  const target = cp.outputPrefix + cp.targetName;
   const compilerC = path.basename(tc.compilerC);
   const compilerCpp = path.basename(tc.compilerCpp);
   const linker = isCpp ? path.basename(tc.linkerCpp) : path.basename(tc.linkerC);
@@ -259,7 +259,10 @@ export function generateMakefiles(
     for (const d of dirsDesc) {
       t += d ? `-include ${POSIX(d)}/subdir.mk\n` : '-include subdir.mk\n';
     }
-    t += '-include subdir.mk\n-include objects.mk\n\n';
+    // the root dir ('' sorts last descending) already emitted its include
+    // above — only add it when the project has no root-level sources
+    if (!map.has('')) t += '-include subdir.mk\n';
+    t += '-include objects.mk\n\n';
     t += 'ifneq ($(MAKECMDGOALS),clean)\n';
     for (const v of depVars) {
       t += `ifneq ($(strip $(${v})),)\n-include $(${v})\nendif\n`;
@@ -279,30 +282,42 @@ export function generateMakefiles(
       if (sizeVar) t += `SECONDARY_SIZE += \\\n${target}.siz \\\n\n`;
     }
 
-    t += `\n# All Target\nall: ${target}.${isExe ? 'elf' : 'a'}${hasSecondaries ? ' secondary-outputs' : ''}\n\n# Tool invocations\n`;
+    const elfExt = cp.artifactExtension || 'elf';
+    const elfTarget = `${target}.${elfExt}`;
+    const pre = cp.prebuildStep.trim();
+    const post = cp.postbuildStep.trim();
+    t += `\n# All Target\nall: ${target}.${isExe ? elfExt : 'a'}${hasSecondaries ? ' secondary-outputs' : ''}\n`;
+    if (pre) t += `\t-@echo Executing pre-build steps\n\t-${pre}\n`;
+    if (post) t += `\t-@echo Executing post-build steps\n\t-${post}\n`;
+    t += `\n# Tool invocations\n`;
 
     if (isExe) {
-      t += `${target}.elf: $(OBJS) $(USER_OBJS)\n`;
-      t += `\t@\t@\t${linker}${common}${ldOpts} -o "${target}.elf" $(OBJS) $(USER_OBJS) $(LIBS)\n`;
+      t += `${elfTarget}: $(OBJS) $(USER_OBJS)\n`;
+      t += `\t@\t@\t${linker}${common}${ldOpts} -o "${elfTarget}" $(OBJS) $(USER_OBJS) $(LIBS)\n`;
       t += `\t@\t@\n`;
       if (flashVar) {
         const copyOpts = objCopyOptions(cp);
         for (const ext of flashExts) {
           const objcopyFlag = ext === 'bin' ? '-O binary' : '-O ihex';
-          t += `${target}.${ext}: ${target}.elf\n`;
-          t += `\t@\t${objcopy} ${objcopyFlag}${copyOpts} "${target}.elf"  "${target}.${ext}"\n`;
+          t += `${target}.${ext}: ${elfTarget}\n`;
+          t += `\t@\t${objcopy} ${objcopyFlag}${copyOpts} "${elfTarget}"  "${target}.${ext}"\n`;
           t += `\t@\t@\n`;
         }
       }
       if (listVar) {
-        t += `${target}.lst: ${target}.elf\n`;
-        t += `\t@\t${objdump}${listingOptions(cp)} "${target}.elf" > "${target}.lst"\n`;
+        t += `${target}.lst: ${elfTarget}\n`;
+        t += `\t@\t${objdump}${listingOptions(cp)} "${elfTarget}" > "${target}.lst"\n`;
         t += `\t@\t@\n`;
       }
       if (sizeVar) {
         const fmt = cp.optionEnum('printsize.format') ?? 'berkeley';
-        t += `${target}.siz: ${target}.elf\n`;
-        t += `\t@\t${sizeTool} --format=${fmt} "${target}.elf"\n`;
+        let szFlags = `--format=${fmt}`;
+        if (cp.optionBool('printsize.hex')) szFlags += ' -x';
+        if (cp.optionBool('printsize.totals')) szFlags += ' --totals';
+        const szOther = cp.optionValue('printsize.other')?.trim();
+        if (szOther) szFlags += ` ${szOther}`;
+        t += `${target}.siz: ${elfTarget}\n`;
+        t += `\t@\t${sizeTool} ${szFlags} "${elfTarget}"\n`;
         t += `\t@\t@\n`;
       }
     } else {
@@ -311,9 +326,12 @@ export function generateMakefiles(
       t += `\t@\t@\n`;
     }
 
-    const cleanVars =
-      '$(ASM_UPPER_DEPS)$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(ASM_DEPS)$(S_DEPS)$(S_UPPER_DEPS)$(C_DEPS)';
-    t += `# Other Targets\nclean:\n\t-$(RM) ${cleanVars} ${target}.${isExe ? 'elf' : 'a'}\n\t-@\n`;
+    // C projects: byte-identical to the MRS2 golden clean line; C++ adds
+    // the C++ dep-file variables the golden C order never had
+    const cleanVars = isCpp
+      ? '$(ASM_UPPER_DEPS)$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(ASM_DEPS)$(S_DEPS)$(S_UPPER_DEPS)$(C_DEPS)$(C_UPPER_DEPS)$(CPP_DEPS)$(CXX_DEPS)$(CC_DEPS)$(C++_DEPS)'
+      : '$(ASM_UPPER_DEPS)$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(ASM_DEPS)$(S_DEPS)$(S_UPPER_DEPS)$(C_DEPS)';
+    t += `# Other Targets\nclean:\n\t-$(RM) ${cleanVars} ${target}.${isExe ? elfExt : 'a'}\n\t-@\n`;
     if (hasSecondaries) {
       const secs = [
         flashVar ? '$(SECONDARY_FLASH)' : '',

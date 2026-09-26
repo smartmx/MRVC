@@ -245,8 +245,10 @@ export class BuildManager {
     }
     return new Promise<BuildAllResult>((resolve) => {
       let settled = false;
+      let exec: vscode.TaskExecution | undefined;
       const sub = vscode.tasks.onDidEndTaskProcess((e) => {
         if (settled || e.execution.task.definition.type !== 'mrvc-clean-all') return;
+        if (exec && e.execution !== exec) return;
         settled = true;
         sub.dispose();
         const code = e.exitCode ?? -1;
@@ -263,7 +265,19 @@ export class BuildManager {
         []
       );
       task.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
-      void vscode.tasks.executeTask(task);
+      // a rejected executeTask must settle the promise too, or the batch
+      // progress hangs forever and buildAllRunning stays latched
+      vscode.tasks.executeTask(task).then(
+        (e) => {
+          exec = e;
+        },
+        () => {
+          if (settled) return;
+          settled = true;
+          sub.dispose();
+          resolve({ project: p.projectName, ok: false, detail: 'task failed to start' });
+        }
+      );
     });
   }
 
@@ -282,8 +296,10 @@ export class BuildManager {
     }
     return new Promise<BuildAllResult>((resolve) => {
       let settled = false;
+      let exec: vscode.TaskExecution | undefined;
       const sub = vscode.tasks.onDidEndTaskProcess((e) => {
         if (settled || e.execution.task.definition.type !== 'mrvc-build-all') return;
+        if (exec && e.execution !== exec) return;
         settled = true;
         sub.dispose();
         const code = e.exitCode ?? -1;
@@ -300,7 +316,17 @@ export class BuildManager {
         ['$mrvcgcc']
       );
       task.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
-      void vscode.tasks.executeTask(task);
+      vscode.tasks.executeTask(task).then(
+        (e) => {
+          exec = e;
+        },
+        () => {
+          if (settled) return;
+          settled = true;
+          sub.dispose();
+          resolve(fail('task failed to start'));
+        }
+      );
     });
   }
 
@@ -333,12 +359,17 @@ export class BuildManager {
 
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const jobs = cfg.get<number>('build.parallelJobs', 0) || os.cpus().length;
+    if (kind === 'clean' && !fs.existsSync(path.join(project.buildDir, 'makefile'))) {
+      vscode.window.showInformationMessage(`MRVC: "${project.projectName}" has never been built — nothing to clean.`);
+      return;
+    }
     const makeArgs: string[] = [];
     if (kind !== 'clean') {
       makeArgs.push(`-j${jobs}`);
     }
     makeArgs.push(kind === 'clean' ? 'clean' : 'all');
 
+    const envPath = [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].join(path.delimiter);
     const target = kind === 'clean' ? 'MRVC: clean' : kind === 'rebuild' ? 'MRVC: rebuild' : 'MRVC: build';
     const task = new vscode.Task(
       { type: 'mrvc-build', task: target, project: project.projectName },
@@ -347,7 +378,7 @@ export class BuildManager {
       new vscode.ProcessExecution(path.join(install.makeBin, 'make.exe'), makeArgs, {
         cwd: project.buildDir,
         env: {
-          PATH: `${tc.dir}\\bin;${install.makeBin};${process.env['PATH'] ?? ''}`,
+          PATH: envPath,
         },
       }),
       ['$mrvcgcc']
@@ -356,20 +387,24 @@ export class BuildManager {
     task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, focus: false, clear: true };
 
     if (kind === 'rebuild') {
-      // visible clean task first, then the full build — a failed clean can
-      // no longer masquerade as a successful rebuild
+      // visible clean task first, then the full build — a failed clean must
+      // not masquerade as a successful rebuild
       const cleanTask = new vscode.Task(
         { type: 'mrvc-clean', project: project.projectName },
         `MRVC: clean - ${project.projectName}`,
         'MRVC',
         new vscode.ProcessExecution(path.join(install.makeBin, 'make.exe'), ['clean'], {
           cwd: project.buildDir,
-          env: { PATH: `${tc.dir}\\bin;${install.makeBin};${process.env['PATH'] ?? ''}` },
+          env: { PATH: envPath },
         }),
         []
       );
       cleanTask.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
-      await this.executeAndWait(cleanTask, 'mrvc-clean');
+      const cleanCode = await this.executeAndWait(cleanTask, 'mrvc-clean');
+      if (cleanCode !== 0 && cleanCode !== undefined) {
+        vscode.window.showErrorMessage(`MRVC: rebuild aborted — clean failed (exit ${cleanCode}).`);
+        return;
+      }
     }
 
     this.store.reloadActive();
@@ -377,17 +412,30 @@ export class BuildManager {
     void genResult;
   }
 
-  /** Execute a task and resolve when its process ends. */
+  /** Execute a task and resolve when ITS process ends (matched by execution
+   * identity, so concurrent tasks of the same type cannot cross-fire). */
   private executeAndWait(task: vscode.Task, defType: string): Promise<number | undefined> {
     return new Promise<number | undefined>((resolve) => {
       let settled = false;
+      let exec: vscode.TaskExecution | undefined;
       const sub = vscode.tasks.onDidEndTaskProcess((e) => {
         if (settled || e.execution.task.definition.type !== defType) return;
+        if (exec && e.execution !== exec) return;
         settled = true;
         sub.dispose();
         resolve(e.exitCode);
       });
-      void vscode.tasks.executeTask(task);
+      vscode.tasks.executeTask(task).then(
+        (e) => {
+          exec = e;
+        },
+        () => {
+          if (settled) return;
+          settled = true;
+          sub.dispose();
+          resolve(undefined);
+        }
+      );
     });
   }
 

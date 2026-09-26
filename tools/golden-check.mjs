@@ -20,7 +20,7 @@ const { Cproject } = require(path.join(outCore, 'cproject.js'));
 const { readProjectFile, linkedFolderMap } = require(path.join(outCore, 'projectFile.js'));
 const { generateMakefiles } = require(path.join(outCore, 'makefile.js'));
 
-const EVT = 'F:/CH585/EVT/V1_2/EXAM';
+const EVT = ['E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM', 'F:/CH585/EVT/V1_2/EXAM'].find((r) => fs.existsSync(r)) ?? 'F:/CH585/EVT/V1_2/EXAM';
 const defaults = [path.join(EVT, 'FreeRTOS'), path.join(EVT, 'HarmonyOS'), path.join(EVT, 'NFCA', 'PCD', 'MifareClassic')];
 
 const argProjects = process.argv.slice(2).filter((a) => !a.startsWith('--'));

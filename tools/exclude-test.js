@@ -10,7 +10,18 @@ const { Cproject } = require('../out/core/cproject.js');
 const { scanSources, isLogicExcluded, exclusionFsPaths } = require('../out/core/scan.js');
 const { generateMakefiles } = require('../out/core/makefile.js');
 
-const BLE_UART = 'F:/CH585/EVT/V1_2/EXAM/BLE/BLE_UART';
+// real EVT trees: prefer the local TEST copies, fall back to the F:/ layout
+// the assertions were originally written against
+const TREES = {
+  CH585: ['E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM', 'F:/CH585/EVT/V1_2/EXAM'],
+  CH32V307: ['E:/Projects/MRS_VSCODE/TEST/CH32V307EVT/EXAM', 'F:/CH32V307/EVT/V2_9/EXAM'],
+  CH587: ['E:/Projects/MRS_VSCODE/TEST/CH587EVT/EXAM', 'F:/CH587/EVT/V1_0/EXAM'],
+};
+const treeRoot = (key) => TREES[key].find((r) => fs.existsSync(r));
+const CH585_EXAM = treeRoot('CH585');
+const BLE_UART = CH585_EXAM && path.join(CH585_EXAM, 'BLE', 'BLE_UART');
+const HAS_BLE = !!BLE_UART && fs.existsSync(BLE_UART);
+const USBPD = treeRoot('CH587') && path.join(treeRoot('CH587'), 'USBPD');
 const DEVELOP_DIR = path.dirname(__dirname); // .../develop
 const scratch = path.join(DEVELOP_DIR, '.scratch', 'exclude');
 
@@ -21,7 +32,7 @@ const check = (name, cond) => {
 };
 
 // ---------- 1. query semantics on the untouched real tree ----------
-{
+if (HAS_BLE) {
   const cp = Cproject.load(BLE_UART);
   // real folder APP with its own named entry, folder-relative tokens
   check('named real-dir file excluded (APP)', isLogicExcluded(cp, 'APP/ble_uart_service/ble_uart_service.c') === true);
@@ -36,11 +47,13 @@ const check = (name, cond) => {
   // token inside the HAL entry (cross-folder marker, applies inside HAL only)
   check('top-level link not marked by foreign token (Profile)', isLogicExcluded(cp, 'Profile') === false);
   check('HAL subfolder marker applies inside HAL (Profile)', isLogicExcluded(cp, 'HAL/Profile/anything.c') === true);
+} else {
+  console.log('SKIP  1. real-tree query semantics (BLE_UART not present)');
 }
 
 // ---------- 2. root-entry style (CH32V307 HOST_IAP) query ----------
 {
-  const host = findProjectWith('F:/CH32V307/EVT/V2_9/EXAM', 'usb_host_iap_0.c');
+  const host = treeRoot('CH32V307') && findProjectWith(treeRoot('CH32V307'), 'usb_host_iap_0.c');
   check('root-entry style project found', !!host);
   if (host) {
     const cp = Cproject.load(host);
@@ -54,14 +67,19 @@ const check = (name, cond) => {
 // USBPD excludes 'StdPeriphDriver/ch58x_led.c' (lowercase) while the file on
 // disk is 'CH58x_led.c' (uppercase) — same file on a case-insensitive fs.
 {
-  const usbpd = Cproject.load('F:/CH587/EVT/V1_0/EXAM/USBPD');
   const expect = process.platform === 'win32';
-  check('case-mismatched token excluded (led .c)', isLogicExcluded(usbpd, 'StdPeriphDriver/CH58x_led.c') === expect);
-  check('case-mismatched token excluded (led .h)', isLogicExcluded(usbpd, 'StdPeriphDriver/inc/CH58x_led.h') === expect);
-  check('case-mismatch still excludes exact case', isLogicExcluded(usbpd, 'StdPeriphDriver/ch58x_led.c') === expect);
+  if (USBPD && fs.existsSync(USBPD)) {
+    const usbpd = Cproject.load(USBPD);
+    check('case-mismatched token excluded (led .c)', isLogicExcluded(usbpd, 'StdPeriphDriver/CH58x_led.c') === expect);
+    check('case-mismatched token excluded (led .h)', isLogicExcluded(usbpd, 'StdPeriphDriver/inc/CH58x_led.h') === expect);
+    check('case-mismatch still excludes exact case', isLogicExcluded(usbpd, 'StdPeriphDriver/ch58x_led.c') === expect);
+  } else {
+    console.log('SKIP  2.5 case-insensitive matching (USBPD not present)');
+  }
 }
 
 // ---------- 3. write path on a scratch copy ----------
+if (HAS_BLE) {
 fs.rmSync(scratch, { recursive: true, force: true });
 fs.cpSync(BLE_UART, scratch, { recursive: true });
 // link targets point outside the project and are gone in the scratch copy —
@@ -126,6 +144,9 @@ cp3.save();
 const raw = fs.readFileSync(path.join(scratch, '.cproject'), 'utf-8');
 check('serialized .cproject still has all named entries', (raw.match(/kind="sourcePath"/g) || []).length >= 8);
 check('new root entry written with excluding as first attribute', /<entry excluding="User\/deep\/x\.c" flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""\/>/.test(raw));
+} else {
+  console.log('SKIP  3-6. write path / persistence / serialization (BLE_UART not present)');
+}
 
 // ---------- 7. case-variant link-name marker must not exclude the link ----------
 // root entry marker `stdperiphdriver` (lowercase) vs link name `StdPeriphDriver`:
@@ -158,7 +179,7 @@ check('new root entry written with excluding as first attribute', /<entry exclud
 
 // ---------- 8. bare-name root tokens resolve into linked folders (CH585) ----------
 {
-  const host = findProjectWith('F:/CH585/EVT/V1_2/EXAM', 'CH58x_usbhostClass.c');
+  const host = CH585_EXAM && findProjectWith(CH585_EXAM, 'CH58x_usbhostClass.c');
   check('bare-token CH585 project found', !!host);
   if (host) {
     const cp = Cproject.load(host);
@@ -168,6 +189,75 @@ check('new root entry written with excluding as first attribute', /<entry exclud
     const links = [...cp.linkedFolders.values()];
     check('mapped path lives under one of the project links', hits.every((p) => links.some((l) => p.startsWith(l))));
     check('mapping stays consistent with the scanner', isLogicExcluded(cp, 'StdPeriphDriver/CH58x_usbhostClass.c') === true);
+  }
+}
+
+// ---------- 9. mixed style (CH585 EVT): root-entry markers + named entries ----------
+// HOST_IAP shape: the root entry lists every top folder as a bare-name
+// "don't double-scan" marker while each folder also carries its own named
+// sourceEntry (some with no excluding at all). CDT union semantics re-include
+// every named-entry folder — Startup is a real (non-linked) folder, so before
+// the fix the whole tree greys it out even though it builds.
+{
+  const base = path.join(DEVELOP_DIR, '.scratch', 'excl-mixed');
+  const proj = path.join(base, 'proj');
+  const libs = path.join(base, 'libs');
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.mkdirSync(path.join(proj, 'Startup'), { recursive: true });
+  fs.mkdirSync(path.join(proj, 'User'), { recursive: true });
+  fs.mkdirSync(path.join(libs, 'Ld'), { recursive: true });
+  fs.mkdirSync(path.join(libs, 'StdPeriphDriver'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'Startup', 'startup_CH585.S'), 'int startup(void){return 0;}\n');
+  fs.writeFileSync(path.join(proj, 'User', 'main.c'), 'int main(void){return 0;}\n');
+  fs.writeFileSync(path.join(proj, 'User', 'system_ch32v00x.c'), '');
+  fs.writeFileSync(path.join(proj, 'User', 'system_ch32v00x.h'), '');
+  fs.writeFileSync(path.join(libs, 'Ld', 'Link.ld'), '');
+  fs.writeFileSync(path.join(libs, 'StdPeriphDriver', 'CH58x_usbhostClass.c'), '');
+  fs.writeFileSync(path.join(libs, 'StdPeriphDriver', 'CH58x_usbhostBase.c'), '');
+  fs.writeFileSync(path.join(libs, 'StdPeriphDriver', 'keep.c'), '');
+  fs.writeFileSync(
+    path.join(proj, '.project'),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<projectDescription>\n<name>mixed</name>\n<linkedResources>\n<link>\n<name>Ld</name>\n<type>2</type>\n<location>${path.join(libs, 'Ld')}</location>\n</link>\n<link>\n<name>StdPeriphDriver</name>\n<type>2</type>\n<location>${path.join(libs, 'StdPeriphDriver')}</location>\n</link>\n</linkedResources>\n</projectDescription>`
+  );
+  fs.writeFileSync(
+    path.join(proj, '.cproject'),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry excluding="StdPeriphDriver|RVMSIS|Flashlib|Udisk_Lib|User/system_ch32v00x.h|User/system_ch32v00x.c|Startup|Peripheral|Ld|Debug|Core" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>\n<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Ld"/>\n<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="RVMSIS"/>\n<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Startup"/>\n<entry excluding="CH58x_usbhostClass.c|CH58x_usbhostBase.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="StdPeriphDriver"/>\n<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Udisk_Lib"/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>`
+  );
+  const cp = Cproject.load(proj);
+  check('mixed: top-level real folder re-included by named entry (Startup)', isLogicExcluded(cp, 'Startup') === false);
+  check('mixed: file inside re-included folder (startup_CH585.S)', isLogicExcluded(cp, 'Startup/startup_CH585.S') === false);
+  check('mixed: top-level linked folder (Ld)', isLogicExcluded(cp, 'Ld') === false);
+  check('mixed: top-level linked folder (StdPeriphDriver)', isLogicExcluded(cp, 'StdPeriphDriver') === false);
+  check('mixed: named entry without excluding, dir missing on disk (RVMSIS)', isLogicExcluded(cp, 'RVMSIS') === false);
+  check('mixed: link content token still excludes (usbhostClass)', isLogicExcluded(cp, 'StdPeriphDriver/CH58x_usbhostClass.c') === true);
+  check('mixed: link content not excluded (keep)', isLogicExcluded(cp, 'StdPeriphDriver/keep.c') === false);
+  check('mixed: root full-path token excludes (system .c)', isLogicExcluded(cp, 'User/system_ch32v00x.c') === true);
+  check('mixed: root full-path token excludes (system .h)', isLogicExcluded(cp, 'User/system_ch32v00x.h') === true);
+  check('mixed: non-excluded root file (main.c)', isLogicExcluded(cp, 'User/main.c') === false);
+  const mapped = exclusionFsPaths(cp, proj);
+  check('mixed: Startup not in decoration mapping', !mapped.includes(path.join(proj, 'Startup')));
+  check('mixed: Ld link not in decoration mapping', !mapped.includes(path.join(libs, 'Ld')));
+  check('mixed: excluded link file still decorated', mapped.includes(path.join(libs, 'StdPeriphDriver', 'CH58x_usbhostClass.c')));
+  check('mixed: excluded root file decorated', mapped.includes(path.join(proj, 'User', 'system_ch32v00x.c')));
+  const startup = (scanSources(cp).get('Startup') ?? []).map((f) => f.logicName);
+  check('mixed: scanner includes startup file', startup.includes('Startup/startup_CH585.S'));
+  const spd = (scanSources(cp).get('StdPeriphDriver') ?? []).map((f) => f.logicName);
+  check('mixed: scanner drops excluded link file', !spd.includes('StdPeriphDriver/CH58x_usbhostClass.c'));
+  check('mixed: scanner keeps other link files', spd.includes('StdPeriphDriver/keep.c'));
+}
+
+// ---------- 10. real HOST_IAP regression (present-only guard) ----------
+{
+  const HOST_IAP = 'E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/USB/USBHS/HOST_IAP/HOST_IAP';
+  if (fs.existsSync(HOST_IAP)) {
+    const cp = Cproject.load(HOST_IAP);
+    check('real HOST_IAP: Startup not excluded', isLogicExcluded(cp, 'Startup') === false);
+    check('real HOST_IAP: startup file not excluded', isLogicExcluded(cp, 'Startup/startup_CH585.S') === false);
+    check('real HOST_IAP: Startup not in decoration mapping', !exclusionFsPaths(cp, HOST_IAP).includes(path.join(HOST_IAP, 'Startup')));
+    check('real HOST_IAP: usbhostClass still excluded', isLogicExcluded(cp, 'StdPeriphDriver/CH58x_usbhostClass.c') === true);
+    check('real HOST_IAP: scanner keeps startup file', (scanSources(cp).get('Startup') ?? []).some((f) => f.logicName === 'Startup/startup_CH585.S'));
+  } else {
+    console.log('SKIP  10. real HOST_IAP regression (tree not present)');
   }
 }
 

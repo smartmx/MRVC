@@ -62,7 +62,11 @@ export async function pasteNode(store: ProjectStore, node?: TreeNode): Promise<v
   if (!dir) return;
   const src = clip.path;
   if (src === dir) return;
-  if (dir.startsWith(src + path.sep) || dir === src) {
+  // folded compare (Windows): mixed-case drive letters between Uri.fsPath
+  // and readdir results must not bypass the self-paste guard
+  const samePath = (a: string, b: string): boolean => ProjectStore.key(a) === ProjectStore.key(b);
+  const keyStartsWith = (a: string, b: string): boolean => ProjectStore.key(a).startsWith(ProjectStore.key(b) + path.sep);
+  if (samePath(src, dir) || keyStartsWith(dir, src)) {
     vscode.window.showErrorMessage('MRVC: cannot paste a folder into itself.');
     return;
   }
