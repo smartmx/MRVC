@@ -22,11 +22,14 @@
 | Switch Project Type (C/C++) | 工程右键一键切换 CDT cxx nature：C++ 属性页显隐、`.cpp` 源扫描与 makefile 生成联动（与 MRS2 判定键一致） |
 | 配置修改 | "MRVC: Project Properties"（右键工程打开）——**按 MRS2 原版属性页布局复刻**：Tool Settings 分类树（Target Processor / Optimization / Warnings / Debugging / Assembler / C Compiler / C Linker / C++ Compiler / C++ Linker / Create Flash Image / Listing / Print Size 各含子页），左侧树结构、右侧页内容、底部描述区 + **Apply/Cancel**。涵盖工具链（rvGcc）、全部 ISA 扩展、17 项警告、C/C++ 编译与链接、hex/bin 双产物、objcopy/objdump 细项、WCH 专属库（`-lprintf`/`-lprintfloat`/`-lIQmath_RV32`）。**Includes 页为表格编辑器**（Add/Edit/Delete，Add 支持 Project 内复选框树浏览或 Local Folder，工程内路径自动写成 `${project}/…` 宏）。仅 C++ 工程（Switch Project Type 切换）显示 C++ 配置页 |
 | 外部链接文件夹 | 右键工程 → Add Linked Folder：同时更新 `.project`（linkedResources，支持 PARENT-N-PROJECT_LOC）与 `.cproject`（include 路径 + sourceEntries） |
-| WCH-LinkUtility | 命令面板 **Open WCH-LinkUtility**：直接拉起 MRS2 自带的 GUI 下载器（调试器模式切换/固件升级等深度操作） |
+| **Sync Setting Across Projects** | 树标题栏 `…` 菜单打开专用页面（Properties 同款两级导航树）：123 个可同步编译开关（bool/enum）逐行带**同步选择框**（默认不勾）与值控件（值取自活动工程）；勾选后 Apply 批量写入全部工程（C++ 选项自动跳过 C 工程并计数、可取消、输出频道逐工程 [OK/FAIL] 汇总） |
+| **IntelliSense 自动配置** | 自动生成每个工程的编译数据库（`.vscode/mrvc/cc/`）并维护 `c_cpp_properties.json`——c 文件的宏定义/头文件路径随工程精确解析，无需手动配置 includePath；**工程树点选工程即切换分析上下文**（cpptools 多数据库数组，≥1.23.5） |
+| MRS Tools 工具集 | 树标题栏 `…` 菜单 → Tools 组（对齐 MRS2 Tools 菜单）：一键拉起 WCH-LinkUtility / WCH In-System Programmer (WchIspStudio) / WCH Touchkey Calibrate Tool / WCHGUIDesigner / HexBin Studio / Serial Port Debug Tool (COMTransmit)，分离进程启动 |
+| WCH-LinkUtility | 命令面板 **Open WCH-LinkUtility**：直接拉起 MRS2 自带的 GUI 下载器（调试器模式切换/固件升级等深度操作）；也已归入 `…` 菜单 Tools 组 |
 | MRS 命令终端 | 预置工具链/make/OpenOCD 的 PATH |
 | 工具链选择 | `auto`（读 `.cproject` rvGcc/前缀）或强制 GCC8/GCC12/GCC15，均从 `sub_manifest.json` 动态解析 |
 
-快捷键：`F7` 编译，`Shift+F7` 重建。
+快捷键：`F7` 编译，`Shift+F7` 重建，`F8` 下载（与 MRS 一致）。
 
 ## 打包与安装（.vsix）
 
@@ -36,8 +39,8 @@ npm run package      # 生成 mrvc-<version>.vsix（@vscode/vsce，--no-dependen
 ```
 
 安装（三种任选）：
-- VSCode 图形界面：扩展视图 → 右上角 `···`（Views and More Actions）→ **Install from VSIX...** → 选择生成的 `mrvc-0.1.2.vsix`
-- 命令行：`code --install-extension mrvc-0.1.2.vsix`
+- VSCode 图形界面：扩展视图 → 右上角 `···`（Views and More Actions）→ **Install from VSIX...** → 选择生成的 `mrvc-0.1.3.vsix`
+- 命令行：`code --install-extension mrvc-0.1.3.vsix`
 - 直接把 `.vsix` 拖进扩展视图
 
 > `.vscodeignore` 已配置只打包 `out/extension.js`(+map)、`media/*.svg`、README、package.json；
@@ -80,6 +83,9 @@ npm run package      # @vscode/vsce 打包 .vsix（--no-dependencies）
 - `solution-test.mjs` / `discover-test.mjs` — solution 解析生成 / 工程发现
 - `flash-test.mjs` — 烧录 cfg 生成（地址覆盖/verify-reset 组合/非法地址）
 - `wlink-test.mjs` — WCH-Link 桥（P/Invoke 脚本生成/load.wcfg/降级路径）
+- `intellisense-test.js` — IntelliSense 双库生成/切换/JSONC 保护/哈希门控
+- `mrstools-test.js` — MRS Tools 六工具路径解析与缺失降级
+- `webview-test.js` — 属性页/Sync 页真实渲染（脚本语法、注入探针、批量写回）
 - `mass-test.mjs` — **TEST 全树批量回归**（解析/扫描/排除/芯片库/makefile 字节稳定性，覆盖全部工程）
 - `build-test.mjs <EVT工程路径>` — 真实工具链编译单工程；`build-all.mjs` 全量批跑
 - `print-menus.mjs` — 打印各类树节点右键菜单排序（开发辅助）
@@ -114,6 +120,8 @@ src/
 │   ├── discover.ts    # 工程发现
 │   ├── chipdb.ts      # 芯片数据库（扫描 MRS2 SDK：型号/地址/chipID/能力开关）
 │   ├── wlink.ts       # WCH-Link 操作桥（32 位 PowerShell P/Invoke McuCompilerDll）
+│   ├── intellisense.ts# compile_commands 条目构建（private/shared 拆分与归并）
+│   ├── mrsTools.ts    # MRS2 Tools 六工具路径解析
 │   └── flash.ts       # OpenOCD 烧录脚本生成
 └── vscode/            # 集成层
     ├── projects.ts    # 工程注册表/solution 注册表/文件监视（配置+源文件自动刷新）
@@ -121,6 +129,9 @@ src/
     ├── tasks.ts       # 构建任务管线（Build/Clean/Rebuild All、Solution、输出清理）
     ├── flash.ts       # Download 命令（OpenOCD 引擎）与 cfg 选择
     ├── configView.ts  # 工程属性 webview（MRS2 布局复刻：芯片选择器/Includes 表格/Download Settings）
+    ├── intellisense.ts# .vscode 双库写入与工程上下文切换（cpptools 多数据库）
+    ├── syncPage.ts    # Sync Setting Across Projects 页面（批量同步编译开关）
+    ├── mrsTools.ts    # MRS2 Tools 工具启动器
     ├── fileOps.ts     # 文件管理右键（新建/复制/粘贴/重命名/删除/路径复制）
     ├── exclude.ts     # Exclude/Include From Build 命令与装饰数据
     ├── renameProject.ts # Rename Project / Sync Project Name from Folder

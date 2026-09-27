@@ -101,7 +101,8 @@ const store = {
 };
 const ctx = { subscriptions: [], extensionUri: { fsPath: path.join(__dirname, '..') } };
 const view = new ConfigView(store, ctx);
-view.show(store.active).then(() => {
+(async () => {
+await view.show(store.active);
   const html = stubPanel.webview.html;
   check('HTML rendered (non-empty)', html.length > 5000);
   check('panel title set', stubPanel.title.includes('LED'));
@@ -125,6 +126,94 @@ view.show(store.active).then(() => {
   check('newline-collapsing regex present (single-backslash form)', /\|\\s\*\\r\?\\n\\s\*\|/.test('') || scripts.some((s) => s.includes('/\\s*\\r?\\n\\s*/g') || s.includes('replace(/\\s*\\r?\\n\\s*/g')));
   check('chip picker present (CHIP_DB)', scripts.some((s) => s.includes('CHIP_DB')));
   check('download settings present (DL_CTX)', scripts.some((s) => s.includes('DL_CTX')));
-  console.log(failures ? `\n${failures} FAILURES` : '\nwebview render verification passed');
-  process.exit(failures ? 1 : 0);
-});
+
+  // ---- cross-page macro conflict detection ----
+  const { macroConflicts } = require(path.join(__dirname, '..', 'out', 'vscode', 'configView.js'));
+  let r = macroConflicts({ defs: 'DEBUG=0\nFOO', cppdefs: 'DEBUG=0\nBAR', asmdefs: '' });
+  check('macro: same value across pages = no conflict', r.length === 0);
+  r = macroConflicts({ defs: 'DEBUG=0', cppdefs: 'DEBUG=1' });
+  check('macro: conflicting value detected with both page names', r.length === 1 && r[0].includes('DEBUG') && r[0].includes('C Compiler') && r[0].includes('C++ Compiler'));
+  r = macroConflicts({ defs: 'DEBUG', cppdefs: 'DEBUG=0' });
+  check('macro: bare name vs valued counts as conflict', r.length === 1);
+  r = macroConflicts({ defs: 'USE_A', cppdefs: 'USE_A' });
+  check('macro: both bare = no conflict', r.length === 0);
+  r = macroConflicts({ defs: 'X=1', cppdefs: 'X=2', asmdefs: 'X=3' });
+  check('macro: three-way conflict reported once per deviation', r.length === 2);
+  r = macroConflicts({ defs: 'abc=1', cppdefs: 'ABC=2' });
+  check('macro: names are case-sensitive', r.length === 0);
+
+  // ---- Sync Setting Across Projects page ----
+  const { SyncPage } = require(path.join(__dirname, '..', 'out', 'vscode', 'syncPage.js'));
+  const syncPanel = {
+    html: '', title: '', reveal() {}, dispose() {},
+    onDidDispose() { return { dispose() {} }; },
+    webview: {
+      onDidReceiveMessage(h) { syncHandlers.push(h); return { dispose() {} }; },
+      postMessage(m) { syncPosted.push(m); return Promise.resolve(true); },
+    },
+  };
+  const syncHandlers = [];
+  const syncPosted = [];
+  const vscodePatch = {
+    window: {
+      ...vscodeStub.window,
+      createWebviewPanel: () => syncPanel,
+      withProgress: (_o, task) => task({ report() {} }, { isCancellationRequested: false }).then(() => undefined),
+      createOutputChannel: () => ({ appendLine() {}, show() {}, dispose() {} }),
+      showWarningMessage: (...a) => { syncWarnArgs = a; return Promise.resolve('Apply'); },
+      showErrorMessage: () => undefined,
+      showInformationMessage: () => undefined,
+    },
+  };
+  let syncWarnArgs = null;
+  // re-stub with the patched window for a fresh SyncPage instance
+  const origResolve2 = Module._resolveFilename;
+  Module._resolveFilename = function (request, ...args) {
+    if (request === 'vscode') return 'vscode-stub2';
+    return origResolve2.call(this, request, ...args);
+  };
+  require.cache['vscode-stub2'] = { id: 'vscode-stub2', filename: 'vscode-stub2', loaded: true, exports: { ...vscodeStub, window: vscodePatch.window, ProgressLocation: { Notification: 15 } } };
+  delete require.cache[path.join(__dirname, '..', 'out', 'vscode', 'syncPage.js')];
+  const { SyncPage: SyncPage2 } = require(path.join(__dirname, '..', 'out', 'vscode', 'syncPage.js'));
+
+  // a second scratch project so the batch has 2 targets
+  const scratch2 = path.join(__dirname, '..', '.scratch', 'sync-second');
+  fs.rmSync(scratch2, { recursive: true, force: true });
+  fs.cpSync(PROJ, scratch2, { recursive: true });
+  const cp2 = Cproject.load(scratch2);
+  const store2 = {
+    active: store.active,
+    all: [store.active, { root: scratch2, projectName: 'LED2', cproject: cp2, toolchain: () => tc, reload() {}, buildDir: path.join(scratch2, 'obj') }],
+    reloadProject() {},
+  };
+  const sp = new SyncPage2(store2);
+  sp.open();
+  const syncHtml = syncPanel.webview.html;
+  check('sync page rendered', syncHtml.includes('Sync Setting Across Projects'));
+  check('sync page: sync checkboxes default unchecked', !/class="syncbox" checked/.test(syncHtml) && (syncHtml.match(/class="syncbox"/g) || []).length >= 100);
+  check('sync page: value controls seeded', syncHtml.includes('data-val="nocommon"') && syncHtml.includes('data-val="optlevel"'));
+  check('sync page: unique page keys + breadcrumb display', syncHtml.includes('data-page="opt"') && syncHtml.includes('data-page="warn"') && syncHtml.includes('Warnings') && !syncHtml.includes('data-page="Warnings"'));
+  check('sync page: cpp-only rows annotated', syncHtml.includes('cpponly'));
+  check('sync page: hostile string escaped', !syncHtml.includes('LED<x>"</script>') || syncHtml.includes('\\u003C'));
+
+  // drive the batch: tick two bool boxes + one enum, then applySync
+  // (simulate the webview collector on the real HTML)
+  const { execSync } = require('child_process');
+  const items = [
+    { suffix: 'optimization.nocommon', type: 'bool', value: '1' },
+    { suffix: 'c.linker.gcsections', type: 'bool', value: '0' },
+  ];
+  (async () => {
+    for (const h of syncHandlers) h({ command: 'applySync', items });
+    await new Promise((r) => setTimeout(r, 300));
+    const c1 = Cproject.load(PROJ);
+    const c2 = Cproject.load(scratch2);
+    check('sync batch: checked flag applied to both projects', c1.optionBool('optimization.nocommon') === true && c2.optionBool('optimization.nocommon') === true);
+    check('sync batch: second flag applied to both', c1.optionBool('c.linker.gcsections') === false && c2.optionBool('c.linker.gcsections') === false);
+    check('sync batch: untouched option unchanged', c1.optionBool('warnings.allwarn') === (store.active.cproject.optionBool('warnings.allwarn')));
+    check('sync batch: done message posted', syncPosted.some((m) => m.command === 'syncDone' && m.text.includes('2/2 OK')));
+    fs.rmSync(scratch2, { recursive: true, force: true });
+    console.log(failures ? `\n${failures} FAILURES` : '\nwebview render verification passed');
+    process.exit(failures ? 1 : 0);
+  })();
+})();

@@ -1,5 +1,71 @@
 # MRVC 更新日志
 
+## V0.1.3（2026-09-27）
+
+相对 V0.1.2。核心新增：静态分析配置注入、批量设置同步页面、MRS Tools 工具集；
+定版审查修复 1 高 + 4 中问题（含一个 0.1.2 就存在的 Windows 烧录路径致命 bug）。
+
+### 新增
+
+- **IntelliSense 配置注入 + 按工程切换上下文**（修复"c 文件解析报错"）：
+  为每个工程生成独立的**私有**编译数据库
+  `.vscode/mrvc/cc/<工程名>-<路径哈希>.json`（工程根下每个源文件一条真实编译命令：工程自己的
+  -D 宏、解析为绝对路径的 -I/-isystem/-include、-std；编译器为工具链 gcc 绝对路径；
+  工程名重复用路径哈希消歧）；全部工程链接的共享文件（SRC 树）归并为
+  `.vscode/mrvc/cc/_shared.json`（define/include 并集，头文件守卫保证安全）。
+  `c_cpp_properties.json` 的 `MRVC` configuration 以 **compileCommands 数组**同时指向
+  `_shared.json` 与 `_active.json`（cpptools ≥1.23.5 多数据库；不触碰用户其他配置；
+  JSONC 解析失败时绝不覆写）。**在工程树中点选工程时，该工程的私有库自动复制为
+  `_active.json`**——cpptools 检测文件变化重新解析，c 文件的宏/头文件上下文切换为
+  选中工程的。触发：工程发现完成后 / 配置变更后（1s 防抖）/ 构建结束后 /
+  手动命令 **Update IntelliSense Configuration**；全部写入经内容哈希门控——
+  纯源文件保存不重写、不重启 IntelliSense 索引
+- **Sync Setting Across Projects 页面**（`…` 菜单）：Properties 同款两级导航树，
+  123 个可同步编译开关（bool/enum）逐行带同步选择框（默认不勾）与值控件（值取自
+  活动工程）；勾选后 Apply 批量写入全部工程（C++ 选项自动跳过 C 工程并计数、可取消、
+  输出频道逐工程 [OK/FAIL] 汇总）；enum 未设置项种子为 default（与属性页一致）
+- **MRS Tools 工具集**（`…` 菜单 → Tools 组，对齐 MRS2 Tools 菜单）：一键拉起
+  WCH-LinkUtility / WCH In-System Programmer (WchIspStudio) / WCH Touchkey Calibrate
+  Tool / WCHGUIDesigner / HexBin Studio / Serial Port Debug Tool (COMTransmit)——
+  路径复刻 MRS2 的组件/固定两层布局，分离进程启动
+- **宏定义冲突检测**：属性页三处 Preprocessor（C/C++/Assembler）的 -D 宏在 Apply 时
+  跨页比对，同名不同值弹出模态警告（列出冲突双方页面与值），Apply anyway / Go back
+- **F8 下载快捷键**（与 MRS 一致；会覆盖 VSCode 默认的 Go to Next Problem，
+  仅在有活动工程时生效）
+- 行内按钮顺序调整为 **Download（蓝色箭头，MRS2 同色）→ Build → Rebuild**
+
+### 修复（定版审查）
+
+- **[P1] Windows 烧录路径**：OpenOCD cfg 的 `program` 路径正斜杠化——Jim Tcl 在双引号
+  内吞反斜杠，`E:\x\y.hex` 会变成 `E:xy.hex`（0.1.2 起即存在，Windows 烧录实际从未
+  通过此路径成功过）；空格保护（引号）保留。测试补反斜杠 fixture 锁定
+- **[高] c_cpp_properties.json 数据保护**：按 JSONC 解析（剥注释/尾逗号/BOM），
+  仍失败时完全不触碰用户文件（原实现会以仅含 MRVC 条目的内容整体覆写）
+- **[中] Sync 批量循环让出事件循环**：取消按钮真正可响应、进度条重绘、扩展宿主
+  不再阻塞；取消后文案如实显示 Cancelled；C++ 跳过逐工程计数并体现在 [OK] 行
+- **[中] enum 种子值**：未设置的枚举选项种子为 default 而非首选项（同步不再把
+  "未设置"写成显式值）
+- **[中] IntelliSense 空工程早退**：未解析出任何工程时不写 .vscode（避免污染泛
+  Eclipse 工作区）；cStandard 仅输出 cpptools 合法值（ansi/iso9899 回退 gnu11）
+- **[中] IntelliSense 汇编参数组**：`-x assembler-with-cpp` 死三元修正——
+  usepreprocessor=false 的工程 IntelliSense 与 makefile 一致使用 `-x assembler`
+- 清理：mrs2.nop 死注册移除；Sync 输出频道复用（不再每次 Apply 泄漏同名频道）
+
+### 已知限制（记录在案）
+
+- 共享 SRC 文件的 IntelliSense 上下文跟随**工程树点选**或**正在编辑的文件所属工程**
+  （MRS2 同款归属模型：文件位于工程根或其链接文件夹内即归属）
+- 宏冲突检测不剥离 `-D` 前缀/引号形式（该输入本身会破坏构建）
+- F8 覆盖 VSCode 默认 Go to Next Problem（有活动工程时）
+
+### 测试
+
+- 新增 `tools/intellisense-test.js`（18 断言：条目/宏/路径/哈希门控/用户配置保留/
+  配置变更再生）、`tools/mrstools-test.js`（8 断言：六工具真实路径/缺失降级）、
+  webview-test 扩至 28 断言（Sync 页面渲染/注入探针/双工程批量写回/宏冲突边界）、
+  flash-test 扩至 29（反斜杠 fixture）
+- 12 套件全绿；mass-test 972 工程无回归；真实工具链编译 CH585 / CH32H417 双核通过
+
 ## V0.1.2（2026-09-26）
 
 相对 V0.1.1 的全部变更。核心改进：新增下载/烧录能力、属性页对齐 MRS2、全代码审查修复（11 个 P1、35 个 P2）、
@@ -15,6 +81,7 @@
     CLK Speed、Target File（文件选择）、Main Operations 八个勾选项——全部写回 `.template`，MRS2 可无损打开
   - 硬件操作通过系统自带 32 位 PowerShell（SysWOW64）P/Invoke 调用 MRS2 的 McuCompilerDll.dll，
     零新增依赖；芯片 ID 与能力开关自动来自芯片库
+  - 绑定 **F8** 快捷键（与 MRS 一致）
 - **Chip / Target 页**：MRS2 同款"Target MCU Type"芯片选择器——系列树（按 RISC-V/ARM 分组）→
   型号列表 → 信息区，数据实时扫描 MRS2 的 SDK 组件目录（40+ 系列），选中后自动填充
   Series / MCU / Mcu Type / Address 并写入 `.template`；SDK 缺失时回退文本编辑

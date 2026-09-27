@@ -14,9 +14,9 @@ import { ADDRESS_RE } from '../core/flash';
 import { ChipDb, chipDbRoot, scanChipDb } from '../core/chipdb';
 import { WlinkArgs, WlinkOp, describeResult, runWlinkOp } from '../core/wlink';
 
-type FieldType = 'bool' | 'enum' | 'string' | 'list';
+export type FieldType = 'bool' | 'enum' | 'string' | 'list';
 
-interface FieldDef {
+export interface FieldDef {
   key: string;
   page: string;
   label: string;
@@ -93,7 +93,7 @@ const tpl = (key: string, page: string, label: string, tplKey: string, readonly 
   tplReadonly: readonly,
 });
 
-const FIELDS: FieldDef[] = [
+export const FIELDS: FieldDef[] = [
   // ---- Target Processor ----
   en('tc', 'target', 'RISC-V Compiler (toolchain)', 'target.rvGcc', [
     ['default', 'Project default (legacy)'],
@@ -422,7 +422,7 @@ const FIELDS: FieldDef[] = [
   str('sizeother', 'printsize', 'Other flags', 'printsize.other'),
 ];
 
-interface PageDef {
+export interface PageDef {
   key: string;
   /** nav label; group headers have no key of their own */
   title: string;
@@ -430,7 +430,7 @@ interface PageDef {
   description: string;
 }
 
-const PAGES: PageDef[] = [
+export const PAGES: PageDef[] = [
   { key: 'chip', title: 'Chip / Target', group: 'General', description: 'Chip identity and download settings stored in the project .template (MRS2-compatible). The address is passed to OpenOCD by Download — keep it matching the chip series (0x00000000 for CH58x, 0x08000000 for CH32V3xx/CH32H417).' },
   { key: 'buildsteps', title: 'Build Steps', group: 'C/C++ Build', description: 'Pre-build and post-build commands executed around the main build.' },
   { key: 'buildartifact', title: 'Build Artifact', group: 'C/C++ Build', description: 'Artifact type, name, extension and output prefix.' },
@@ -466,8 +466,39 @@ const PAGES: PageDef[] = [
 
 /** JSON for inline <script> blocks: escape < so a crafted project name
  * (or SDK string) cannot close the script tag early */
-function jsonForScript(v: unknown): string {
+export function jsonForScript(v: unknown): string {
   return JSON.stringify(v).replace(/</g, '\\u003C');
+}
+
+/**
+ * Cross-page macro conflicts in the preprocessor defines: the same macro
+ * name defined with different values in the C / C++ / Assembler pages.
+ * Values compare as strings; a bare name counts as an empty value.
+ */
+export function macroConflicts(values: Record<string, string>): string[] {
+  const lists: Array<[string, string]> = [
+    ['C Compiler', values['defs'] ?? ''],
+    ['C++ Compiler', values['cppdefs'] ?? ''],
+    ['Assembler', values['asmdefs'] ?? ''],
+  ];
+  const seen = new Map<string, { value: string; page: string }>();
+  const conflicts: string[] = [];
+  for (const [page, text] of lists) {
+    for (const line of text.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t) continue;
+      const eq = t.indexOf('=');
+      const name = (eq < 0 ? t : t.slice(0, eq)).trim();
+      const value = eq < 0 ? '' : t.slice(eq + 1).trim();
+      const prev = seen.get(name);
+      if (prev && prev.value !== value) {
+        conflicts.push(`${name}: ${prev.page} = "${prev.value || '(no value)'}"  vs  ${page} = "${value || '(no value)'}"`);
+      } else if (!prev) {
+        seen.set(name, { value, page });
+      }
+    }
+  }
+  return conflicts;
 }
 
 function readEnum(cp: Cproject, f: FieldDef): string {  if (!f.suffix) return '';
@@ -515,8 +546,7 @@ export class ConfigView {
     this.panel.webview.html = this.render(project);
   }
 
-  private onMessage(m: {
-    command: string;
+  private async onMessage(m: {    command: string;
     values?: Record<string, string>;
     mode?: 'dir' | 'file';
     path?: string;
@@ -526,7 +556,7 @@ export class ConfigView {
     dbgMode?: number;
     eraseMode?: number;
     memVal?: number;
-  }): void {
+  }): Promise<void> {
     const project = this.project;
     if (!project || !this.panel) return;
     if (m.command === 'close') {
@@ -635,6 +665,19 @@ export class ConfigView {
       return;
     }
     if (m.command === 'save' && m.values) {
+      // cross-page macro conflict check: the same -D macro defined with
+      // DIFFERENT values in the C / C++ / Assembler preprocessor pages —
+      // legal per-compiler but almost always a mistake. Second-confirm.
+      const conflicts = macroConflicts(m.values);
+      if (conflicts.length) {
+        const apply = await vscode.window.showWarningMessage(
+          `Macro definition conflict (${conflicts.length}):`,
+          { modal: true, detail: conflicts.join('\n') },
+          'Apply anyway',
+          'Go back'
+        );
+        if (apply !== 'Apply anyway') return;
+      }
       try {
         // .template fields first (chip identity / download address), batched
         // into one read-modify-write; the address is validated like the flash

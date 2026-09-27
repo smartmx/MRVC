@@ -440,6 +440,48 @@ export function cppCompilerOptions(cp: Cproject, skipIncludes = false): string {
 }
 
 /** assembler options (getAssemblerOptions) */
+/**
+ * Array-form compiler arguments for IntelliSense (compile_commands.json).
+ * Same data sources as the makefile recipes (defines / includes / std) but
+ * keeps ONLY the flags a host-side parser understands: macros, include
+ * paths and the language standard. Target (-march etc.), codegen (-f, -O,
+ * -g) and specs options are dropped — they mean nothing to clangd/cpptools
+ * and only produce warnings.
+ */
+export function intellisenseArgs(cp: Cproject, kind: 'c' | 'cpp' | 'asm'): string[] {
+  const args: string[] = [];
+  const pre = kind === 'c' ? 'c.compiler' : kind === 'cpp' ? 'cpp.compiler' : 'assembler';
+  const defsSuffix = kind === 'asm' ? 'assembler.defs' : `${pre}.defs`;
+  const undefSuffix = kind === 'asm' ? 'assembler.undefs' : `${pre}.undef`;
+  for (const d of cp.listOption(defsSuffix).values) {
+    if (d) args.push(`-D${d}`);
+  }
+  for (const u of cp.listOption(undefSuffix).values) {
+    if (u) args.push(`-U${u}`);
+  }
+  if (cp.optionBool(`${pre}.nostdinc`)) args.push('-nostdinc');
+  for (const i of resolveList(cp, `${pre}.include.paths`, (v) => v, { dropUnresolved: true })) {
+    args.push(`-I${i}`);
+  }
+  for (const i of resolveList(cp, `${pre}.include.systempaths`, (v) => v, { dropUnresolved: true })) {
+    args.push(`-isystem${i}`);
+  }
+  for (const i of resolveList(cp, `${pre}.include.files`, (v) => v, { dropUnresolved: true })) {
+    args.push(`-include${i}`);
+  }
+  if (kind === 'c') {
+    args.push(languageStdFlag(cp).trim());
+  } else if (kind === 'cpp') {
+    const std = cp.optionEnum('cpp.compiler.std') ?? 'gnucpp11';
+    args.push((CPP_STD_FLAGS[std] ?? ' -std=gnu++11').trim());
+  } else {
+    // match the makefile: no preprocessor => plain assembler, not -cpp
+    if (cp.optionBool('assembler.usepreprocessor', true)) args.push('-x', 'assembler-with-cpp');
+    else args.push('-x', 'assembler');
+  }
+  return args;
+}
+
 export function assemblerOptions(cp: Cproject, skipIncludes = false): string {
   let t = '';
   t += cp.optionBool('assembler.usepreprocessor', true) ? ' -x assembler-with-cpp' : ' -x assembler';

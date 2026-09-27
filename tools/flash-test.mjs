@@ -27,6 +27,7 @@ fs.rmSync(scratch, { recursive: true, force: true });
 fs.mkdirSync(scratch, { recursive: true });
 
 const base = { buildDir: scratch, address: '0x00000000', verify: true, reset: true, boardCfg: 'C:/MRS/wch-riscv.cfg', firmware: 'E:/prj/obj/LED.hex' };
+const bsBase = { ...base, firmware: 'E:' + String.raw`\prj\obj with space\LED.hex` }; // Windows backslashes + a space
 
 // 1. default plan (verify + reset)
 {
@@ -38,6 +39,16 @@ const base = { buildDir: scratch, address: '0x00000000', verify: true, reset: tr
   check('cfg has exactly two lines', lines.length === 2);
   check('address override line first', lines[0] === 'wlink_set_address 0x00000000');
   check('program line is Tcl-quoted with verify+reset+exit', lines[1] === 'program "E:/prj/obj/LED.hex" verify reset exit');
+}
+
+// 1.5 Windows backslash path: Jim Tcl eats backslashes in double quotes —
+// the cfg must carry forward slashes (spaces still quoted)
+{
+  fs.rmSync(scratch, { recursive: true, force: true });
+  prepareFlash(bsBase);
+  const cfg = readCfg(scratch);
+  check('backslash firmware path emitted as forward slashes', cfg.includes('program "E:/prj/obj with space/LED.hex"'));
+  check('no backslash remains in the program line', !/program "[^"]*\\/.test(cfg));
 }
 
 // 2. verify/reset combinations

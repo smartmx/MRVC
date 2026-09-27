@@ -33,8 +33,10 @@ export function prepareFlash(opts: FlashOptions): FlashPlan {
     throw new Error(`Invalid flash address "${opts.address}" (expected form 0x00000000)`);
   }
   const steps = [`wlink_set_address ${opts.address}`];
-  // Tcl-quoted: firmware paths with spaces must stay one argument
-  const prog = ['program', `"${opts.firmware}"`];
+  // Firmware path: forward slashes (Jim Tcl eats backslashes inside double
+  // quotes — "E:\x\y" becomes E:xy) + quotes to keep spaces one argument
+  const fwPosix = opts.firmware.replace(/\\/g, '/');
+  const prog = ['program', `"${fwPosix}"`];
   if (opts.verify) prog.push('verify');
   if (opts.reset) prog.push('reset');
   prog.push('exit');
