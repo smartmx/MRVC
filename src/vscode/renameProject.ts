@@ -8,29 +8,30 @@ import * as path from 'path';
 import { TreeNode } from './tree';
 import { ProjectStore, msg } from './projects';
 import { renameProject } from '../core/projectFile';
+import { t } from '../core/i18n';
 
 export async function renameProjectCmd(store: ProjectStore, node?: TreeNode): Promise<void> {
   const proj = node?.project ?? store.active;
   if (!proj) {
-    vscode.window.showErrorMessage('MRVC: no project to rename.');
+    vscode.window.showErrorMessage(t('noActiveProject'));
     return;
   }
   const oldName = proj.projectName;
   const name = await vscode.window.showInputBox({
-    prompt: `Rename project "${oldName}"`,
+    prompt: t('renameProjectTitle', oldName),
     value: oldName,
-    placeHolder: 'new project name',
-    validateInput: (v) => (!v || /[\\/:*?"<>|\s]/.test(v) ? 'Invalid project name (no spaces or \\ / : * ? " < > |)' : undefined),
+    placeHolder: t('newProjectName'),
+    validateInput: (v) => (!v || /[\\/:*?"<>|\s]/.test(v) ? t('invalidProjectName') : undefined),
   });
   if (!name || name === oldName) return;
   try {
     renameProject(proj.root, name);
   } catch (e) {
-    vscode.window.showErrorMessage(`MRVC: rename failed — ${msg(e)}`);
+    vscode.window.showErrorMessage(t('renameFailed', msg(e)));
     return;
   }
   store.reloadProject(proj);
-  vscode.window.showInformationMessage(`MRVC: project "${oldName}" renamed to "${name}".`);
+  vscode.window.showInformationMessage(t('projectRenamed', oldName, name));
 }
 
 /**
@@ -41,30 +42,28 @@ export async function renameProjectCmd(store: ProjectStore, node?: TreeNode): Pr
 export async function syncProjectNameFromFolder(store: ProjectStore, node?: TreeNode): Promise<void> {
   const proj = node?.project ?? store.active;
   if (!proj) {
-    vscode.window.showErrorMessage('MRVC: no project to sync.');
+    vscode.window.showErrorMessage(t('noActiveProject'));
     return;
   }
   const folderName = path.basename(proj.root);
   if (/\s/.test(folderName)) {
-    vscode.window.showWarningMessage(
-      `MRVC: the folder name "${folderName}" contains spaces. Rename the folder first (without spaces), then sync — a space in the project name would break make targets.`
-    );
+    vscode.window.showWarningMessage(t('syncFolderSpaces'));
     return;
   }
   if (/[\\/:*?"<>|]/.test(folderName)) {
-    vscode.window.showWarningMessage(`MRVC: the folder name "${folderName}" contains characters not allowed in a project name.`);
+    vscode.window.showWarningMessage(t('folderNameInvalid', folderName));
     return;
   }
   if (folderName === proj.projectName) {
-    vscode.window.showInformationMessage(`MRVC: project name already matches the folder name ("${folderName}").`);
+    vscode.window.showInformationMessage(t('syncAlreadySame', folderName));
     return;
   }
   try {
     renameProject(proj.root, folderName);
   } catch (e) {
-    vscode.window.showErrorMessage(`MRVC: sync failed — ${msg(e)}`);
+    vscode.window.showErrorMessage(t('syncFailed', msg(e)));
     return;
   }
   store.reloadProject(proj);
-  vscode.window.showInformationMessage(`MRVC: project name synced to folder name ("${folderName}").`);
+  vscode.window.showInformationMessage(t('syncDone', folderName));
 }

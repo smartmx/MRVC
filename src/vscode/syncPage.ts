@@ -11,6 +11,7 @@ import * as vscode from 'vscode';
 import { ProjectStore, MrsProject, msg } from './projects';
 import { Cproject } from '../core/cproject';
 import { FIELDS, PAGES, FieldDef, jsonForScript } from './configView';
+import { t } from '../core/i18n';
 
 interface SyncFieldRow {
   field: FieldDef;
@@ -115,7 +116,7 @@ export class SyncPage {
     let skipCount = 0;
     let cancelled = false;
     await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: `MRVC: syncing ${m.items.length} setting(s)`, cancellable: true },
+      { location: vscode.ProgressLocation.Notification, title: t('syncingSettings', m.items.length), cancellable: true },
       async (progress, token) => {
         for (let i = 0; i < projects.length; i++) {
           const p = projects[i];

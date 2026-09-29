@@ -7,7 +7,9 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { TreeNode } from './tree';
-import { ProjectStore, msg } from './projects';
+import { ProjectStore, MrsProject, msg } from './projects';
+import { appendRemovedResource, clearRemovedResource, listRemovedResources } from '../core/projectFile';
+import { t } from '../core/i18n';
 
 interface Clip {
   path: string;
@@ -50,7 +52,7 @@ function uniqueDest(dir: string, name: string): string {
 export async function copyNode(node: TreeNode): Promise<void> {
   if (!node.fsPath) return;
   clip = { path: node.fsPath };
-  vscode.window.showInformationMessage(`MRVC: copied "${path.basename(node.fsPath)}" (use Paste on a folder)`);
+  vscode.window.showInformationMessage(t('copied', path.basename(node.fsPath)));
 }
 
 export async function pasteNode(store: ProjectStore, node?: TreeNode): Promise<void> {
@@ -74,26 +76,26 @@ export async function pasteNode(store: ProjectStore, node?: TreeNode): Promise<v
   try {
     fs.cpSync(src, dest, { recursive: true, force: false, errorOnExist: true });
   } catch (e) {
-    vscode.window.showErrorMessage(`MRVC: paste failed — ${msg(e)}`);
+    vscode.window.showErrorMessage(t('pasteFailed', msg(e)));
     return;
   }
   refresh();
-  vscode.window.showInformationMessage(`MRVC: pasted ${path.basename(dest)}`);
+  vscode.window.showInformationMessage(t('pasted', path.basename(dest)));
 }
 
 export async function newFile(node: TreeNode): Promise<void> {
   const dir = targetDir(node);
   if (!dir) return;
   const name = await vscode.window.showInputBox({
-    prompt: `New file in ${path.basename(dir)}`,
-    placeHolder: 'file name (e.g. main.c)',
-    validateInput: (v) => (!v || /[\\/:*?"<>|]/.test(v) ? 'Invalid file name' : undefined),
+    prompt: t('newFileIn', path.basename(dir)),
+    placeHolder: t('fileNameHint'),
+    validateInput: (v) => (!v || /[\\/:*?"<>|]/.test(v) ? t('invalidNameKey') : undefined),
   });
   if (!name) return;
   const dest = path.join(dir, name);
   try {
     if (fs.existsSync(dest)) {
-      vscode.window.showWarningMessage(`MRVC: "${name}" already exists.`);
+      vscode.window.showWarningMessage(t('nameExists', name));
     } else {
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, '', 'utf-8');
@@ -110,9 +112,9 @@ export async function newFolder(node: TreeNode): Promise<void> {
   const dir = targetDir(node);
   if (!dir) return;
   const name = await vscode.window.showInputBox({
-    prompt: `New folder in ${path.basename(dir)}`,
-    placeHolder: 'folder name',
-    validateInput: (v) => (!v || /[\\/:*?"<>|]/.test(v) ? 'Invalid folder name' : undefined),
+    prompt: t('newFolderIn', path.basename(dir)),
+    placeHolder: t('folderName'),
+    validateInput: (v) => (!v || /[\\/:*?"<>|]/.test(v) ? t('invalidNameKey') : undefined),
   });
   if (!name) return;
   try {
@@ -184,9 +186,9 @@ export async function renameNode(node: TreeNode): Promise<void> {
   if (!node.fsPath) return;
   const oldName = path.basename(node.fsPath);
   const newName = await vscode.window.showInputBox({
-    prompt: 'Rename',
+    prompt: t('renameKeyRestore', oldName),
     value: oldName,
-    validateInput: (v) => (!v || /[\\/:*?"<>|]/.test(v) ? 'Invalid name' : v === oldName ? undefined : fs.existsSync(path.join(path.dirname(node.fsPath!), v)) ? 'Name already exists' : undefined),
+    validateInput: (v) => (!v || /[\\/:*?"<>|]/.test(v) ? t('invalidNameKey') : v === oldName ? undefined : fs.existsSync(path.join(path.dirname(node.fsPath!), v)) ? t('nameExists', v) : undefined),
   });
   if (!newName || newName === oldName) return;
   try {
@@ -202,12 +204,38 @@ export async function deleteNode(node: TreeNode): Promise<void> {
   if (!node.fsPath) return;
   const name = path.basename(node.fsPath);
   const isDir = fs.existsSync(node.fsPath) && fs.statSync(node.fsPath).isDirectory();
+  // MRS2 Remove command semantics: [Remove] hides the resource from the
+  // tree and the build (filteredResources, restorable via Restore Removed
+  // Resources), [Delete] really removes the files — one dialog, two buttons.
   const confirm = await vscode.window.showWarningMessage(
-    `Delete "${name}"${isDir ? ' and all its contents' : ''} permanently?`,
-    { modal: true },
-    'Delete'
+    `Remove or delete "${name}"?`,
+    {
+      modal: true,
+      detail: isDir
+        ? 'Remove hides it from the project (files stay on disk, restorable). Delete removes the files from disk.'
+        : 'Remove hides it from the project (the file stays on disk, restorable). Delete removes the file from disk.',
+    },
+    t('remove'),
+    t('delete')
   );
-  if (confirm !== 'Delete') return;
+  if (confirm === t('remove')) {
+    const project = (node as unknown as { project?: { root?: string; logicPathOf?: (f: string) => string | undefined } }).project;
+    if (!project?.root) {
+      vscode.window.showErrorMessage(t('noActiveProject'));
+      return;
+    }
+    try {
+      const logic = project.logicPathOf?.(node.fsPath);
+      const parentLogicRaw = logic ? path.posix.dirname(toPosix(logic)) : '';
+      appendRemovedResource(project.root, parentLogicRaw === '.' ? '' : parentLogicRaw, name, isDir);
+      refresh();
+      vscode.window.showInformationMessage(t('removedHidden', name));
+    } catch (e) {
+      vscode.window.showErrorMessage(`MRVC: ${msg(e)}`);
+    }
+    return;
+  }
+  if (confirm !== t('delete')) return;
   try {
     fs.rmSync(node.fsPath, { recursive: true, force: true });
   } catch (e) {
@@ -215,5 +243,42 @@ export async function deleteNode(node: TreeNode): Promise<void> {
     return;
   }
   refresh();
-  vscode.window.showInformationMessage(`MRVC: deleted ${name}`);
+  vscode.window.showInformationMessage(t('deletedMsg', name));
+}
+
+/**
+ * Restore logically-removed resources (MRS2 has no dedicated entry — its
+ * only restore path is re-adding a same-named file; MRVC adds this
+ * explicit command writing the same filteredResources storage).
+ */
+export async function restoreRemovedCmd(store: ProjectStore, node?: unknown): Promise<void> {
+  const proj: MrsProject | undefined =
+    (node as unknown as { project?: MrsProject } | undefined)?.project ?? store.active ?? undefined;
+  if (!proj) {
+    vscode.window.showErrorMessage(t('noActiveProject'));
+    return;
+  }
+  const removed = listRemovedResources(proj.root);
+  if (!removed.length) {
+    vscode.window.showInformationMessage(t('nothingRemoved', proj.projectName));
+    return;
+  }
+  const pick = await vscode.window.showQuickPick(
+    removed.map((r) => ({
+      label: (r.parentLogic ? r.parentLogic + '/' : '') + r.name,
+      description: r.isFolder ? 'folder' : 'file',
+      resource: r,
+    })),
+    {
+      placeHolder: t('restorePick', proj.projectName),
+      canPickMany: true,
+      ignoreFocusOut: true,
+    }
+  );
+  if (!pick?.length) return;
+  for (const p of pick) {
+    clearRemovedResource(proj.root, p.resource.parentLogic, p.resource.name, p.resource.isFolder);
+  }
+  refresh();
+  vscode.window.showInformationMessage(t('restoredCount', pick.length));
 }

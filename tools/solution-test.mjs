@@ -14,7 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const outCore = path.join(here, '..', 'out', 'core');
 
 const { findSolutionFiles, findProjectRoots } = require(path.join(outCore, 'discover.js'));
-const { parseSolution, writeSolution } = require(path.join(outCore, 'solution.js'));
+const { parseSolution, writeSolution, appendSolutionMembers, recordBuildOrder } = require(path.join(outCore, 'solution.js'));
 const { Cproject } = require(path.join(outCore, 'cproject.js'));
 const { scanSources } = require(path.join(outCore, 'scan.js'));
 
@@ -187,6 +187,47 @@ check(`solution members cover all ${roots.length} discovered projects (missing $
       JSON.stringify(backAll.entries.map((e) => norm(e.resolved)).sort()) === JSON.stringify(allRoots.map(norm).sort())
   );
   fs.rmSync(rootFile, { force: true }); // do not leave a synthetic solution in the real tree
+}
+
+// ---------- 7. solution lifecycle: appendSolutionMembers + recordBuildOrder ----------
+{
+  const fixtureDir = path.join(here, '..', '.scratch', 'solution-fixture');
+  const m1 = path.join(H417, 'GPIO/GPIO_Toggle/V3F');
+  const m2 = path.join(H417, 'GPIO/GPIO_Toggle/V5F');
+  const m3 = path.join(H417, 'ADC/ADC_DMA/V3F');
+  const file = path.join(fixtureDir, 'Lifecycle.wvsln');
+  writeSolution(file, [m1, m2], ['V5F', 'V3F']);
+  const before = fs.readFileSync(file, 'utf-8');
+
+  // append a new member: existing bytes preserved, only new lines added
+  const added = appendSolutionMembers(file, [m3]);
+  check('append: one root added', added.length === 1);
+  const afterAppend = fs.readFileSync(file, 'utf-8');
+  check('append: existing content byte-preserved as prefix', afterAppend.startsWith(before.replace(/\r\n$/, '')));
+  const pAfter = parseSolution(file);
+  check('append: now 3 members', pAfter.entries.length === 3);
+  check('append: BuildOrder untouched (2 names)', pAfter.buildOrder?.join(',') === 'V5F,V3F');
+
+  // duplicate append is a no-op (case-insensitive)
+  const added2 = appendSolutionMembers(file, [m3]);
+  check('append: duplicate is a no-op', added2.length === 0);
+  check('append: file unchanged after duplicate', fs.readFileSync(file, 'utf-8') === afterAppend);
+
+  // recordBuildOrder: only the BuildOrder line moves, everything else preserved
+  const linesBefore = afterAppend.split(/\r?\n/).filter((l) => l !== '');
+  recordBuildOrder(file, ['V3F', 'V5F', 'ADC_DMA_V3F']);
+  const linesAfter = fs.readFileSync(file, 'utf-8').split(/\r?\n/).filter((l) => l !== '');
+  check(
+    'recordOrder: only the BuildOrder line differs',
+    linesBefore.filter((l) => !l.startsWith('BuildOrder=')).join('\n') === linesAfter.filter((l) => !l.startsWith('BuildOrder=')).join('\n')
+  );
+  const pOrder = parseSolution(file);
+  check('recordOrder: new order parses back', pOrder.buildOrder?.join(',') === 'V3F,V5F,ADC_DMA_V3F');
+  // MRS2 placement: the line sits right after the first line (toolchain block head)
+  const rawLines = fs.readFileSync(file, 'utf-8').split(/\r?\n/);
+  check('recordOrder: line position after first line', rawLines[1].startsWith('BuildOrder='));
+
+  fs.rmSync(file, { force: true });
 }
 
 console.log(failures ? `\n${failures} FAILURES` : '\nall solution tests passed');

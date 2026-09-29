@@ -8,6 +8,8 @@ import * as fs from 'fs';
 import { ProjectStore, MrsProject, MrsSolution, msg, getInstall } from './projects';
 import { generateMakefiles } from '../core/makefile';
 import { clearOutputDir, removeOutputDir } from '../core/output';
+import { t } from '../core/i18n';
+import { buildRecordFile } from '../core/buildLog';
 
 export type BuildKind = 'build' | 'rebuild' | 'clean';
 
@@ -57,7 +59,7 @@ export class BuildManager {
   async buildSolution(sol: MrsSolution): Promise<void> {
     const members = sol.members;
     if (!members.length) {
-      vscode.window.showErrorMessage(`MRVC: solution "${sol.name}" has no loadable projects.`);
+      vscode.window.showErrorMessage(t('solutionNoMembers', sol.name));
       return;
     }
     const cfg = vscode.workspace.getConfiguration('mrvc');
@@ -66,7 +68,7 @@ export class BuildManager {
     return this.runBatch(members, {
       progressTitle: `MRVC: Build Solution - ${sol.name}`,
       label: `Build Solution (${sol.name})`,
-      emptyMessage: `MRVC: solution "${sol.name}" has no loadable projects.`,
+      emptyMessage: t('solutionNoMembers', sol.name),
       needsMake: true,
       worker: (p, install) => this.buildOne(p, install, toolchainReq, jobs),
     });
@@ -92,22 +94,30 @@ export class BuildManager {
    * build regenerates them.
    */
   async deleteOutputFiles(): Promise<void> {
-    return this.runBatch(this.store.all, {
+    await this.runBatch(this.store.all, {
       progressTitle: 'MRVC: Delete Output Files (Keep hex/bin)',
       label: 'Delete Output Files (Keep hex/bin)',
       emptyMessage: 'No MRS project loaded. Use "MRVC: Open MRS Project" first.',
       worker: (p) => this.deleteOutputOne(p, true),
     });
+    this.refreshTree();
   }
 
   /** Delete every project's whole output directory. */
   async deleteOutputDirs(): Promise<void> {
-    return this.runBatch(this.store.all, {
+    await this.runBatch(this.store.all, {
       progressTitle: 'MRVC: Delete Output Directories',
       label: 'Delete Output Directories',
       emptyMessage: 'No MRS project loaded. Use "MRVC: Open MRS Project" first.',
       worker: (p) => this.deleteOutputOne(p, false),
     });
+    this.refreshTree();
+  }
+
+  /** output directories are not covered by any file watcher — the tree must
+   * be told explicitly that they changed */
+  private refreshTree(): void {
+    void vscode.commands.executeCommand('mrs2.refreshTree');
   }
 
   /**
@@ -143,7 +153,7 @@ export class BuildManager {
   /** Sequential never-stopping batch over a project list (Build/Clean/Rebuild All, solutions, output deletion). */
   private async runBatch(projects: MrsProject[], opts: BatchOptions): Promise<void> {
     if (this.buildAllRunning) {
-      vscode.window.showWarningMessage('MRVC: another batch operation is already running.');
+      vscode.window.showWarningMessage(t('batchRunning'));
       return;
     }
     if (!projects.length) {
@@ -154,7 +164,7 @@ export class BuildManager {
     if (opts.needsMake) {
       install = getInstall();
       if (!install || !fs.existsSync(path.join(install.makeBin, 'make.exe'))) {
-        vscode.window.showErrorMessage(`make.exe not found under the MounRiver installation (${install?.makeBin ?? '?'})`);
+        vscode.window.showErrorMessage(t('makeNotFound', install?.makeBin ?? '?'));
         return;
       }
     }
@@ -196,17 +206,17 @@ export class BuildManager {
     );
     channel.show(true);
     if (cancelled) {
-      vscode.window.showWarningMessage(`MRVC: ${opts.label} cancelled — ${results.length - failed.length}/${results.length} OK, ${failed.length} failed.`);
+      vscode.window.showWarningMessage(t('batchCancelled', opts.label, results.length - failed.length, results.length, failed.length));
     } else if (failed.length) {
       const names = failed.map((r) => r.project).join(', ');
       void vscode.window
         .showWarningMessage(
-          `MRVC: ${opts.label} finished — ${results.length - failed.length}/${results.length} OK, ${failed.length} failed (${names}). See Problems panel and "MRVC Build All" output.`,
+          t('batchFinishedFailed', opts.label, results.length - failed.length, results.length, failed.length, names),
           'Show Output'
         )
         .then((pick) => pick === 'Show Output' && channel.show(true));
     } else {
-      vscode.window.showInformationMessage(`MRVC: ${opts.label} finished — all ${results.length} projects OK (${seconds}s).`);
+      vscode.window.showInformationMessage(t('batchFinishedAll', opts.label, results.length, seconds));
     }
   }
 
@@ -225,14 +235,14 @@ export class BuildManager {
     try {
       p.reload();
       if (!fs.existsSync(p.buildDir)) {
-        return ok('no output directory');
+        return ok(t('noOutputDir'));
       }
       if (keepImages) {
         const n = clearOutputDir(p.root, p.buildDir, [`${p.cproject.targetName}.hex`, `${p.cproject.targetName}.bin`]);
-        return ok(n ? `${n} entries removed` : '');
+        return ok(n ? t('entriesRemoved', n) : '');
       }
       removeOutputDir(p.root, p.buildDir);
-      return ok('output directory removed');
+      return ok(t('outputDirRemoved'));
     } catch (e) {
       return { project: p.projectName, ok: false, detail: msg(e) };
     }
@@ -241,7 +251,7 @@ export class BuildManager {
   /** Clean one project; never throws. */
   private cleanOne(p: MrsProject, install: NonNullable<ReturnType<typeof getInstall>>): Promise<BuildAllResult> {
     if (!fs.existsSync(path.join(p.buildDir, 'makefile'))) {
-      return Promise.resolve({ project: p.projectName, ok: true, detail: 'nothing to clean' });
+      return Promise.resolve({ project: p.projectName, ok: true, detail: t('nothingToClean') });
     }
     return new Promise<BuildAllResult>((resolve) => {
       let settled = false;
@@ -344,23 +354,25 @@ export class BuildManager {
       return;
     }
     if (!install || !fs.existsSync(path.join(install.makeBin, 'make.exe'))) {
-      vscode.window.showErrorMessage(`make.exe not found under the MounRiver installation (${install?.makeBin ?? '?'})`);
+      vscode.window.showErrorMessage(t('makeNotFound', install?.makeBin ?? '?'));
       return;
     }
 
     // regenerate makefiles from the current .cproject every time
     let genResult;
     try {
-      genResult = generateMakefiles(project.cproject, tc);
+      genResult = generateMakefiles(project.cproject, tc, {
+        analysis: vscode.workspace.getConfiguration('mrvc').get<boolean>('build.analysis', false),
+      });
     } catch (e) {
-      vscode.window.showErrorMessage(`Makefile generation failed: ${msg(e)}`);
+      vscode.window.showErrorMessage(t('makefileGenFailed', msg(e)));
       return;
     }
 
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const jobs = cfg.get<number>('build.parallelJobs', 0) || os.cpus().length;
     if (kind === 'clean' && !fs.existsSync(path.join(project.buildDir, 'makefile'))) {
-      vscode.window.showInformationMessage(`MRVC: "${project.projectName}" has never been built — nothing to clean.`);
+      vscode.window.showInformationMessage(t('neverBuilt', project.projectName));
       return;
     }
     const makeArgs: string[] = [];
@@ -371,16 +383,30 @@ export class BuildManager {
 
     const envPath = [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].join(path.delimiter);
     const target = kind === 'clean' ? 'MRVC: clean' : kind === 'rebuild' ? 'MRVC: rebuild' : 'MRVC: build';
+    // full make output is captured into MRS2's build record location, so
+    // "Show Full Build Output" can open the complete log of the last build.
+    // The redirection lives in a generated .cmd wrapper — a ShellExecution
+    // string with cmd.exe nesting breaks VSCode's auto-quoting ("文件名、
+    // 目录名或卷标语法不正确"), while a wrapper file has fixed quoting.
+    const recordFile = buildRecordFile(project.root);
+    const makeExe = path.join(install.makeBin, 'make.exe');
+    const wrapper = path.join(project.buildDir, 'mrs2-build.cmd');
+    const wrapperBody =
+      `@echo off\r\n` +
+      `"${makeExe}" ${makeArgs.join(' ')} > "${recordFile}" 2>&1\r\n` +
+      `set "MRVC_EXIT=%errorlevel%"\r\n` +
+      `type "${recordFile}"\r\n` +
+      `exit /b %MRVC_EXIT%\r\n`;
+    fs.writeFileSync(wrapper, wrapperBody, 'utf-8');
+    const shell = new vscode.ProcessExecution(wrapper, [], {
+      cwd: project.buildDir,
+      env: { PATH: envPath },
+    });
     const task = new vscode.Task(
       { type: 'mrvc-build', task: target, project: project.projectName },
       project.projectName ? `${target} - ${project.projectName}` : target,
       'MRVC',
-      new vscode.ProcessExecution(path.join(install.makeBin, 'make.exe'), makeArgs, {
-        cwd: project.buildDir,
-        env: {
-          PATH: envPath,
-        },
-      }),
+      shell,
       ['$mrvcgcc']
     );
     task.group = vscode.TaskGroup.Build;
@@ -402,7 +428,7 @@ export class BuildManager {
       cleanTask.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
       const cleanCode = await this.executeAndWait(cleanTask, 'mrvc-clean');
       if (cleanCode !== 0 && cleanCode !== undefined) {
-        vscode.window.showErrorMessage(`MRVC: rebuild aborted — clean failed (exit ${cleanCode}).`);
+        vscode.window.showErrorMessage(t('rebuildCleanFailed', cleanCode));
         return;
       }
     }
@@ -444,12 +470,12 @@ export class BuildManager {
     if (active) return active;
     const all = this.store.all;
     if (!all.length) {
-      vscode.window.showErrorMessage('No MRS project loaded. Use "MRVC: Open MRS Project" first.');
+      vscode.window.showErrorMessage(t('noProjectsLoaded'));
       return undefined;
     }
     const pick = await vscode.window.showQuickPick(
       all.map((p) => ({ label: p.projectName, description: p.root, project: p })),
-      { placeHolder: 'Select project' }
+      { placeHolder: t('pickProject') }
     );
     return pick?.project;
   }

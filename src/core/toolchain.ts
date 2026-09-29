@@ -120,8 +120,73 @@ function loadToolchains(componentsDir: string): ToolchainInfo[] {
 }
 
 /**
+ * A user-provided toolchain (mrvc.customToolchains setting). MRS2's
+ * equivalent stores the same shape in toolchain_local.json and references
+ * entries from .cproject as ${Local:Toolchain:<name>}; MRVC keeps the list
+ * in settings and matches by name (case-insensitive) in selectToolchain.
+ */
+export interface CustomToolchain {
+  name: string;
+  /** toolchain root folder containing bin/ */
+  path: string;
+  /** executable prefix; auto-detected from bin/ when omitted */
+  prefix?: string;
+}
+
+/** build a ToolchainInfo from a custom entry: prefix auto-detected from
+ * the first *gcc* executable in bin/ when not given explicitly */
+export function resolveCustomToolchain(entry: CustomToolchain): ToolchainInfo | null {
+  const binDir = path.join(entry.path, 'bin');
+  if (!fs.existsSync(binDir)) return null;
+  let prefix = entry.prefix;
+  if (!prefix) {
+    const gcc = fs.readdirSync(binDir).find((f) => /^.*gcc\.exe$/i.test(f) || /^.*gcc$/i.test(f));
+    if (!gcc) return null;
+    prefix = gcc.slice(0, gcc.toLowerCase().lastIndexOf('gcc'));
+  }
+  // Windows executables carry .exe in the directory listing even though
+  // makefiles reference the bare prefix+name — check both forms
+  const has = (f: string): boolean =>
+    fs.existsSync(path.join(binDir, prefix + f)) || fs.existsSync(path.join(binDir, prefix + f + '.exe'));
+  if (!has('gcc')) return null;
+  return {
+    name: entry.name,
+    dir: entry.path,
+    compilerC: path.join(binDir, prefix + 'gcc'),
+    compilerCpp: path.join(binDir, prefix + 'g++'),
+    linkerC: path.join(binDir, prefix + 'gcc'),
+    linkerCpp: path.join(binDir, prefix + 'g++'),
+    debugger: path.join(binDir, prefix + 'gdb'),
+    objcopy: path.join(binDir, prefix + 'objcopy'),
+    objdump: path.join(binDir, prefix + 'objdump'),
+    size: path.join(binDir, prefix + 'size'),
+    prefix,
+  };
+}
+
+/**
+ * Merge custom toolchains over the MRS2-installed ones (same name —
+ * case-insensitive — custom wins). Unresolvable entries (missing bin/,
+ * no gcc) are skipped.
+ */
+export function mergeCustomToolchains(install: MrsInstall, custom: CustomToolchain[]): MrsInstall {
+  if (!custom.length) return install;
+  const resolved: ToolchainInfo[] = [];
+  const customNames = new Set<string>();
+  for (const entry of custom) {
+    const tc = resolveCustomToolchain(entry);
+    if (tc) {
+      resolved.push(tc);
+      customNames.add(tc.name.toLowerCase());
+    }
+  }
+  const installed = install.toolchains.filter((t) => !customNames.has(t.name.toLowerCase()));
+  return { ...install, toolchains: [...resolved, ...installed] };
+}
+
+/**
  * Pick the toolchain for a project. Preference order:
- *   1. explicit request (GCC8/GCC12/GCC15 from settings)
+ *   1. explicit request (GCC8/GCC12/GCC15, custom names, from settings)
  *   2. rvGcc option recorded in .cproject
  *   3. legacy command.prefix mapping
  *   4. first installed

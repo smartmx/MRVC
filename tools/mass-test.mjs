@@ -186,5 +186,11 @@ console.log('\n===== SUMMARY =====');
 for (const [t, v] of Object.entries(perTree)) console.log(`${t}: ${v.projects} projects, ${v.sources} sources, ${v.errors} errors`);
 console.log(`chip database: ${chipDb.available ? chipDb.series.length + ' series' : 'unavailable'}`);
 console.log(`totals: ${totalProjects} projects, ${totalSources} source files, ${totalExcluded} exclusion mappings`);
+// zero projects is NOT a pass — the 972-project tree only exists on one
+// machine, and a silent "all 0 passed" would hide a missing test tree
+if (!totalProjects) {
+  console.log('no projects to validate — SKIPPED (no test tree found); mass validation requires the EVT test tree');
+  process.exit(2);
+}
 console.log(failures ? `\n${failures} FAILURES, ${warnings} warnings` : `\nall ${totalProjects} projects passed (${warnings} warnings)`);
 process.exit(failures ? 1 : 0);

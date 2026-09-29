@@ -8,8 +8,9 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ProjectStore, MrsProject } from './projects';
-import { addLinkedFolder, removeLinkedFolder } from '../core/projectFile';
+import { addLinkedFolder, removeLinkedFolder, changeLinkedFolderTarget } from '../core/projectFile';
 import { Cproject } from '../core/cproject';
+import { t } from '../core/i18n';
 import { XElement } from '../core/xml';
 
 export async function addLinkedFolderCmd(store: ProjectStore, proj?: MrsProject): Promise<void> {
@@ -22,20 +23,20 @@ export async function addLinkedFolderCmd(store: ProjectStore, proj?: MrsProject)
     canSelectFolders: true,
     canSelectFiles: false,
     canSelectMany: false,
-    openLabel: 'Link folder',
-    title: 'Add external linked folder',
+    openLabel: t('linkFolder'),
+    title: t('addExternalLinked'),
   });
   if (!picks?.length) return;
   const target = picks[0].fsPath;
   if (path.normalize(target).toLowerCase() === path.normalize(project.root).toLowerCase()) {
-    vscode.window.showErrorMessage('Cannot link the project folder itself.');
+    vscode.window.showErrorMessage(t('cannotLinkSelf'));
     return;
   }
 
   const name = await vscode.window.showInputBox({
-    prompt: 'Folder name as shown (and referenced) inside the project',
+    prompt: t('linkFolderName'),
     value: path.basename(target),
-    validateInput: (v) => (v && !/[\\/:*?"<>|]/.test(v) ? undefined : 'Invalid folder name'),
+    validateInput: (v) => (v && !/[\\/:*?"<>|]/.test(v) ? undefined : t('invalidName')),
   });
   if (!name) return;
 
@@ -76,25 +77,74 @@ export async function addLinkedFolderCmd(store: ProjectStore, proj?: MrsProject)
   }
 
   store.reloadProject(project);
-  vscode.window.showInformationMessage(`MRVC: linked folder "${name}" added (${target})`);
+  vscode.window.showInformationMessage(t('linkedAdded', name, target));
 }
 
-export async function removeLinkedFolderCmd(store: ProjectStore, node?: { linkedName?: string; project?: MrsProject }): Promise<void> {
+/**
+ * Re-point a linked folder to a new target (MRS2 changelinkedFolderPath):
+ * the link NAME and all build references keyed by it stay untouched — only
+ * the location changes, so the tree keeps showing the same folder name.
+ */
+export async function changeLinkedFolderPathCmd(store: ProjectStore, node?: { linkedName?: string; project?: MrsProject }): Promise<void> {
   let name = node?.linkedName;
   let project = node?.project ?? store.active;
   if (!name) {
     if (!project) {
-      vscode.window.showErrorMessage('No active MRS project.');
+      vscode.window.showErrorMessage(t('noActiveProject'));
       return;
     }
     const links = project.projectFile.linkedResources.filter((l) => l.type === 2);
     if (!links.length) {
-      vscode.window.showInformationMessage('This project has no linked folders.');
+      vscode.window.showInformationMessage(t('linkedNone'));
       return;
     }
     const pick = await vscode.window.showQuickPick(
       links.map((l) => ({ label: l.name, description: l.location, name: l.name })),
-      { placeHolder: 'Select linked folder to remove' }
+      { placeHolder: t('linkedSelectChange') }
+    );
+    if (!pick) return;
+    name = pick.name;
+  }
+  if (!project) return;
+  const link = project.projectFile.linkedResources.find((l) => l.type === 2 && l.name === name);
+  if (!link) {
+    vscode.window.showErrorMessage(t('linkedNotFound', name, project.projectName));
+    return;
+  }
+
+  const newTarget = await vscode.window.showInputBox({
+    prompt: t('linkedPrompt', name),
+    value: link.location,
+    validateInput: (v) => (v && v.trim().length > 0 ? undefined : t('enterName')),
+  });
+  if (!newTarget || newTarget === link.location) return;
+
+  try {
+    changeLinkedFolderTarget(project.root, name, newTarget);
+  } catch (e) {
+    vscode.window.showErrorMessage(`MRVC: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+
+  store.reloadProject(project);
+  vscode.window.showInformationMessage(t('linkedChanged', name, newTarget));
+}
+
+export async function removeLinkedFolderCmd(store: ProjectStore, node?: { linkedName?: string; project?: MrsProject }): Promise<void> {  let name = node?.linkedName;
+  let project = node?.project ?? store.active;
+  if (!name) {
+    if (!project) {
+      vscode.window.showErrorMessage(t('noActiveProject'));
+      return;
+    }
+    const links = project.projectFile.linkedResources.filter((l) => l.type === 2);
+    if (!links.length) {
+      vscode.window.showInformationMessage(t('linkedNone'));
+      return;
+    }
+    const pick = await vscode.window.showQuickPick(
+      links.map((l) => ({ label: l.name, description: l.location, name: l.name })),
+      { placeHolder: t('linkedSelectRemove') }
     );
     if (!pick) return;
     name = pick.name;
@@ -102,11 +152,11 @@ export async function removeLinkedFolderCmd(store: ProjectStore, node?: { linked
   if (!project) return;
 
   const confirm = await vscode.window.showWarningMessage(
-    `Remove linked folder "${name}" from ${project.projectName}? (files on disk are not deleted)`,
+    t('linkedRemoveConfirm', name, project.projectName),
     { modal: true },
-    'Remove'
+    t('remove')
   );
-  if (confirm !== 'Remove') return;
+  if (confirm !== t('remove')) return;
 
   try {
     removeLinkedFolder(project.root, name);

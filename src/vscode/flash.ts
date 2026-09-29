@@ -6,7 +6,9 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ProjectStore, MrsProject, getInstall } from './projects';
-import { prepareFlash } from '../core/flash';
+import { prepareFlash, inferFlashAddress } from '../core/flash';
+import { scanSources } from '../core/scan';
+import { t } from '../core/i18n';
 
 /**
  * Board cfg selection, aligned with MRS2's own rule (its debug launcher):
@@ -41,7 +43,7 @@ async function pickFirmware(project: MrsProject): Promise<string | undefined> {
     canSelectMany: false,
     defaultUri: vscode.Uri.file(project.buildDir),
     filters: { Firmware: ['hex', 'bin'] },
-    title: `Select firmware to download (${project.projectName})`,
+    title: t('selectFirmware', project.projectName),
   });
   return pick?.length ? pick[0].fsPath : undefined;
 }
@@ -76,22 +78,36 @@ async function executeFlashTask(task: vscode.Task): Promise<number | undefined> 
   return done;
 }
 
+/** EVT trees ship without .template — derive the download address from the
+ * chip-family prefix of the project's scanned sources (see inferFlashAddress) */
+function inferFlashAddressFromSources(project: MrsProject): string | undefined {
+  try {
+    const paths: string[] = [];
+    for (const files of scanSources(project.cproject).values()) {
+      for (const f of files) paths.push(f.fullpath);
+    }
+    return inferFlashAddress(paths);
+  } catch {
+    return undefined;
+  }
+}
+
 export async function flashProject(store: ProjectStore, proj?: MrsProject): Promise<void> {
   const project = proj ?? store.active;
   if (!project) {
-    vscode.window.showErrorMessage('No active MRS project.');
+    vscode.window.showErrorMessage(t('noActiveProject'));
     return;
   }
   const install = getInstall();
   if (!install) {
-    vscode.window.showErrorMessage('MRS2 (MounRiver Studio 2) installation not found — set "mrvc.mrs2InstallPath" to your MRS2 install folder.');
+    vscode.window.showErrorMessage(t('installNotFound'));
     return;
   }
 
   const hex = await pickFirmware(project);
   if (!hex) return;
   if (!fs.existsSync(hex)) {
-    vscode.window.showErrorMessage(`Firmware file not found: ${hex}`);
+    vscode.window.showErrorMessage(t('firmwareNotFound', hex));
     return;
   }
 
@@ -99,15 +115,19 @@ export async function flashProject(store: ProjectStore, proj?: MrsProject): Prom
   const openocd = cfg.get<string>('openocd.path') || install.openocdExe;
   const boardCfg = selectBoardCfg(project, cfg);
   if (!fs.existsSync(openocd)) {
-    vscode.window.showErrorMessage(`openocd.exe not found: ${openocd}`);
+    vscode.window.showErrorMessage(t('openocdNotFound', openocd));
     return;
   }
   if (!fs.existsSync(boardCfg)) {
-    vscode.window.showErrorMessage(`OpenOCD config not found: ${boardCfg}`);
+    vscode.window.showErrorMessage(t('openocdCfgNotFound', boardCfg));
     return;
   }
 
-  const address = cfg.get<string>('flash.address') || project.template.values['Address'] || '0x00000000';
+  // address priority: explicit setting → .template (written by MRS2/the
+  // properties Chip page) → chip-family inference from source-file prefixes
+  // (EVT trees ship without .template) → CH58x-style default
+  const address =
+    cfg.get<string>('flash.address') || project.template.values['Address'] || inferFlashAddressFromSources(project) || '0x00000000';
   const plan = prepareFlash({
     buildDir: project.buildDir,
     address,
@@ -127,14 +147,14 @@ export async function flashProject(store: ProjectStore, proj?: MrsProject): Prom
   task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated, clear: true };
   const code = await executeFlashTask(task);
   if (code !== 0) {
-    vscode.window.showErrorMessage(`MRVC: download failed for "${project.projectName}" (exit code ${code ?? 'unknown'}) — see the task output.`);
+    vscode.window.showErrorMessage(t('downloadFailed', project.projectName, code ?? 'unknown'));
   }
 }
 
 export function openLinkUtility(): void {
   const install = getInstall();
   if (!install || !fs.existsSync(install.linkUtilityExe)) {
-    vscode.window.showErrorMessage('WCH-LinkUtility.exe not found under the MounRiver installation.');
+    vscode.window.showErrorMessage(t('linkUtilityNotFound'));
     return;
   }
   const task = new vscode.Task(
@@ -150,7 +170,7 @@ export function openLinkUtility(): void {
 export function openMrsTerminal(store: ProjectStore): void {
   const install = getInstall();
   if (!install) {
-    vscode.window.showErrorMessage('MRS2 (MounRiver Studio 2) installation not found — set "mrvc.mrs2InstallPath" to your MRS2 install folder.');
+    vscode.window.showErrorMessage(t('installNotFound'));
     return;
   }
   const toolDirs: string[] = [];

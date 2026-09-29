@@ -11,10 +11,10 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { ProjectStore, getInstall } from './projects';
+import { ProjectStore, getInstall, MrsProject } from './projects';
 import { Cproject } from '../core/cproject';
 import { ToolchainInfo } from '../core/toolchain';
-import { buildCompileEntries, mergeSharedEntries, CompileCommandEntry } from '../core/intellisense';
+import { buildCompileEntries, partitionByReference, contextDatabases, CompileCommandEntry } from '../core/intellisense';
 
 const CONFIG_NAME = 'MRVC';
 
@@ -83,6 +83,15 @@ export function sharedDbFile(workspaceRoot: string): string {
   return path.join(dbDir(workspaceRoot), '_shared.json');
 }
 
+/** compose a database path and prove it stays inside the cc directory —
+ * dbFileName already sanitizes project names to [A-Za-z0-9_.-], this guard
+ * keeps the containment invariant explicit before any disk access */
+function ccDbPath(ccDir: string, fileName: string): string | null {
+  const root = path.resolve(ccDir);
+  const p = path.resolve(root, fileName);
+  return p === root || p.startsWith(root + path.sep) ? p : null;
+}
+
 /** fixed slot 2: the ACTIVE project's private entries — switching projects
  * copies a private database over this file (cpptools watches it and
  * re-parses just the changed database) */
@@ -100,8 +109,10 @@ export function switchContext(workspaceRoot: string, projectRoot: string, projec
   // copy the project's PRIVATE database over the _active.json slot — the
   // shared database (_shared.json) is declared separately in the
   // c_cpp_properties array and stays stable across context switches
-  const src = path.join(dbDir(workspaceRoot), dbFileName(projectRoot, projectName));
-  const dst = activeCcFile(workspaceRoot);
+  const dir = dbDir(workspaceRoot);
+  const src = ccDbPath(dir, dbFileName(projectRoot, projectName));
+  const dst = ccDbPath(dir, '_active.json');
+  if (!src || !dst) return false;
   try {
     if (!fs.existsSync(src)) return false;
     const content = fs.readFileSync(src, 'utf-8');
@@ -143,11 +154,12 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
     if (!all.length) return { projects: 0, entries: 0, updated: false };
     fs.mkdirSync(vscodeDir, { recursive: true });
 
-    // 1. per-project PRIVATE databases (.vscode/mrvc/cc/<name>-<hash>.json,
-    // files physically inside the project root) + ONE merged SHARED database
-    // (_shared.json, files reached through linked folders — the shared SRC
-    // tree). Switching projects swaps only the private part in the active
-    // compile_commands.json; the shared part never changes.
+    // 1. classify by cross-project reference count: _shared.json carries
+    // every file exactly ONE project compiles (deterministic parameters —
+    // browsable under any context); per-project databases carry the
+    // multi-referenced files' per-project variants, each database padded
+    // with canonical fallbacks so it covers the whole context class.
+    // _active.json = the active context's database (copied on switch).
     const install = getInstall();
     const ccDir = dbDir(folder.uri.fsPath);
     fs.mkdirSync(ccDir, { recursive: true });
@@ -155,7 +167,12 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
     let firstCp: Cproject | null = null;
     let entries = 0;
     let ccUpdated = false;
-    const sharedPerProject: CompileCommandEntry[][] = [];
+    const perProject: CompileCommandEntry[][] = [];
+    const loaded: MrsProject[] = [];
+    // every include directory any project references — feeds the browse
+    // fallback below so files OUTSIDE the compile databases (excluded from
+    // build, not yet attached to a project) still resolve their #includes
+    const includeDirs = new Set<string>();
     for (const p of all) {
       try {
         const tc = p.toolchain(install, 'auto');
@@ -164,25 +181,41 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
           firstTc = tc;
           firstCp = p.cproject;
         }
-        const split = buildCompileEntries(p.cproject, tc);
-        entries += split.privateEntries.length + split.sharedEntries.length;
-        sharedPerProject.push(split.sharedEntries);
-        if (writeIfChanged(path.join(ccDir, dbFileName(p.root, p.projectName)), JSON.stringify(split.privateEntries, null, 2) + '\n')) ccUpdated = true;
+        const list = buildCompileEntries(p.cproject, tc);
+        for (const e of list) {
+          for (const a of e.arguments) {
+            if (a.startsWith('-I') && a.length > 2) includeDirs.add(a.slice(2));
+            else if (a.startsWith('-isystem') && a.length > 8) includeDirs.add(a.slice(8));
+          }
+        }
+        entries += list.length;
+        perProject.push(list);
+        loaded.push(p);
       } catch {
         // broken project must not block the rest
       }
     }
-    if (writeIfChanged(sharedDbFile(folder.uri.fsPath), JSON.stringify(mergeSharedEntries(sharedPerProject), null, 2) + '\n')) ccUpdated = true;
+    const split = partitionByReference(perProject);
+    const databases = contextDatabases(split.contextEntries, loaded.map((p) => p.root));
+    for (let i = 0; i < loaded.length; i++) {
+      const dbFile = ccDbPath(ccDir, dbFileName(loaded[i].root, loaded[i].projectName));
+      if (dbFile && writeIfChanged(dbFile, JSON.stringify(databases[i], null, 2) + '\n')) ccUpdated = true;
+    }
+    if (writeIfChanged(sharedDbFile(folder.uri.fsPath), JSON.stringify(split.sharedEntries, null, 2) + '\n')) ccUpdated = true;
     const activeFile = activeCcFile(folder.uri.fsPath);
-    // seed the active slot with the active/first project's private database
-    // when missing (subsequent context switches are plain copies of one of
-    // the private databases). A stale _active.json from an older MRVC layout
-    // (a merged private+shared composition) is re-seeded once — its content
-    // differs from any pure private database.
+    // every generated database covers the same context-class file set — a
+    // valid _active.json (the current OR one written before a parameter-
+    // only change) matches that set; anything else (older MRVC layouts,
+    // hand edits, a changed file set) is re-seeded from the active/first
+    // project's database.
+    const contextKeys = new Set((databases[0] ?? []).map((e) => e.file.toLowerCase()));
     const seedActive = (): void => {
-      const seed = all.find((p) => p === store.active) ?? all[0];
+      const seed = loaded.find((p) => p === store.active) ?? loaded[0];
+      if (!seed) return;
+      const src = ccDbPath(ccDir, dbFileName(seed.root, seed.projectName));
+      if (!src) return;
       try {
-        fs.copyFileSync(path.join(ccDir, dbFileName(seed.root, seed.projectName)), activeFile);
+        fs.copyFileSync(src, activeFile);
       } catch {
         // seed is best-effort; the tree watcher fills it on first selection
       }
@@ -191,16 +224,9 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
       seedActive();
     } else {
       try {
-        // any shared entry means the file is an old merged composition —
-        // private-only content (new layout) must be re-seeded
         const cur = JSON.parse(fs.readFileSync(activeFile, 'utf-8')) as Array<{ file: string }>;
-        const sharedMerged = mergeSharedEntries(sharedPerProject);
-        const sharedFiles = new Set(sharedMerged.map((e) => e.file));
-        // only reseed when we actually HAVE shared content — an empty merged
-        // block (no projects scanned yet) must not wipe the active file
-        if (sharedFiles.size && cur.some((e) => sharedFiles.has(path.resolve(e.file)))) {
-          seedActive();
-        }
+        const sameShape = cur.length === contextKeys.size && cur.every((e) => contextKeys.has(path.resolve(e.file).toLowerCase()));
+        if (!sameShape) seedActive();
       } catch {
         seedActive(); // unparsable content — reseed
       }
@@ -223,6 +249,12 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
         '${workspaceFolder}/.vscode/mrvc/cc/_shared.json',
         '${workspaceFolder}/.vscode/mrvc/cc/_active.json',
       ],
+      // browse fallback for files no compile database covers (cpptools logs
+      // a "not found in compile_commands.json" warning for those and falls
+      // back to includePath — keep that fallback useful): everything inside
+      // the workspace recursively plus every absolute include dir referenced
+      // by any project (linked trees can live outside the workspace folder)
+      includePath: ['${workspaceFolder}/**', ...[...includeDirs].sort()],
       intelliSenseMode: 'gcc-x64',
     };
     if (firstTc) {

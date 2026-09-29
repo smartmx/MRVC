@@ -129,8 +129,132 @@ export function removeLinkedFolder(projectRoot: string, name: string): void {
   saveProjectFile(projectRoot, p);
 }
 
+/**
+ * Re-point an existing linked folder to a new target — MRS2
+ * changelinkedFolderPath semantics: the link NAME (and every .cproject
+ * reference keyed by it) stays untouched, only the location changes, so
+ * build configuration keeps resolving through the same logic name.
+ * Returns the updated resource, or undefined when the link name does not
+ * exist. The new target does not have to exist (MRS2 allows it; the tree
+ * renders unresolved links without collapsing).
+ */
+export function changeLinkedFolderTarget(projectRoot: string, name: string, newTarget: string): LinkedResource | undefined {
+  const p = readProjectFile(projectRoot);
+  const pd = p.root.child('projectDescription')!;
+  const lr = pd.child('linkedResources');
+  if (!lr) return undefined;
+  const link = lr.childrenNamed('link').find((l) => l.child('name')?.text === name);
+  if (!link) return undefined;
+  const locEl = link.child('location') ?? link.child('locationURI');
+  if (!locEl) return undefined;
+  const uri = makeLocationUri(projectRoot, newTarget);
+  // MRS1-style <location> elements must become <locationURI> (the same
+  // conversion repairLinkedResources applies) — a plain relative <location>
+  // would resolve against the wrong base
+  locEl.name = 'locationURI';
+  locEl.text = uri;
+  saveProjectFile(projectRoot, p);
+  return { name: link.child('name')?.text ?? name, type: 2, locationUri: uri, location: resolveLocationUri(projectRoot, uri), element: link };
+}
+
 export function saveProjectFile(projectRoot: string, p: MrsProjectFile): void {
   fs.writeFileSync(projectRoot + '/.project', serializeXml(p.root), 'utf-8');
+}
+
+/**
+ * Logically-removed resources — the `.project filteredResources` filter
+ * list (Eclipse standard, same storage MRS2 uses for its Remove command):
+ * entries are hidden from the project tree AND excluded from the build
+ * scan, while the files stay on disk. Structure per entry:
+ *   <filter><name>parent-logic-path</name><type>6|10</type><matcher>
+ *   <id>org.eclipse.ui.ide.multiFilter</id>
+ *   <arguments>1.0-name-matches-false-false-<basename></arguments></matcher>
+ */
+export interface RemovedResource {
+  /** parent folder's workspace-relative logic path ('' = project root) */
+  parentLogic: string;
+  /** resource basename */
+  name: string;
+  isFolder: boolean;
+}
+
+const MULTI_FILTER_ID = 'org.eclipse.ui.ide.multiFilter';
+
+function filteredListElement(projectRoot: string, create: boolean): { file: MrsProjectFile; pd: XElement; list: XElement } | undefined {
+  const file = readProjectFile(projectRoot);
+  const pd = file.root.child('projectDescription')!;
+  let list = pd.child('filteredResources');
+  if (!list) {
+    if (!create) return undefined;
+    list = new XElement('filteredResources');
+    const anchor = pd.child('linkedResources');
+    if (anchor) {
+      const idx = pd.children.indexOf(anchor);
+      pd.children.splice(idx + 1, 0, list);
+      list.parent = pd;
+    } else {
+      pd.append(list);
+    }
+  }
+  return { file, pd, list };
+}
+
+/** all logically-removed resources of a project */
+export function listRemovedResources(projectRoot: string): RemovedResource[] {
+  const holder = filteredListElement(projectRoot, false);
+  if (!holder) return [];
+  const out: RemovedResource[] = [];
+  for (const filter of holder.list.childrenNamed('filter')) {
+    const nameEl = filter.child('name');
+    const typeEl = filter.child('type');
+    const matcher = filter.child('matcher');
+    const args = matcher?.child('arguments')?.text ?? '';
+    const m = args.match(/^1\.0-name-matches-false-false-(.*)$/s);
+    if (!nameEl || !typeEl || !m) continue; // foreign filter — leave untouched
+    out.push({
+      parentLogic: nameEl.text,
+      name: m[1],
+      isFolder: typeEl.text === '10' || typeEl.text === '26',
+    });
+  }
+  return out;
+}
+
+/** hide a resource from the tree and the build scan (idempotent) */
+export function appendRemovedResource(projectRoot: string, parentLogic: string, name: string, isFolder: boolean): void {
+  const existing = listRemovedResources(projectRoot);
+  if (existing.some((r) => r.parentLogic === parentLogic && r.name === name && r.isFolder === isFolder)) return;
+  const holder = filteredListElement(projectRoot, true)!;
+  const filter = new XElement('filter');
+  filter.append(new XElement('name')).text = parentLogic;
+  filter.append(new XElement('type')).text = isFolder ? '10' : '6';
+  const matcher = new XElement('matcher');
+  matcher.append(new XElement('id')).text = MULTI_FILTER_ID;
+  matcher.append(new XElement('arguments')).text = `1.0-name-matches-false-false-${name}`;
+  filter.append(matcher);
+  holder.list.append(filter);
+  saveProjectFile(projectRoot, holder.file);
+}
+
+/** make a removed resource visible/active again (no-op when absent) */
+export function clearRemovedResource(projectRoot: string, parentLogic: string, name: string, isFolder: boolean): void {
+  const holder = filteredListElement(projectRoot, false);
+  if (!holder) return;
+  let removed = false;
+  for (const filter of [...holder.list.childrenNamed('filter')]) {
+    const parent = filter.child('name')?.text;
+    const type = filter.child('type')?.text;
+    const args = filter.child('matcher')?.child('arguments')?.text ?? '';
+    const m = args.match(/^1\.0-name-matches-false-false-(.*)$/s);
+    if (parent === parentLogic && m && m[1] === name && (type === '10' || type === '26') === isFolder) {
+      holder.list.removeChild(filter);
+      removed = true;
+    }
+  }
+  if (removed) {
+    if (!holder.list.children.length) holder.pd.removeChild(holder.list);
+    saveProjectFile(projectRoot, holder.file);
+  }
 }
 
 const NATURE_CXX = 'org.eclipse.cdt.core.cxxnature';

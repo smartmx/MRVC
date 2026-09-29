@@ -279,6 +279,10 @@ export function commonOptions(cp: Cproject, toolchainName: string): string {
 interface ResolveChoice {
   /** drop entries whose unresolvable `${macro}` would leak into the flags */
   dropUnresolved: boolean;
+  /** drop resolved entries whose target does not exist on disk — MRS
+   * drops missing include dirs (FreeRTOS golden emits 7 of 8 -I entries,
+   * dropping the APP entry whose folder is absent from the EVT tree) */
+  dropMissing?: boolean;
 }
 
 function resolveList(cp: Cproject, suffix: string, quotedKeep: (raw: string) => string, choice: ResolveChoice = { dropUnresolved: false }): string[] {
@@ -287,6 +291,9 @@ function resolveList(cp: Cproject, suffix: string, quotedKeep: (raw: string) => 
   for (const raw of cp.listOption(suffix).values) {
     const abs = convertLogicToFullPath(cp.projectRoot, cp.projectName, raw, linked);
     if (abs) {
+      if (choice.dropMissing && !fs.existsSync(abs)) {
+        continue; // MRS drops missing include dirs (FreeRTOS golden evidence)
+      }
       // a resolved path wins even when not on disk: MRS2 emits such -I/-T
       // entries and gcc tolerates/errs on them far better than a raw
       // unresolved ${workspace_loc} string ever would
@@ -345,7 +352,7 @@ export function cCompilerOptions(cp: Cproject, skipIncludes = false): string {
     if (u) t += ` -U${u}`;
   }
   if (!skipIncludes) {
-    for (const i of resolveList(cp, 'c.compiler.include.paths', (v) => v, { dropUnresolved: true })) {
+    for (const i of resolveList(cp, 'c.compiler.include.paths', (v) => v, { dropUnresolved: true, dropMissing: true })) {
       t += ` -I"${i}"`;
     }
     for (const i of resolveList(cp, 'c.compiler.include.systempaths', (v) => v, { dropUnresolved: true })) {
@@ -402,7 +409,7 @@ export function cppCompilerOptions(cp: Cproject, skipIncludes = false): string {
     if (u) t += ` -U${u}`;
   }
   if (!skipIncludes) {
-    for (const i of resolveList(cp, 'cpp.compiler.include.paths', (v) => v, { dropUnresolved: true })) {
+    for (const i of resolveList(cp, 'cpp.compiler.include.paths', (v) => v, { dropUnresolved: true, dropMissing: true })) {
       t += ` -I"${i}"`;
     }
     for (const i of resolveList(cp, 'cpp.compiler.include.systempaths', (v) => v, { dropUnresolved: true })) {
@@ -494,7 +501,7 @@ export function assemblerOptions(cp: Cproject, skipIncludes = false): string {
     if (u) t += ` -U${u}`;
   }
   if (!skipIncludes) {
-    for (const i of resolveList(cp, 'assembler.include.paths', (v) => v, { dropUnresolved: true })) {
+    for (const i of resolveList(cp, 'assembler.include.paths', (v) => v, { dropUnresolved: true, dropMissing: true })) {
       t += ` -I"${i}"`;
     }
     for (const i of resolveList(cp, 'assembler.include.systempaths', (v) => v, { dropUnresolved: true })) {

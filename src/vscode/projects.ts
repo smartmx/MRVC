@@ -8,7 +8,7 @@ import * as path from 'path';
 import { Cproject } from '../core/cproject';
 import { MrsProjectFile, readProjectFile, linkedFolderMap } from '../core/projectFile';
 import { readTemplate, TemplateData } from '../core/templateFile';
-import { locateInstall, MrsInstall, selectToolchain, ToolchainInfo } from '../core/toolchain';
+import { locateInstall, mergeCustomToolchains, CustomToolchain, MrsInstall, selectToolchain, ToolchainInfo } from '../core/toolchain';
 import { findProjectRoots } from '../core/discover';
 import { parseSolution } from '../core/solution';
 
@@ -443,7 +443,22 @@ export class ProjectStore implements vscode.Disposable {
       srcWatcher.onDidChange(bump),
       srcWatcher.onDidCreate(bump),
       srcWatcher.onDidDelete(bump),
+      ...this.watchBuildDir(key, root, bump),
     ]);
+  }
+
+  /**
+   * Build-output watcher: the output directory's contents (.o/.hex/...) and
+   * its own existence are invisible to both watchers above, yet deletions
+   * from the Explorer or the OS must refresh the tree (the products node
+   * renders only while the directory exists). The '{obj,obj/**}' glob
+   * matches the directory itself too, and a build's file storm collapses
+   * into the same debounced refresh as source changes.
+   */
+  private watchBuildDir(key: string, root: string, bump: () => void): vscode.Disposable[] {
+    const outName = this.projects.get(key)?.cproject.configName ?? 'obj';
+    const outWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, `{${outName},${outName}/**}`));
+    return [outWatcher, outWatcher.onDidChange(bump), outWatcher.onDidCreate(bump), outWatcher.onDidDelete(bump)];
   }
 
   /**
@@ -493,5 +508,11 @@ export function msg(e: unknown): string {
 
 export function getInstall(): MrsInstall | null {
   const cfg = vscode.workspace.getConfiguration('mrvc');
-  return locateInstall(cfg.get<string>('mrs2InstallPath'));
+  const install = locateInstall(cfg.get<string>('mrs2InstallPath'));
+  if (!install) return null;
+  // user-provided toolchains (mrvc.customToolchains) override same-named
+  // MRS2-installed ones — every consumer (build, IntelliSense, flash,
+  // CMake) resolves toolchains through this function
+  const custom = cfg.get<CustomToolchain[]>('customToolchains', []);
+  return mergeCustomToolchains(install, custom);
 }

@@ -74,7 +74,7 @@ const check = (name, cond) => {
   if (!cond) failures++;
 };
 
-const PROJ = 'E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED';
+const PROJ = 'F:/CH585/EVT/V1_2/EXAM/LED';
 // build the stub store from the REAL project files so render() exercises
 // the genuine option model
 const { Cproject } = require(path.join(__dirname, '..', 'out', 'core', 'cproject.js'));

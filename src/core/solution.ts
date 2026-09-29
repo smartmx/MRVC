@@ -70,8 +70,69 @@ export function writeSolution(file: string, projectRoots: string[], buildOrder?:
   fs.writeFileSync(file, lines.join('\r\n') + '\r\n', 'utf-8');
 }
 
-export function parseSolution(file: string): ParsedSolution {
-  const dir = path.dirname(file);
+/**
+ * Append member lines for new project roots to an existing .wvsln —
+ * MRS2 addProjectToSolution semantics: existing content (toolchain lines,
+ * BuildOrder=, current members) stays byte-identical, only the new member
+ * lines are appended. Duplicate members (same resolved directory,
+ * case-insensitive on Windows) are not added twice. `parse` may be passed
+ * by the caller to avoid a redundant re-read.
+ */
+export function appendSolutionMembers(file: string, projectRoots: string[], parse: (f: string) => ParsedSolution = parseSolution): string[] {
+  const parsed = parse(file);
+  const added: string[] = [];
+  let lines: string[];
+  try {
+    lines = fs.readFileSync(file, 'utf-8').split(/\r?\n/);
+  } catch {
+    lines = [];
+  }
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  for (const root of projectRoots) {
+    let line = path.relative(file, root);
+    if (!line || path.isAbsolute(line)) line = root;
+    line = line.split(path.sep).join('\\');
+    const resolved = path.isAbsolute(line) ? path.normalize(line) : path.resolve(file, line);
+    const key = CASE_FOLD ? resolved.toLowerCase() : resolved;
+    if (parsed.entries.some((e) => (CASE_FOLD ? e.resolved.toLowerCase() : e.resolved) === key)) continue;
+    lines.push(line);
+    parsed.entries.push({ raw: line, resolved, exists: true });
+    added.push(root);
+  }
+  if (added.length) fs.writeFileSync(file, lines.join('\r\n') + '\r\n', 'utf-8');
+  return added;
+}
+
+/**
+ * Rewrite ONLY the BuildOrder line in place, preserving every other line
+ * byte-for-byte — mirrors MRS2's recordBuildOrderToSolution (line-array
+ * rebuild; a missing BuildOrder line is inserted after the first line, the
+ * conventional toolchain-block position). `order` carries project names.
+ */
+export function recordBuildOrder(file: string, order: string[]): void {
+  const lines = fs.readFileSync(file, 'utf-8').split(/\r?\n/);
+  const orderLine = `BuildOrder=${order.join(',')}`;
+  const out: string[] = [];
+  let inserted = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith('BuildOrder=')) {
+      out.push(orderLine);
+      inserted = true;
+      continue;
+    }
+    out.push(line);
+    // MRS2 inserts the line right after the first line when absent
+    if (i === 0 && !inserted) {
+      out.push(orderLine);
+      inserted = true;
+    }
+  }
+  if (!inserted) out.push(orderLine);
+  fs.writeFileSync(file, out.join('\r\n'), 'utf-8');
+}
+
+export function parseSolution(file: string): ParsedSolution {  const dir = path.dirname(file);
   const raw = fs.readFileSync(file, 'utf-8');
   const configLines: string[] = [];
   let buildOrder: string[] | undefined;

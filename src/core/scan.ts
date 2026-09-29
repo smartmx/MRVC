@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Cproject } from './cproject';
 import { toPosix } from './macros';
+import { listRemovedResources } from './projectFile';
 
 export const C_SOURCE_EXTS = ['c', 's', 'S'];
 export const CPP_SOURCE_EXTS = ['c', 's', 'S', 'cpp', 'C', 'cc', 'cxx'];
@@ -44,12 +45,20 @@ export function scanSources(cp: Cproject): LogicDirMap {
 
   const { rootTokens, dirTokens } = exclusionTokens(cp);
 
+  // logically-removed resources (.project filteredResources — MRS2's Remove
+  // command) are invisible to the tree AND to the build: skip matches here
+  const removed = listRemovedResources(cp.projectRoot).map((r) =>
+    (r.parentLogic ? toPosix(r.parentLogic) + '/' : '') + r.name
+  );
+  const removedSet = new Set(removed);
+
   const addFile = (logicName: string, fullpath: string) => {
-    const dir = path.posix.dirname(toPosix(logicName));
+    const l = toPosix(logicName);
+    if (removedSet.has(l)) return; // logically removed (filteredResources)
+    const dir = path.posix.dirname(l);
     const key = dir === '.' ? '' : dir;
     if (!result.has(key)) result.set(key, []);
     const arr = result.get(key)!;
-    const l = toPosix(logicName);
     if (arr.some((f) => f.logicName === l)) return; // dedupe (named entry under root)
     arr.push({
       logicName: l,

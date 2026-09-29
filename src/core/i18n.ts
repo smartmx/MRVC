@@ -1,0 +1,248 @@
+/**
+ * Minimal i18n for MRVC's runtime UI strings (messages, prompts, tree
+ * descriptions). English is the source; `zh` translations follow MRS2's
+ * wording where its lang/i18n.js and NLS titles cover the same concept
+ * (构建工程/重新加载工程/请选择文件夹/...).
+ *
+ * package.json titles (commands/menus) are static manifests and stay
+ * English — matching MRS2's English titles; only runtime strings switch.
+ * Selection: mrvc.language setting ('auto' follows VSCode's UI language,
+ * 'en' / 'zh-cn' force one), read once at activation.
+ */
+let current: 'en' | 'zh-cn' = 'en';
+
+export type Lang = 'en' | 'zh-cn';
+
+/** apply the effective language (called once at activation) */
+export function setLanguage(lang: Lang): void {
+  current = lang;
+}
+
+export function getLanguage(): Lang {
+  return current;
+}
+
+/** true when VSCode's UI language is Chinese (for mrvc.language=auto) */
+export function vscodeLanguageIsChinese(envLanguage: string | undefined): boolean {
+  return !!envLanguage && /^zh/i.test(envLanguage);
+}
+
+const strings: Record<string, { en: string; 'zh-cn': string }> = {
+  // generic
+  ok: { en: 'OK', 'zh-cn': '确定' },
+  cancel: { en: 'Cancel', 'zh-cn': '取消' },
+  yes: { en: 'Yes', 'zh-cn': '是' },
+  no: { en: 'No', 'zh-cn': '否' },
+  overwrite: { en: 'Overwrite', 'zh-cn': '覆盖' },
+  remove: { en: 'Remove', 'zh-cn': '移除' },
+  delete: { en: 'Delete', 'zh-cn': '删除' },
+  continue: { en: 'Continue', 'zh-cn': '继续' },
+
+  // projects / store
+  noProjects: { en: 'No MRS project loaded.', 'zh-cn': '尚未加载任何 MRS 工程。' },
+  noActiveProject: { en: 'No active MRS project.', 'zh-cn': '没有活动 MRS 工程。' },
+  pickProject: { en: 'Select project', 'zh-cn': '选择工程' },
+  installNotFound: {
+    en: 'MRS2 (MounRiver Studio 2) installation not found — set "mrvc.mrs2InstallPath" to your MRS2 install folder.',
+    'zh-cn': '未找到 MRS2（MounRiver Studio 2）安装目录——请在设置 "mrvc.mrs2InstallPath" 中指定 MRS2 安装文件夹。',
+  },
+  noToolchain: {
+    en: 'No RISC-V toolchain found. Check the "mrvc.mrs2InstallPath" setting — it must point to your MRS2 (MounRiver Studio 2) installation folder.',
+    'zh-cn': '未找到 RISC-V 工具链。请检查设置 "mrvc.mrs2InstallPath"——它必须指向 MRS2（MounRiver Studio 2）的安装文件夹。',
+  },
+  makeNotFound: { en: 'make.exe not found under the MounRiver installation ({0})', 'zh-cn': '在 MounRiver 安装目录下未找到 make.exe（{0}）' },
+  makefileGenFailed: { en: 'Makefile generation failed: {0}', 'zh-cn': 'Makefile 生成失败：{0}' },
+  neverBuilt: { en: 'MRVC: "{0}" has never been built — nothing to clean.', 'zh-cn': 'MRVC：" {0} " 尚未编译过——没有可清理的内容。' },
+  rebuildCleanFailed: { en: 'MRVC: rebuild aborted — clean failed (exit {0}).', 'zh-cn': 'MRVC：重建中止——清理失败（退出码 {0}）。' },
+  buildFailedTask: { en: 'MRVC: build failed for "{0}" ({1})', 'zh-cn': 'MRVC：" {0} " 编译失败（{1}）' },
+  taskFailedToStart: { en: 'task failed to start', 'zh-cn': '任务未能启动' },
+  nothingToClean: { en: 'nothing to clean', 'zh-cn': '无可清理内容' },
+  noOutputDir: { en: 'no output directory', 'zh-cn': '无输出目录' },
+  outputDirRemoved: { en: 'output directory removed', 'zh-cn': '输出目录已删除' },
+  entriesRemoved: { en: '{0} entries removed', 'zh-cn': '已删除 {0} 项' },
+
+  // tree
+  noMrsProjectNode: { en: 'No MRS project', 'zh-cn': '无 MRS 工程' },
+  workspaceFiles: { en: 'Workspace Files', 'zh-cn': '工作区文件' },
+  solution: { en: 'solution', 'zh-cn': '解决方案' },
+  excludedTooltip: { en: 'Excluded from build', 'zh-cn': '已从编译中排除' },
+  kernelLine: { en: 'kernel {0} (master) · mate {1}', 'zh-cn': '内核 {0}（主核）· 伴核 {1}' },
+
+  // open project / folder
+  openMrsProject: { en: 'Open MRS Project', 'zh-cn': '打开 MRS 工程' },
+  openMrsFolder: { en: 'Open MRS Folder', 'zh-cn': '打开 MRS 文件夹' },
+  allFiles: { en: 'All Files', 'zh-cn': '所有文件' },
+  mrsProjectFiles: { en: 'MRS Project', 'zh-cn': 'MRS 工程' },
+  mrsSolutionFiles: { en: 'MRS Solution', 'zh-cn': 'MRS 解决方案' },
+
+  // solution lifecycle
+  needSolution: { en: 'To add a project, open a solution first!', 'zh-cn': '请先打开解决方案，然后才能添加工程！' },
+  needSolutionOrder: { en: 'To set the build order, open a solution first!', 'zh-cn': '请先打开解决方案，然后才能设置编译顺序！' },
+  alreadyMember: { en: 'MRVC: those projects are already solution members.', 'zh-cn': 'MRVC：这些工程已经是解决方案成员。' },
+  addedToSolution: { en: 'MRVC: {0} project(s) added to "{1}".', 'zh-cn': 'MRVC：已将 {0} 个工程添加到" {1} "。' },
+  orderNeedTwo: { en: 'MRVC: a build order needs at least two members.', 'zh-cn': 'MRVC：设置编译顺序至少需要两个成员工程。' },
+  orderPick: { en: 'Build order — pick #{0} ({1} left; press Escape to finish with the current order)', 'zh-cn': '编译顺序——选择第 {0} 个（剩 {1} 个；按 Esc 以当前顺序结束）' },
+  orderUnchanged: { en: 'MRVC: build order unchanged.', 'zh-cn': 'MRVC：编译顺序未变化。' },
+  orderRecorded: { en: 'MRVC: build order recorded — {0}', 'zh-cn': 'MRVC：编译顺序已记录——{0}' },
+  orderRecordFailed: { en: 'MRVC: recording build order failed — {0}', 'zh-cn': 'MRVC：记录编译顺序失败——{0}' },
+  addFailed: { en: 'MRVC: adding to solution failed — {0}', 'zh-cn': 'MRVC：添加到解决方案失败——{0}' },
+  openProject: { en: 'Open Project', 'zh-cn': '打开工程' },
+  openFolderTitle: { en: 'Open Folder', 'zh-cn': '打开文件夹' },
+  searchProjects: { en: 'MRVC: searching projects…', 'zh-cn': 'MRVC：正在搜索工程…' },
+
+  // cmake
+  cmakeNoToolchain: { en: 'No RISC-V toolchain found — check "mrvc.mrs2InstallPath".', 'zh-cn': '未找到 RISC-V 工具链——请检查 "mrvc.mrs2InstallPath"。' },
+  cmakeGenerated: { en: 'MRVC: CMakeLists.txt generated ({0} sources, {1} include dirs).', 'zh-cn': 'MRVC：CMakeLists.txt 已生成（{0} 个源文件，{1} 个包含目录）。' },
+  cmakeGenFailed: { en: 'MRVC: CMake generation failed — {0}', 'zh-cn': 'MRVC：CMake 生成失败——{0}' },
+  cmakeExportTitle: { en: 'Export folder for "{0}" (a subfolder is created)', 'zh-cn': '为" {0} "选择导出位置（将创建子文件夹）' },
+  cmakeExportHere: { en: 'Export here', 'zh-cn': '在此导出' },
+  cmakeExists: { en: '"{0}" already exists. Overwrite?', 'zh-cn': " {0} 已存在。是否覆盖？" },
+  cmakeExported: { en: 'MRVC: exported to {0} — builds with cmake -B build -G "Unix Makefiles".', 'zh-cn': 'MRVC：已导出到 {0}——使用 cmake -B build -G "Unix Makefiles" 构建。' },
+  cmakeOpenFolder: { en: 'Open Folder', 'zh-cn': '打开文件夹' },
+  cmakeProgress: { en: 'MRVC: exporting {0} as CMake project…', 'zh-cn': 'MRVC：正在将 {0} 导出为 CMake 工程…' },
+
+  // linked folders
+  linkedAdded: { en: 'MRVC: linked folder "{0}" added ({1})', 'zh-cn': 'MRVC：链接文件夹" {0} "已添加（{1}）' },
+  linkedCprojWarn: {
+    en: 'MRVC: linked folder added to .project, but .cproject update failed: {0}',
+    'zh-cn': 'MRVC：链接文件夹已写入 .project，但 .cproject 更新失败：{0}',
+  },
+  linkedSelectRemove: { en: 'Select linked folder to remove', 'zh-cn': '选择要移除的链接文件夹' },
+  linkedSelectChange: { en: 'Select linked folder to change', 'zh-cn': '选择要修改的链接文件夹' },
+  linkedNone: { en: 'This project has no linked folders.', 'zh-cn': '该工程没有链接文件夹。' },
+  linkedRemoveConfirm: {
+    en: 'Remove linked folder "{0}" from {1}? (files on disk are not deleted)',
+    'zh-cn': '从 {1} 移除链接文件夹" {0} "？（不会删除磁盘上的文件）',
+  },
+  linkedChanged: { en: 'MRVC: linked folder "{0}" re-pointed to {1}', 'zh-cn': 'MRVC：链接文件夹" {0} "已重新指向 {1}' },
+  linkedNotFound: { en: 'MRVC: linked folder "{0}" not found in {1}.', 'zh-cn': 'MRVC：在 {1} 中未找到链接文件夹" {0} "。' },
+  linkedPrompt: {
+    en: 'New location for linked folder "{0}" — the name (and build references to it) stays unchanged',
+    'zh-cn': '链接文件夹" {0} "的新位置——名称（及其构建引用）保持不变',
+  },
+  cannotLinkSelf: { en: 'Cannot link the project folder itself.', 'zh-cn': '不能链接工程文件夹本身。' },
+  linkFolderName: { en: 'Folder name as shown (and referenced) inside the project', 'zh-cn': '工程内显示（及引用）的文件夹名称' },
+  invalidName: { en: 'Invalid folder name', 'zh-cn': '文件夹名称无效' },
+  addExternalLinked: { en: 'Add external linked folder', 'zh-cn': '添加外部链接文件夹' },
+  linkFolder: { en: 'Link folder', 'zh-cn': '链接文件夹' },
+
+  // file ops
+  nameExists: { en: '"{0}" already exists.', 'zh-cn': '" {0} " 已存在。' },
+  newFile: { en: 'New File', 'zh-cn': '新建文件' },
+  newFolder: { en: 'New Folder', 'zh-cn': '新建文件夹' },
+  enterName: { en: 'Enter a name', 'zh-cn': '请输入名称' },
+  deleteConfirm: { en: 'Are you sure you want to delete "{0}"?', 'zh-cn': '确定要删除" {0} "吗？' },
+  renameTitle: { en: 'Rename', 'zh-cn': '重命名' },
+  pasteNoClipboard: { en: 'MRVC clipboard is empty — copy something first.', 'zh-cn': 'MRVC 剪贴板为空——请先复制内容。' },
+
+  // exclude
+  excludedMsg: { en: 'Excluded from build: {0}', 'zh-cn': '已从编译中排除：{0}' },
+  includedMsg: { en: 'Included in build: {0}', 'zh-cn': '已恢复编译：{0}' },
+
+  // rename project
+  renameProjectPrompt: { en: 'New project display name (folder is not moved)', 'zh-cn': '新的工程显示名（不会移动文件夹）' },
+  syncProjectDone: { en: 'MRVC: project renamed to "{0}".', 'zh-cn': 'MRVC：工程已重命名为" {0} "。' },
+  syncFolderSpaces: {
+    en: 'The folder name contains spaces — rename the folder first (spaces break make targets).',
+    'zh-cn': '文件夹名称包含空格——请先重命名文件夹（空格会破坏 make 目标）。',
+  },
+  syncAlreadySame: { en: 'MRVC: project name already matches the folder name.', 'zh-cn': 'MRVC：工程名已与文件夹名一致。' },
+
+  // flash
+  flashFailed: { en: 'MRVC: download failed for "{0}" (exit code {1}) — see the task output.', 'zh-cn': 'MRVC：" {0} " 下载失败（退出码 {1}）——请查看任务输出。' },
+  firmwareNotFound: { en: 'Firmware file not found: {0}', 'zh-cn': '未找到固件文件：{0}' },
+  selectFirmware: { en: 'Select firmware to download ({0})', 'zh-cn': '选择要下载的固件（{0}）' },
+  openocdNotFound: { en: 'openocd.exe not found: {0}', 'zh-cn': '未找到 openocd.exe：{0}' },
+  openocdCfgNotFound: { en: 'OpenOCD config not found: {0}', 'zh-cn': '未找到 OpenOCD 配置：{0}' },
+  linkUtilityNotFound: { en: 'WCH-LinkUtility.exe not found under the MounRiver installation.', 'zh-cn': '在 MounRiver 安装目录下未找到 WCH-LinkUtility.exe。' },
+
+  // build output
+  noBuildRecord: {
+    en: 'MRVC: no build output recorded for "{0}" yet — build the project first.',
+    'zh-cn': 'MRVC：" {0} " 还没有构建输出记录——请先编译该工程。',
+  },
+
+  // intellisense
+  intellisenseOk: { en: 'MRVC: IntelliSense configuration updated ({0} files from {1} projects).', 'zh-cn': 'MRVC：IntelliSense 配置已更新（来自 {1} 个工程的 {0} 个文件）。' },
+  intellisenseFail: { en: 'MRVC: IntelliSense configuration failed — {0}', 'zh-cn': 'MRVC：IntelliSense 配置失败——{0}' },
+  // build / batch
+  solutionNoMembers: { en: 'MRVC: solution "{0}" has no loadable projects.', 'zh-cn': 'MRVC：解决方案" {0} "没有可加载的工程。' },
+  batchRunning: { en: 'MRVC: another batch operation is already running.', 'zh-cn': 'MRVC：已有批量操作在执行中。' },
+  batchCancelled: { en: 'MRVC: {0} cancelled — {1}/{2} OK, {3} failed.', 'zh-cn': 'MRVC：{0} 已取消——{1}/{2} 成功，{3} 失败。' },
+  batchFinishedFailed: {
+    en: 'MRVC: {0} finished — {1}/{2} OK, {3} failed ({4}). See Problems panel and "MRVC Build All" output.',
+    'zh-cn': 'MRVC：{0} 已完成——{1}/{2} 成功，{3} 失败（{4}）。请查看问题面板和"MRVC Build All"输出。',
+  },
+  batchFinishedAll: { en: 'MRVC: {0} finished — all {1} projects OK ({2}s).', 'zh-cn': 'MRVC：{0} 已完成——全部 {1} 个工程成功（{2} 秒）。' },
+  buildFailedSingle: { en: 'MRVC: build failed for "{0}" ({1})', 'zh-cn': 'MRVC：" {0} "编译失败（{1}）' },
+  noProjectsLoaded: {
+    en: 'No MRS project loaded. Use "MRVC: Open MRS Project" first.',
+    'zh-cn': '尚未加载任何 MRS 工程。请先使用"MRVC: Open MRS Project"。',
+  },
+  downloadFailed: {
+    en: 'MRVC: download failed for "{0}" (exit code {1}) — see the task output.',
+    'zh-cn': 'MRVC：" {0} "下载失败（退出码 {1}）——请查看任务输出。',
+  },
+
+  // remove / restore (filteredResources)
+  removedHidden: {
+    en: 'MRVC: "{0}" removed from the project (restorable via Restore Removed Resources).',
+    'zh-cn': 'MRVC：" {0} " 已从工程中移除（可通过"恢复已移除的资源"找回）。',
+  },
+  nothingRemoved: { en: 'MRVC: "{0}" has no removed resources.', 'zh-cn': 'MRVC：" {0} " 没有已移除的资源。' },
+  restorePick: { en: 'Select removed resources of "{0}" to restore (multi-select)', 'zh-cn': '选择要恢复的" {0} "已移除资源（可多选）' },
+  restoredCount: { en: 'MRVC: {0} resource(s) restored.', 'zh-cn': 'MRVC：已恢复 {0} 个资源。' },
+  restoreRemoved: { en: 'Restore Removed Resources', 'zh-cn': '恢复已移除的资源' },
+  renameKeyRestore: { en: 'Rename "{0}"', 'zh-cn': '重命名" {0} "' },
+
+  // file ops
+  copied: { en: 'MRVC: copied "{0}" (use Paste on a folder)', 'zh-cn': 'MRVC：已复制" {0} "（在文件夹上使用粘贴）' },
+  pasted: { en: 'MRVC: pasted {0}', 'zh-cn': 'MRVC：已粘贴 {0}' },
+  pasteFailed: { en: 'MRVC: paste failed — {0}', 'zh-cn': 'MRVC：粘贴失败——{0}' },
+  newFileIn: { en: 'New file in {0}', 'zh-cn': '在 {0} 中新建文件' },
+  newFolderIn: { en: 'New folder in {0}', 'zh-cn': '在 {0} 中新建文件夹' },
+  fileNameHint: { en: 'file name (e.g. main.c)', 'zh-cn': '文件名（如 main.c）' },
+  folderName: { en: 'folder name', 'zh-cn': '文件夹名称' },
+  invalidNameKey: { en: 'Invalid name', 'zh-cn': '名称无效' },
+  deletedMsg: { en: 'MRVC: deleted {0}', 'zh-cn': 'MRVC：已删除 {0}' },
+  newProjectName: { en: 'new project name', 'zh-cn': '新工程名称' },
+  invalidProjectName: {
+    en: "Invalid project name (no spaces or \\ / : * ? \" < > |)",
+    'zh-cn': "工程名称无效（不能含空格或 \\ / : * ? \" < > |）",
+  },
+
+  // rename project
+  renameProjectTitle: { en: 'Rename project "{0}"', 'zh-cn': '重命名工程" {0} "' },
+  renameFailed: { en: 'MRVC: rename failed — {0}', 'zh-cn': 'MRVC：重命名失败——{0}' },
+  projectRenamed: { en: 'MRVC: project "{0}" renamed to "{1}".', 'zh-cn': 'MRVC：工程" {0} "已重命名为" {1} "。' },
+  folderNameInvalid: { en: 'MRVC: the folder name "{0}" contains characters not allowed in a project name.', 'zh-cn': 'MRVC：文件夹名称" {0} "包含工程名不允许的字符。' },
+  syncFailed: { en: 'MRVC: sync failed — {0}', 'zh-cn': 'MRVC：同步失败——{0}' },
+  syncDone: { en: 'MRVC: project name synced to folder name ("{0}").', 'zh-cn': 'MRVC：工程名已同步为文件夹名（" {0} "）。' },
+
+  // exclude / include
+  excludeApplies: {
+    en: 'MRVC: Exclude From Build applies to source files and folders in a project.',
+    'zh-cn': 'MRVC：Exclude From Build 仅适用于工程内的源文件和文件夹。',
+  },
+  includeApplies: {
+    en: 'MRVC: Include From Build applies to excluded files and folders.',
+    'zh-cn': 'MRVC：Include From Build 仅适用于已排除的文件和文件夹。',
+  },
+  alreadyExcluded: { en: 'MRVC: "{0}" is already excluded from build.', 'zh-cn': 'MRVC：" {0} " 已从编译中排除。' },
+  excludeFailed: { en: 'MRVC: exclude failed — {0}', 'zh-cn': 'MRVC：排除失败——{0}' },
+  notExcluded: { en: 'MRVC: "{0}" is not excluded from build.', 'zh-cn': 'MRVC：" {0} " 不在编译排除清单中。' },
+  includeFailed: { en: 'MRVC: include failed — {0}', 'zh-cn': 'MRVC：恢复编译失败——{0}' },
+
+  // sync page
+  syncingSettings: { en: 'MRVC: syncing {0} setting(s)', 'zh-cn': 'MRVC：正在同步 {0} 项设置' },
+};
+
+/** translate a key with optional {0}/{1} substitution */
+export function t(key: string, ...args: (string | number)[]): string {
+  const entry = strings[key];
+  let text = entry ? entry[current] : key;
+  args.forEach((a, i) => {
+    text = text.replace(`{${i}}`, String(a));
+  });
+  return text;
+}

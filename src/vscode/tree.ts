@@ -6,6 +6,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ProjectStore, MrsProject, MrsSolution } from './projects';
 import { isLogicExcluded } from '../core/scan';
+import { RemovedResource, listRemovedResources } from '../core/projectFile';
+import { toPosix } from '../core/macros';
+import { t } from '../core/i18n';
 
 type NodeType = 'project' | 'solution' | 'linkedFolder' | 'folder' | 'file' | 'products' | 'empty' | 'loose';
 
@@ -230,7 +233,7 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       const memberKeys = new Set(solutions.flatMap((s) => s.members.map((m) => ProjectStore.key(m.root))));
       const standalone = this.store.all.filter((p) => !memberKeys.has(ProjectStore.key(p.root)));
       if (!solutions.length && !standalone.length) {
-        return [new TreeNode('empty', 'No MRS project', vscode.TreeItemCollapsibleState.None)];
+        return [new TreeNode('empty', t('noMrsProjectNode'), vscode.TreeItemCollapsibleState.None)];
       }
       const nodes: TreeNode[] = solutions.map(
         (s) => new TreeNode('solution', s.name, vscode.TreeItemCollapsibleState.Expanded, s.dir, undefined, undefined, s)
@@ -242,7 +245,7 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       }
       const loose = this.looseFileNodes();
       if (loose.length) {
-        nodes.push(new TreeNode('loose', 'Workspace Files', vscode.TreeItemCollapsibleState.Collapsed));
+        nodes.push(new TreeNode('loose', t('workspaceFiles'), vscode.TreeItemCollapsibleState.Collapsed));
       }
       return nodes;
     }
@@ -287,12 +290,14 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         // ignore
       }
       const linkedNames = new Set(proj.projectFile.linkedResources.map((l) => l.name));
+      // logically-removed resources (filteredResources) are invisible
+      const removedRoot = new Set(listRemovedResources(proj.root).filter((r) => !r.parentLogic).map((r) => r.name));
       const isNodeExcluded = (fsPath: string): boolean => {
         const logic = proj.logicPathOf(fsPath);
         return !!logic && isLogicExcluded(proj.cproject, logic);
       };
       const realFolders = entries
-        .filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'obj' && !linkedNames.has(e.name))
+        .filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'obj' && !linkedNames.has(e.name) && !removedRoot.has(e.name))
         .map((e) => ({ e, full: path.join(proj.root, e.name) }))
         .sort((a, b) => {
           const ex = (isNodeExcluded(a.full) ? 1 : 0) - (isNodeExcluded(b.full) ? 1 : 0);
@@ -304,7 +309,7 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       // must show them too; project management files (.wvproj/.template/
       // .launch) stay hidden; excluded ones sink below the included ones
       const rootFiles = entries
-        .filter((e) => e.isFile() && !e.name.startsWith('.') && !/\.(wvproj|template|launch)$/i.test(e.name))
+        .filter((e) => e.isFile() && !e.name.startsWith('.') && !/\.(wvproj|template|launch)$/i.test(e.name) && !removedRoot.has(e.name))
         .map((e) => ({ e, full: path.join(proj.root, e.name) }))
         .sort((a, b) => {
           const ex = (isNodeExcluded(a.full) ? 1 : 0) - (isNodeExcluded(b.full) ? 1 : 0);
@@ -312,7 +317,11 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         })
         .map(({ e, full }) => new TreeNode('file', e.name, vscode.TreeItemCollapsibleState.None, full, proj));
       nodes.push(...rootFiles);
-      nodes.push(new TreeNode('products', proj.cproject.configName, vscode.TreeItemCollapsibleState.Collapsed, proj.buildDir, proj));
+      // the output node only exists while the directory does — deleting obj
+      // (MRVC menu or Explorer) must make it disappear on the next render
+      if (fs.existsSync(proj.buildDir)) {
+        nodes.push(new TreeNode('products', proj.cproject.configName, vscode.TreeItemCollapsibleState.Collapsed, proj.buildDir, proj));
+      }
       return nodes;
     }
 
@@ -346,8 +355,15 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         const logic = proj.logicPathOf(fsPath);
         return !!logic && isLogicExcluded(proj.cproject, logic);
       };
+      // logically-removed entries under THIS folder are invisible
+      const parentLogic = toPosix(proj.logicPathOf(el.fsPath!) ?? '');
+      const removedHere = new Set(
+        listRemovedResources(proj.root)
+          .filter((r) => r.parentLogic === parentLogic)
+          .map((r) => r.name)
+      );
       return entries
-        .filter((e) => !e.name.startsWith('.'))
+        .filter((e) => !e.name.startsWith('.') && !removedHere.has(e.name))
         .map((e) => ({ e, full: path.join(el.fsPath!, e.name) }))
         .sort((a, b) => {
           const ex = (isNodeExcluded(a.full) ? 1 : 0) - (isNodeExcluded(b.full) ? 1 : 0);

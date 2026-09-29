@@ -8,6 +8,7 @@ import * as path from 'path';
 import { TreeNode } from './tree';
 import { ProjectStore, MrsProject, msg } from './projects';
 import { isLogicExcluded, exclusionFsPaths } from '../core/scan';
+import { t as translate } from '../core/i18n';
 
 interface Target {
   proj: MrsProject;
@@ -26,18 +27,18 @@ function exclusionTarget(node: TreeNode): Target | undefined {
 export async function excludeFromBuild(store: ProjectStore, node?: TreeNode): Promise<void> {
   const t = node && exclusionTarget(node);
   if (!t) {
-    vscode.window.showErrorMessage('MRVC: Exclude From Build applies to source files and folders in a project.');
+    vscode.window.showErrorMessage(translate('excludeApplies'));
     return;
   }
   if (isLogicExcluded(t.proj.cproject, t.logic)) {
-    vscode.window.showInformationMessage(`MRVC: "${t.label}" is already excluded from build.`);
+    vscode.window.showInformationMessage(translate('alreadyExcluded', t.label));
     return;
   }
   try {
     t.proj.cproject.excludeResource(t.logic);
     t.proj.cproject.save();
   } catch (e) {
-    vscode.window.showErrorMessage(`MRVC: exclude failed — ${msg(e)}`);
+    vscode.window.showErrorMessage(translate('excludeFailed', msg(e)));
     return;
   }
   store.reloadProject(t.proj);
@@ -46,18 +47,18 @@ export async function excludeFromBuild(store: ProjectStore, node?: TreeNode): Pr
 export async function includeFromBuild(store: ProjectStore, node?: TreeNode): Promise<void> {
   const t = node && exclusionTarget(node);
   if (!t) {
-    vscode.window.showErrorMessage('MRVC: Include From Build applies to excluded files and folders.');
+    vscode.window.showErrorMessage(translate('includeApplies'));
     return;
   }
   if (!isLogicExcluded(t.proj.cproject, t.logic)) {
-    vscode.window.showInformationMessage(`MRVC: "${t.label}" is not excluded from build.`);
+    vscode.window.showInformationMessage(translate('notExcluded', t.label));
     return;
   }
   try {
     t.proj.cproject.includeResource(t.logic);
     t.proj.cproject.save();
   } catch (e) {
-    vscode.window.showErrorMessage(`MRVC: include failed — ${msg(e)}`);
+    vscode.window.showErrorMessage(translate('includeFailed', msg(e)));
     return;
   }
   store.reloadProject(t.proj);

@@ -3,12 +3,18 @@
  * (cpptools / clangd) with each project's real macros and include paths,
  * taken from the exact same option model the makefile generator uses.
  *
- * Entries are SPLIT by origin:
- *   private — files physically inside the project root (Main.c, User/, ...)
- *   shared  — files reached through linked folders (the shared SRC tree)
- * The active compile_commands.json = the selected project's private entries
- * + the merged shared entries; switching projects only swaps the private
- * part, the shared part stays stable.
+ * Entries are classified by CROSS-PROJECT REFERENCE COUNT (absolute file):
+ *   shared  — compiled by exactly ONE loaded project: its parse parameters
+ *             are deterministic, so the entry goes to _shared.json and the
+ *             file browses correctly under any project context
+ *   context — compiled by SEVERAL projects whose parameters may differ
+ *             (the shared SRC tree with per-project -D/-I): each project
+ *             keeps its own variant; the active project's variants are
+ *             exposed through _active.json and swap on context switch
+ * Every per-project database covers the WHOLE context class (own entries
+ * plus deterministic fallback entries), so _shared ∪ _active contains every
+ * source file at all times — browsing can never hit a "not found in
+ * compile_commands.json" state.
  */
 import * as path from 'path';
 import { Cproject } from './cproject';
@@ -20,11 +26,6 @@ export interface CompileCommandEntry {
   directory: string;
   file: string;
   arguments: string[];
-}
-
-export interface SplitEntries {
-  privateEntries: CompileCommandEntry[];
-  sharedEntries: CompileCommandEntry[];
 }
 
 const ASM_EXTS = new Set(['s', 'S']);
@@ -44,44 +45,89 @@ function kindOf(logicName: string): 'c' | 'cpp' | 'asm' {
   return ASM_EXTS.has(ext) ? 'asm' : CPP_EXTS.has(ext) ? 'cpp' : 'c';
 }
 
-/**
- * One entry per scanned source file, split by origin: files under the
- * project root are PRIVATE, files under any linked folder are SHARED.
- */
-export function buildCompileEntries(cp: Cproject, tc: ToolchainInfo): SplitEntries {
-  const map = scanSources(cp);
-  const out: SplitEntries = { privateEntries: [], sharedEntries: [] };
-  for (const [dir, files] of map.entries()) {
-    const isShared = dir !== '' && cp.linkedFolders.has(dir);
-    for (const f of files) {
-      const e = makeEntry(cp, tc, kindOf(f.logicName), f.fullpath);
-      (isShared ? out.sharedEntries : out.privateEntries).push(e);
-    }
-  }
-  out.privateEntries.sort((a, b) => a.file.localeCompare(b.file));
-  out.sharedEntries.sort((a, b) => a.file.localeCompare(b.file));
-  return out;
+/** win32-stable file identity (case-insensitive absolute path) */
+function fileKey(file: string): string {
+  return path.resolve(file).toLowerCase();
 }
 
 /**
- * Merge shared entries from many projects: dedupe by file; for files that
- * several projects share, merge their argument sets (define/include union)
- * so the shared file parses correctly in every project's context — header
- * guards make the superset safe.
+ * One entry per scanned source file — ALL files the project compiles,
+ * regardless of where they physically live (project root or linked
+ * folder); classification happens later, across projects.
  */
-export function mergeSharedEntries(perProject: CompileCommandEntry[][]): CompileCommandEntry[] {
-  const byFile = new Map<string, CompileCommandEntry>();
-  for (const list of perProject) {
-    for (const e of list) {
-      const prev = byFile.get(e.file);
-      if (!prev) {
-        byFile.set(e.file, { ...e, arguments: [...e.arguments] });
-        continue;
-      }
-      // union of arguments (order-insensitive flags; keep first order then append new)
-      const set = new Set(prev.arguments);
-      for (const a of e.arguments) if (!set.has(a)) prev.arguments.push(a);
+export function buildCompileEntries(cp: Cproject, tc: ToolchainInfo): CompileCommandEntry[] {
+  const map = scanSources(cp);
+  const out: CompileCommandEntry[] = [];
+  for (const [, files] of map.entries()) {
+    for (const f of files) {
+      out.push(makeEntry(cp, tc, kindOf(f.logicName), f.fullpath));
     }
   }
-  return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file));
+  out.sort((a, b) => a.file.localeCompare(b.file));
+  return out;
+}
+
+export interface ReferenceSplit {
+  /** files referenced by exactly one project — their sole entry */
+  sharedEntries: CompileCommandEntry[];
+  /** aligned with the input order: each project's entries for the files
+   * that several projects reference (the context-sensitive class) */
+  contextEntries: CompileCommandEntry[][];
+}
+
+/**
+ * Split every project's entries by how many projects reference each file:
+ * a file compiled by one project only has deterministic parameters and is
+ * always parseable (shared); a file compiled by several projects may need
+ * different parameters per project (context — switched via _active.json).
+ */
+export function partitionByReference(perProject: CompileCommandEntry[][]): ReferenceSplit {
+  const perProjectMaps = perProject.map((list) => {
+    const m = new Map<string, CompileCommandEntry>();
+    for (const e of list) if (!m.has(fileKey(e.file))) m.set(fileKey(e.file), e);
+    return m;
+  });
+  const refCount = new Map<string, number>();
+  for (const m of perProjectMaps) for (const k of m.keys()) refCount.set(k, (refCount.get(k) ?? 0) + 1);
+
+  const sharedEntries: CompileCommandEntry[] = [];
+  for (const m of perProjectMaps) {
+    for (const [k, e] of m) if ((refCount.get(k) ?? 0) === 1) sharedEntries.push(e);
+  }
+  sharedEntries.sort((a, b) => a.file.localeCompare(b.file));
+
+  const contextEntries = perProjectMaps.map((m) => {
+    const list: CompileCommandEntry[] = [];
+    for (const [k, e] of m) if ((refCount.get(k) ?? 0) > 1) list.push(e);
+    list.sort((a, b) => a.file.localeCompare(b.file));
+    return list;
+  });
+  return { sharedEntries, contextEntries };
+}
+
+/**
+ * Turn the per-project context entries into self-sufficient databases:
+ * project i's database = its own context entries PLUS canonical fallback
+ * entries (from the referencing project with the lowest root path) for
+ * every context-class file project i does not compile itself. Each
+ * database therefore covers the entire context class, so copying ANY of
+ * them over _active.json keeps every multi-referenced file resolvable.
+ */
+export function contextDatabases(contextEntries: CompileCommandEntry[][], roots: string[]): CompileCommandEntry[][] {
+  // canonical entry per context-class file: first project in sorted-root order
+  const order = contextEntries.map((_, i) => i).sort((a, b) => roots[a].toLowerCase().localeCompare(roots[b].toLowerCase()));
+  const canonical = new Map<string, CompileCommandEntry>();
+  for (const i of order) {
+    for (const e of contextEntries[i]) {
+      const k = fileKey(e.file);
+      if (!canonical.has(k)) canonical.set(k, e);
+    }
+  }
+  return contextEntries.map((own) => {
+    const ownKeys = new Set(own.map((e) => fileKey(e.file)));
+    const out = [...own];
+    for (const [k, e] of canonical) if (!ownKeys.has(k)) out.push(e);
+    out.sort((a, b) => a.file.localeCompare(b.file));
+    return out;
+  });
 }
