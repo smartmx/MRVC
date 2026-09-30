@@ -199,6 +199,34 @@ if (HAS_LED) {
   const coveredFiles = new Set([...JSON.parse(fs.readFileSync(sharedDbFile(WS), 'utf-8')).map((e) => e.file), ...dbC.map((e) => e.file)]);
   check('coverage: _shared + one database cover every source file', allFiles.size > 0 && [...allFiles].every((f) => coveredFiles.has(f)));
 
+  // ---- failed toolchain: the project's database must not stay stale ----
+  // (the old path skipped the project entirely, leaving its previous
+  // database on disk forever — switchContext copies that stale file on
+  // every selection and nothing ever regenerates it)
+  {
+    const ccDir = dbDir(WS);
+    const dbFailed = path.join(ccDir, dbFileName(proj3, 'proj3'));
+    if (!dbFailed.startsWith(ccDir + path.sep)) throw new Error('containment');
+    fs.writeFileSync(dbFailed, '[{"file":"Z:/stale/leftover.c","arguments":["stale"]}]', 'utf-8');
+    const storeFail = {
+      all: [
+        { root: PROJ, projectName: 'LED', cproject: cp, toolchain: () => tc },
+        { root: proj2, projectName: 'proj2', cproject: cp2, toolchain: () => tc },
+        { root: proj3, projectName: 'proj3', cproject: cp3, toolchain: () => null },
+      ],
+    };
+    ensureIntellisenseConfig(storeFail);
+    const dbF = JSON.parse(fs.readFileSync(dbFailed, 'utf-8'));
+    check('failed toolchain: stale database rewritten, not left behind', Array.isArray(dbF) && dbF.length === entriesA.length);
+    check('failed toolchain: content is the full canonical fallback', dbF.length > 0 && dbF.every((e, i) => e.file === entriesA[i].file));
+    const storeAllFail = {
+      all: [{ root: PROJ, projectName: 'LED', cproject: cp, toolchain: () => null }],
+    };
+    const rFail = ensureIntellisenseConfig(storeAllFail);
+    check('failed toolchain: all-projects-failed does not crash', !rFail.error);
+    check('failed toolchain: all-failed rewrites an (empty) database', JSON.parse(fs.readFileSync(dbFile, 'utf-8')).length === 0);
+  }
+
   // ---- file -> project ownership (editor-open switching) ----
   const owners = store2.all.map((p) => ({
     root: p.root,

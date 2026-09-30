@@ -16,7 +16,7 @@ import { XElement } from '../core/xml';
 export async function addLinkedFolderCmd(store: ProjectStore, proj?: MrsProject): Promise<void> {
   const project = proj ?? store.active;
   if (!project) {
-    vscode.window.showErrorMessage('No active MRS project.');
+    vscode.window.showErrorMessage(t('noActiveProject'));
     return;
   }
   const picks = await vscode.window.showOpenDialog({
@@ -71,9 +71,7 @@ export async function addLinkedFolderCmd(store: ProjectStore, proj?: MrsProject)
     }
     cp.save();
   } catch (e) {
-    vscode.window.showWarningMessage(
-      `MRVC: linked folder added to .project, but .cproject update failed: ${e instanceof Error ? e.message : String(e)}`
-    );
+    vscode.window.showWarningMessage(t('linkedCpUpdateFailed', e instanceof Error ? e.message : String(e)));
   }
 
   store.reloadProject(project);
@@ -185,7 +183,7 @@ export async function removeLinkedFolderCmd(store: ProjectStore, node?: { linked
   }
 
   store.reloadProject(project);
-  vscode.window.showInformationMessage(`MRVC: linked folder "${name}" removed`);
+  vscode.window.showInformationMessage(t('linkedRemoved', name));
 }
 
 export function revealProducts(store: ProjectStore): void {

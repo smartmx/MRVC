@@ -12,7 +12,7 @@ const check = (name, cond) => {
   if (!cond) failures++;
 };
 
-const { sdkRoot, scanTemplates, createProjectFromTemplate } = require('../out/core/newProject.js');
+const { sdkRoot, scanTemplates, createProjectFromTemplate, normalizeParentDirInput } = require('../out/core/newProject.js');
 const { chipDbRoot } = require('../out/core/chipdb.js');
 const { Cproject } = require('../out/core/cproject.js');
 const { scanSources } = require('../out/core/scan.js');
@@ -95,6 +95,17 @@ check("create: single quote refused (O'Brien)", threw.includes('Invalid project 
 const lib = createProjectFromTemplate(rct, { projectName: 'MyLib', parentDir: WS, artifactType: 'lib' });
 check('create: lib artifact project created', fs.existsSync(path.join(WS, 'MyLib', 'MyLib.wvproj')));
 void lib;
+
+// 6. typed parent-folder normalization (the wizard location box) - a bare
+// or slashed drive letter must become a ROOT, never resolve to that drive's
+// current directory; normal paths just lose their trailing separator
+check('normalize: bare drive -> root', normalizeParentDirInput('C:') === 'C:\\');
+check('normalize: drive with backslash -> root kept', normalizeParentDirInput('C:\\') === 'C:\\');
+check('normalize: drive with slash -> root backslash', normalizeParentDirInput('D:/') === 'D:\\');
+check('normalize: doubled separator -> root', normalizeParentDirInput('C:\\\\') === 'C:\\' && normalizeParentDirInput('C://') === 'C:\\');
+check('normalize: plain path trimmed', normalizeParentDirInput('F:/MyProjects/') === 'F:/MyProjects');
+check('normalize: plain path untouched', normalizeParentDirInput('F:\\MyProjects') === 'F:\\MyProjects');
+check('normalize: whitespace trimmed', normalizeParentDirInput('  F:\\x  ') === 'F:\\x');
 
 fs.rmSync(WS, { recursive: true, force: true });
 console.log(failures ? `\n${failures} FAILURES` : '\nall newproject tests passed');

@@ -8,26 +8,28 @@ import * as fs from 'fs';
 import { spawn } from 'child_process';
 import { getInstall } from './projects';
 import { resolveMrsTools } from '../core/mrsTools';
+import { t } from '../core/i18n';
 
 /** start a tool exe detached; missing installations get a clear error */
 function launchTool(exe: string, title: string): void {
   const install = getInstall();
   if (!install) {
-    vscode.window.showErrorMessage(`MRVC: cannot start ${title} — MRS2 installation not found (set mrvc.mrs2InstallPath).`);
+    vscode.window.showErrorMessage(t('mrsToolsNoInstallStart', title));
     return;
   }
   if (!exe || !fs.existsSync(exe)) {
-    vscode.window.showErrorMessage(`MRVC: ${title} not found under the MRS2 installation (${install.resourcesWin32}).`);
+    vscode.window.showErrorMessage(t('mrsToolsNotFound', title, install.resourcesWin32));
     return;
   }
   try {
     const child = spawn(exe, [], { detached: true, stdio: 'ignore', windowsHide: false });
     child.on('error', (e) => {
-      vscode.window.showErrorMessage(`MRVC: failed to start ${title} — ${e.message}`);
+      vscode.window.showErrorMessage(t('mrsToolsStartFailed', title, e.message));
     });
     child.unref();
   } catch (e) {
-    vscode.window.showErrorMessage(`MRVC: failed to start ${title} — ${e instanceof Error ? e.message : String(e)}`);
+    const detail = e instanceof Error ? e.message : String(e);
+    vscode.window.showErrorMessage(t('mrsToolsStartFailed', title, detail));
   }
 }
 
@@ -35,33 +37,33 @@ function launchTool(exe: string, title: string): void {
 function resolveTools(): ReturnType<typeof resolveMrsTools> | null {
   const install = getInstall();
   if (!install) {
-    vscode.window.showErrorMessage('MRVC: MRS2 installation not found — set mrvc.mrs2InstallPath.');
+    vscode.window.showErrorMessage(t('installNotFound'));
     return null;
   }
   return resolveMrsTools(install);
 }
 
 export function ispToolCmd(): void {
-  const t = resolveTools();
-  if (t) launchTool(t.ispStudio, 'WCH In-System Programmer (WchIspStudio)');
+  const tools = resolveTools();
+  if (tools) launchTool(tools.ispStudio, 'WCH In-System Programmer (WchIspStudio)');
 }
 
 export function touchkeyToolCmd(): void {
-  const t = resolveTools();
-  if (t) launchTool(t.touchkeyTool, 'WCH Touchkey Calibrate Tool');
+  const tools = resolveTools();
+  if (tools) launchTool(tools.touchkeyTool, 'WCH Touchkey Calibrate Tool');
 }
 
 export function uiDesignerCmd(): void {
-  const t = resolveTools();
-  if (t) launchTool(t.uiDesigner, 'WCHGUIDesigner');
+  const tools = resolveTools();
+  if (tools) launchTool(tools.uiDesigner, 'WCHGUIDesigner');
 }
 
 export function hexBinToolCmd(): void {
-  const t = resolveTools();
-  if (t) launchTool(t.hexBinStudio, 'HexBin Studio');
+  const tools = resolveTools();
+  if (tools) launchTool(tools.hexBinStudio, 'HexBin Studio');
 }
 
 export function comTransmitCmd(): void {
-  const t = resolveTools();
-  if (t) launchTool(t.comTransmit, 'Serial Port Debug Tool (COMTransmit)');
+  const tools = resolveTools();
+  if (tools) launchTool(tools.comTransmit, 'Serial Port Debug Tool (COMTransmit)');
 }

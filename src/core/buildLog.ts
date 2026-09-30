@@ -19,6 +19,22 @@ export function buildWorkDir(projectRoot: string): string {
   return dir;
 }
 
+/**
+ * Location of the generated build wrapper (mrs2-build.cmd). It must NOT live
+ * in the build directory: the project path is user-controlled and may contain
+ * cmd metacharacters (`EVT-IPV4&6` is a common EVT folder name) — VSCode hands
+ * the command line to the terminal shell unquoted, and cmd splits the command
+ * at every `&` ("...EVT-IPV4 is not recognized as an internal or external
+ * command"). A hash-named file under %TEMP% is pure ASCII with no
+ * metacharacters; the wrapper itself `cd /d "<buildDir>"` with quoting.
+ */
+export function buildWrapperFile(projectRoot: string, kind: 'build' | 'clean' = 'build'): string {
+  const dir = path.join(os.tmpdir(), 'mrs-build');
+  fs.mkdirSync(dir, { recursive: true });
+  const hash = crypto.createHash('md5').update(projectRoot).digest('hex');
+  return path.join(dir, `${hash}${kind === 'clean' ? '-clean' : ''}.cmd`);
+}
+
 /** full-output record for a project (MRS2 buildContentRecord.txt) */
 export function buildRecordFile(projectRoot: string): string {
   return path.join(buildWorkDir(projectRoot), 'buildContentRecord.txt');

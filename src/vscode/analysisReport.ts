@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ProjectStore, MrsProject } from './projects';
 import { parseStackUsage, parseDumpCalls, stackReport, callReport } from '../core/analysis';
+import { t } from '../core/i18n';
 
 function activeOrPick(store: ProjectStore, node?: unknown): MrsProject | undefined {
   const proj = (node as { project?: MrsProject } | undefined)?.project;
@@ -48,26 +49,22 @@ function collectFiles(buildDir: string, test: (name: string) => boolean): string
 export async function showStackUsageCmd(store: ProjectStore, node?: unknown): Promise<void> {
   const project = activeOrPick(store, node);
   if (!project) {
-    vscode.window.showErrorMessage('MRVC: no active MRS project.');
+    vscode.window.showErrorMessage(t('noActiveProject'));
     return;
   }
   const buildDir = project.buildDir;
   if (!fs.existsSync(buildDir)) {
-    vscode.window.showInformationMessage(
-      'MRVC: no build directory yet — build with "mrvc.build.analysis" enabled first.'
-    );
+    vscode.window.showInformationMessage(t('analysisNoBuildDir'));
     return;
   }
   const contents = collectFiles(buildDir, (n) => n.endsWith('.su'));
   if (!contents.length) {
-    vscode.window.showInformationMessage(
-      'MRVC: no .su files found — enable "mrvc.build.analysis" and rebuild.'
-    );
+    vscode.window.showInformationMessage(t('analysisNoSu'));
     return;
   }
   const records = parseStackUsage(contents);
   if (!records.length) {
-    vscode.window.showInformationMessage('MRVC: .su files found but no usable records.');
+    vscode.window.showInformationMessage(t('analysisNoRecords'));
     return;
   }
   writeAndShow(buildDir, 'stack-usage.md', stackReport(records));
@@ -76,26 +73,22 @@ export async function showStackUsageCmd(store: ProjectStore, node?: unknown): Pr
 export async function showCallAnalysisCmd(store: ProjectStore, node?: unknown): Promise<void> {
   const project = activeOrPick(store, node);
   if (!project) {
-    vscode.window.showErrorMessage('MRVC: no active MRS project.');
+    vscode.window.showErrorMessage(t('noActiveProject'));
     return;
   }
   const buildDir = project.buildDir;
   if (!fs.existsSync(buildDir)) {
-    vscode.window.showInformationMessage(
-      'MRVC: no build directory yet — build with "mrvc.build.analysis" enabled first.'
-    );
+    vscode.window.showInformationMessage(t('analysisNoBuildDir'));
     return;
   }
   const dumps = collectFiles(buildDir, (n) => /\.c\.\d+r\.expand$/i.test(n));
   if (!dumps.length) {
-    vscode.window.showInformationMessage(
-      'MRVC: no expand dumps found — enable "mrvc.build.analysis" and rebuild.'
-    );
+    vscode.window.showInformationMessage(t('analysisNoDumps'));
     return;
   }
   const calls = dumps.flatMap((d) => parseDumpCalls(d));
   if (!calls.length) {
-    vscode.window.showInformationMessage('MRVC: expand dumps found but no call edges extracted.');
+    vscode.window.showInformationMessage(t('analysisNoCalls'));
     return;
   }
   writeAndShow(buildDir, 'call-analysis.md', callReport(calls));

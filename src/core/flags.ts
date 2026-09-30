@@ -9,7 +9,19 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Cproject } from './cproject';
-import { convertLogicToFullPath, toNative } from './macros';
+import { convertLogicToFullPath, toNative, toPosix } from './macros';
+
+/** absolute path in the 2.x generator's output style: forward slashes with a
+ * lowercase drive ("f:/...") — HarmonyOS golden's -I/-T/-L-macro form */
+function posixLowerDrive(p: string): string {
+  return toPosix(p).replace(/^([A-Za-z]):/, (m) => m.toLowerCase());
+}
+
+/** native path with only the drive lowercased ("f:\...") — the 2.x form for
+ * a plain relative -L entry resolved against the build directory */
+function lowerDrive(p: string): string {
+  return p.replace(/^([A-Za-z]):/, (m) => m.toLowerCase());
+}
 
 export interface TargetProcessorOpts {
   archBase: string; // rv32i ...
@@ -257,9 +269,15 @@ function debugFlags(cp: Cproject): string {
 }
 
 /** getCommonOptions: -march/-mabi/-mcmodel/... + optimization + warnings + debug.
- *  Sections are joined with a space each (MRS emits a placeholder space for
- *  empty sections, e.g. "...=1  -g" when no warning flags are set). */
-export function commonOptions(cp: Cproject, toolchainName: string): string {
+ *  1.x: sections are trimmed and joined with a space each (MRS emits a
+ *  placeholder space for empty sections, e.g. "...=1  -g" when no warning
+ *  flags are set).
+ *  2.x: `-fmax-errors=20` follows the save-restore flag (MRS2's current
+ *  builder appends it unconditionally; the 1.9.2 goldens predate it), the
+ *  `target.other` value is kept verbatim — its trailing space in the
+ *  .cproject data produces the golden's "…=1  -Os" double space — and empty
+ *  sections leave no placeholder ("-fno-common -g" with a single space). */
+export function commonOptions(cp: Cproject, toolchainName: string, style: '1x' | '2x' = '1x'): string {
   const tp = readTargetProcessor(cp, toolchainName);
   let target = marchFlags(tp) + mabiFlags(tp);
   if (tp.tuning) target += ` -mtune=${tp.tuning}`;
@@ -268,21 +286,36 @@ export function commonOptions(cp: Cproject, toolchainName: string): string {
   if (tp.align === 'strict') target += ' -mstrict-align';
   else if (tp.align === 'nostrict') target += ' -mno-strict-align';
   target += tp.saveRestore ? ' -msave-restore' : ' -mno-save-restore';
+  if (style === '2x') target += ' -fmax-errors=20';
   const otherTarget = cp.optionValue('target.other');
   if (otherTarget) target += ` ${resolveOutputMacros(cp, otherTarget)}`;
   const opt = optimizationFlags(cp, toolchainName);
   const warn = warningFlags(cp);
   const dbg = debugFlags(cp);
+  if (style === '2x') {
+    // MRS2's 2.x composer just concatenates: every section carries its own
+    // leading space, the `target.other` value keeps its trailing space
+    // (golden's "…=1  -Os" is data + the opt section's leading space), and
+    // empty sections contribute nothing. No joiner spaces of our own.
+    return [target, opt, warn, dbg].filter((s) => s.trim() !== '').join('');
+  }
   return ' ' + [target, opt, warn, dbg].map((s) => s.trim()).join(' ');
 }
 
 interface ResolveChoice {
   /** drop entries whose unresolvable `${macro}` would leak into the flags */
-  dropUnresolved: boolean;
+  dropUnresolved?: boolean;
   /** drop resolved entries whose target does not exist on disk — MRS
    * drops missing include dirs (FreeRTOS golden emits 7 of 8 -I entries,
    * dropping the APP entry whose folder is absent from the EVT tree) */
   dropMissing?: boolean;
+  /** 2.x generator output style: resolved paths become forward slashes with
+   * a lowercase drive */
+  style?: '1x' | '2x';
+  /** 2.x only: plain relative entries (e.g. `-L"../"`) resolve to an
+   * absolute path with NATIVE separators against this directory — the
+   * HarmonyOS golden turned `-L"../"` into `-L"f:\…\<project>"` */
+  absRelativeTo?: string;
 }
 
 function resolveList(cp: Cproject, suffix: string, quotedKeep: (raw: string) => string, choice: ResolveChoice = { dropUnresolved: false }): string[] {
@@ -297,17 +330,21 @@ function resolveList(cp: Cproject, suffix: string, quotedKeep: (raw: string) => 
       // a resolved path wins even when not on disk: MRS2 emits such -I/-T
       // entries and gcc tolerates/errs on them far better than a raw
       // unresolved ${workspace_loc} string ever would
-      out.push(quotedKeep(toNative(abs)));
+      out.push(quotedKeep(choice.style === '2x' ? posixLowerDrive(abs) : toNative(abs)));
       continue;
     }
     if (path.isAbsolute(raw)) {
-      out.push(quotedKeep(toNative(path.normalize(raw))));
+      out.push(quotedKeep(choice.style === '2x' ? posixLowerDrive(path.normalize(raw)) : toNative(path.normalize(raw))));
       continue;
     }
     // plain relative paths (e.g. "../") always survive; unresolved macros
     // are dropped when the caller asked for it (MRS2 behaviour for -L/-I)
     if (!choice.dropUnresolved || !raw.includes('${')) {
-      out.push(quotedKeep(raw));
+      if (choice.style === '2x' && choice.absRelativeTo !== undefined && !raw.includes('${')) {
+        out.push(quotedKeep(lowerDrive(toNative(path.resolve(choice.absRelativeTo, raw)))));
+      } else {
+        out.push(quotedKeep(raw));
+      }
     }
   }
   return out;
@@ -341,7 +378,7 @@ function languageStdFlag(cp: Cproject): string {
 }
 
 /** -D/-U/-I/... for the C compiler (getCCompilerOptions) */
-export function cCompilerOptions(cp: Cproject, skipIncludes = false): string {
+export function cCompilerOptions(cp: Cproject, skipIncludes = false, style: '1x' | '2x' = '1x'): string {
   let t = '';
   if (cp.optionBool('c.compiler.nostdinc')) t += ' -nostdinc';
   if (cp.optionBool('c.compiler.preprocessonly')) t += ' -E';
@@ -352,13 +389,13 @@ export function cCompilerOptions(cp: Cproject, skipIncludes = false): string {
     if (u) t += ` -U${u}`;
   }
   if (!skipIncludes) {
-    for (const i of resolveList(cp, 'c.compiler.include.paths', (v) => v, { dropUnresolved: true, dropMissing: true })) {
+    for (const i of resolveList(cp, 'c.compiler.include.paths', (v) => v, { dropUnresolved: true, dropMissing: true, style })) {
       t += ` -I"${i}"`;
     }
-    for (const i of resolveList(cp, 'c.compiler.include.systempaths', (v) => v, { dropUnresolved: true })) {
+    for (const i of resolveList(cp, 'c.compiler.include.systempaths', (v) => v, { dropUnresolved: true, style })) {
       t += ` -isystem"${i}"`;
     }
-    for (const i of resolveList(cp, 'c.compiler.include.files', (v) => v, { dropUnresolved: true })) {
+    for (const i of resolveList(cp, 'c.compiler.include.files', (v) => v, { dropUnresolved: true, style })) {
       t += ` -include"${i}"`;
     }
   }
@@ -397,7 +434,7 @@ const CPP_STD_FLAGS: Record<string, string> = {
 };
 
 /** -D/-I/... for the C++ compiler (getCppCompilerOptions) */
-export function cppCompilerOptions(cp: Cproject, skipIncludes = false): string {
+export function cppCompilerOptions(cp: Cproject, skipIncludes = false, style: '1x' | '2x' = '1x'): string {
   let t = '';
   if (cp.optionBool('cpp.compiler.nostdinc')) t += ' -nostdinc';
   if (cp.optionBool('cpp.compiler.nostdincpp')) t += ' -nostdinc++';
@@ -409,13 +446,13 @@ export function cppCompilerOptions(cp: Cproject, skipIncludes = false): string {
     if (u) t += ` -U${u}`;
   }
   if (!skipIncludes) {
-    for (const i of resolveList(cp, 'cpp.compiler.include.paths', (v) => v, { dropUnresolved: true, dropMissing: true })) {
+    for (const i of resolveList(cp, 'cpp.compiler.include.paths', (v) => v, { dropUnresolved: true, dropMissing: true, style })) {
       t += ` -I"${i}"`;
     }
-    for (const i of resolveList(cp, 'cpp.compiler.include.systempaths', (v) => v, { dropUnresolved: true })) {
+    for (const i of resolveList(cp, 'cpp.compiler.include.systempaths', (v) => v, { dropUnresolved: true, style })) {
       t += ` -isystem"${i}"`;
     }
-    for (const i of resolveList(cp, 'cpp.compiler.include.files', (v) => v, { dropUnresolved: true })) {
+    for (const i of resolveList(cp, 'cpp.compiler.include.files', (v) => v, { dropUnresolved: true, style })) {
       t += ` -include"${i}"`;
     }
   }
@@ -489,7 +526,7 @@ export function intellisenseArgs(cp: Cproject, kind: 'c' | 'cpp' | 'asm'): strin
   return args;
 }
 
-export function assemblerOptions(cp: Cproject, skipIncludes = false): string {
+export function assemblerOptions(cp: Cproject, skipIncludes = false, style: '1x' | '2x' = '1x'): string {
   let t = '';
   t += cp.optionBool('assembler.usepreprocessor', true) ? ' -x assembler-with-cpp' : ' -x assembler';
   if (cp.optionBool('assembler.nostdinc')) t += ' -nostdinc';
@@ -501,13 +538,13 @@ export function assemblerOptions(cp: Cproject, skipIncludes = false): string {
     if (u) t += ` -U${u}`;
   }
   if (!skipIncludes) {
-    for (const i of resolveList(cp, 'assembler.include.paths', (v) => v, { dropUnresolved: true, dropMissing: true })) {
+    for (const i of resolveList(cp, 'assembler.include.paths', (v) => v, { dropUnresolved: true, dropMissing: true, style })) {
       t += ` -I"${i}"`;
     }
-    for (const i of resolveList(cp, 'assembler.include.systempaths', (v) => v, { dropUnresolved: true })) {
+    for (const i of resolveList(cp, 'assembler.include.systempaths', (v) => v, { dropUnresolved: true, style })) {
       t += ` -isystem"${i}"`;
     }
-    for (const i of resolveList(cp, 'assembler.include.files', (v) => v, { dropUnresolved: true })) {
+    for (const i of resolveList(cp, 'assembler.include.files', (v) => v, { dropUnresolved: true, style })) {
       t += ` -include"${i}"`;
     }
   }
@@ -529,9 +566,9 @@ function resolveOutputMacros(cp: Cproject, s: string): string {
   return s.split('${BuildArtifactFileBaseName}').join(cp.targetName).split('${ProjName}').join(cp.projectName);
 }
 
-function linkerOptionsFor(cp: Cproject, p: 'c' | 'cpp'): string {
+function linkerOptionsFor(cp: Cproject, p: 'c' | 'cpp', style: '1x' | '2x' = '1x', configDir?: string): string {
   let t = '';
-  for (const s of resolveList(cp, `${p}.linker.scriptfile`, (v) => v)) {
+  for (const s of resolveList(cp, `${p}.linker.scriptfile`, (v) => v, { style })) {
     t += ` -T "${s}"`;
   }
   if (cp.optionBool(`${p}.linker.nostart`)) t += ' -nostartfiles';
@@ -543,7 +580,7 @@ function linkerOptionsFor(cp: Cproject, p: 'c' | 'cpp'): string {
   // like MRS2, -L entries that cannot be resolved are dropped entirely:
   // an emitted raw `${workspace_loc:...}` would expand to -L"" under make
   // and this ld then fails to find subsequent libraries
-  for (const l of resolveList(cp, `${p}.linker.paths`, (v) => v, { dropUnresolved: true })) {
+  for (const l of resolveList(cp, `${p}.linker.paths`, (v) => v, { dropUnresolved: true, style, absRelativeTo: configDir })) {
     t += ` -L"${l}"`;
   }
   for (const f of cp.listOption(`${p}.linker.flags`).values) {
@@ -575,13 +612,13 @@ function linkerOptionsFor(cp: Cproject, p: 'c' | 'cpp'): string {
 }
 
 /** linker options (getCLinkerOptions) */
-export function cLinkerOptions(cp: Cproject): string {
-  return linkerOptionsFor(cp, 'c');
+export function cLinkerOptions(cp: Cproject, style: '1x' | '2x' = '1x', configDir?: string): string {
+  return linkerOptionsFor(cp, 'c', style, configDir);
 }
 
 /** C++ linker options (getCppLinkerOptions) */
-export function cppLinkerOptions(cp: Cproject): string {
-  return linkerOptionsFor(cp, 'cpp');
+export function cppLinkerOptions(cp: Cproject, style: '1x' | '2x' = '1x', configDir?: string): string {
+  return linkerOptionsFor(cp, 'cpp', style, configDir);
 }
 
 /**

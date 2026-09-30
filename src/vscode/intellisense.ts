@@ -15,6 +15,7 @@ import { ProjectStore, getInstall, MrsProject } from './projects';
 import { Cproject } from '../core/cproject';
 import { ToolchainInfo } from '../core/toolchain';
 import { buildCompileEntries, partitionByReference, contextDatabases, CompileCommandEntry } from '../core/intellisense';
+import { t } from '../core/i18n';
 
 const CONFIG_NAME = 'MRVC';
 
@@ -142,6 +143,51 @@ export function resolveProjectForFile(
   return projects.find((p) => p.isOwner(norm));
 }
 
+const CPPTOLS_ID = 'ms-vscode.cpptools';
+const CLANGD_ID = 'llvm-vscode-extensions.vscode-clangd';
+const CPPTOLS_MIN = [1, 23, 5]; // multi-database compileCommands needs >= 1.23.5
+
+function versionAtLeast(v: string, min: number[]): boolean {
+  const parts = v.split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < min.length; i++) {
+    const a = parts[i] ?? 0;
+    if (a !== min[i]) return a > min[i];
+  }
+  return true;
+}
+
+/**
+ * One-shot guidance after projects load: code navigation (Go to Definition)
+ * comes from the C/C++ extension consuming the databases MRVC generates —
+ * without it the databases exist but nothing reads them (the exact
+ * confusion reported on an offline machine, where an Extension Pack VSIX
+ * was installed without its dependency). Skipped when the user picked
+ * clangd instead, or after "Don't ask again" (globalState).
+ */
+export function maybePromptCppTools(context: vscode.ExtensionContext, store: ProjectStore): void {
+  if (!store.all.length) return;
+  if (context.globalState.get<boolean>('mrs2.cpptoolsDontAsk')) return;
+  if (vscode.extensions.getExtension(CLANGD_ID)) return; // clangd route — not our business
+
+  const ext = vscode.extensions.getExtension(CPPTOLS_ID);
+  let message: string;
+  if (!ext) {
+    message = t('cpptoolsMissing');
+  } else {
+    const ver = String(ext.packageJSON?.version ?? '0');
+    if (versionAtLeast(ver, CPPTOLS_MIN)) return; // installed and new enough
+    message = t('cpptoolsTooOld', ver);
+  }
+
+  void vscode.window.showInformationMessage(message, t('installCpptools'), t('cpptoolsDontAsk')).then((pick) => {
+    if (pick === t('installCpptools')) {
+      void vscode.commands.executeCommand('extension.open', CPPTOLS_ID);
+    } else if (pick === t('cpptoolsDontAsk')) {
+      void context.globalState.update('mrs2.cpptoolsDontAsk', true);
+    }
+  });
+}
+
 /** Rebuild and (conditionally) write the two .vscode files. Never throws. */
 export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResult {
   const folder = vscode.workspace.workspaceFolders?.[0];
@@ -169,6 +215,13 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
     let ccUpdated = false;
     const perProject: CompileCommandEntry[][] = [];
     const loaded: MrsProject[] = [];
+    // projects whose toolchain did not resolve (or whose entries failed to
+    // build): they contribute no entries, but their per-project database must
+    // still be REWRITTEN — leaving the previous content on disk would feed a
+    // stale database to cpptools forever (switchContext copies it verbatim
+    // and nothing ever regenerates it). An empty own-entry list yields the
+    // full canonical fallback database for the context class.
+    const failed: MrsProject[] = [];
     // every include directory any project references — feeds the browse
     // fallback below so files OUTSIDE the compile databases (excluded from
     // build, not yet attached to a project) still resolve their #includes
@@ -176,7 +229,10 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
     for (const p of all) {
       try {
         const tc = p.toolchain(install, 'auto');
-        if (!tc) continue;
+        if (!tc) {
+          failed.push(p);
+          continue;
+        }
         if (!firstTc) {
           firstTc = tc;
           firstCp = p.cproject;
@@ -192,15 +248,20 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
         perProject.push(list);
         loaded.push(p);
       } catch {
-        // broken project must not block the rest
+        failed.push(p); // broken project must not block the rest
       }
     }
     const split = partitionByReference(perProject);
-    const databases = contextDatabases(split.contextEntries, loaded.map((p) => p.root));
-    for (let i = 0; i < loaded.length; i++) {
-      const dbFile = ccDbPath(ccDir, dbFileName(loaded[i].root, loaded[i].projectName));
+    // failed projects ride at the tail with an empty own-entry list — their
+    // databases become pure canonical fallbacks (current, not stale)
+    const databases = contextDatabases(
+      [...split.contextEntries, ...failed.map(() => [] as CompileCommandEntry[])],
+      [...loaded.map((p) => p.root), ...failed.map((p) => p.root)]
+    );
+    [...loaded, ...failed].forEach((p, i) => {
+      const dbFile = ccDbPath(ccDir, dbFileName(p.root, p.projectName));
       if (dbFile && writeIfChanged(dbFile, JSON.stringify(databases[i], null, 2) + '\n')) ccUpdated = true;
-    }
+    });
     if (writeIfChanged(sharedDbFile(folder.uri.fsPath), JSON.stringify(split.sharedEntries, null, 2) + '\n')) ccUpdated = true;
     const activeFile = activeCcFile(folder.uri.fsPath);
     // every generated database covers the same context-class file set — a

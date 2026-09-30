@@ -29,7 +29,7 @@ import { writeSolution } from './core/solution';
 import { setCppNature } from './core/projectFile';
 import { SyncPage } from './vscode/syncPage';
 import { comTransmitCmd, hexBinToolCmd, ispToolCmd, touchkeyToolCmd, uiDesignerCmd } from './vscode/mrsTools';
-import { ensureIntellisenseConfig, resolveProjectForFile, switchContext } from './vscode/intellisense';
+import { ensureIntellisenseConfig, resolveProjectForFile, switchContext, maybePromptCppTools } from './vscode/intellisense';
 import { addProjectToSolutionCmd, addProjectsByBatchCmd, setBuildOrderCmd, closeSolutionCmd } from './vscode/solutionLife';
 import { generateCMakeListCmd, exportAsCMakeCmd } from './vscode/cmakeExport';
 import { buildRecordFile } from './core/buildLog';
@@ -47,8 +47,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (!e.affectsConfiguration('mrvc.language')) return;
       void vscode.window
-        .showInformationMessage('MRVC: the UI language setting changed — reload the window to apply it.', 'Reload Window')
-        .then((pick) => pick === 'Reload Window' && vscode.commands.executeCommand('workbench.action.reloadWindow'));
+        .showInformationMessage(t('languageReload'), t('reloadWindow'))
+        .then((pick) => pick === t('reloadWindow') && vscode.commands.executeCommand('workbench.action.reloadWindow'));
     })
   );
 
@@ -168,6 +168,9 @@ export function activate(context: vscode.ExtensionContext): void {
   reg('mrs2.openProject', () => store.openProject());
   reg('mrs2.openFolder', () => store.openFolder());
   reg('mrs2.build', (item?: { project?: unknown }) => build.run('build', (item as { project?: MrsProject })?.project));
+  reg('mrs2.buildAndDownload', (item?: { project?: unknown }) =>
+    build.buildAndDownload((item as { project?: MrsProject })?.project)
+  );
   reg('mrs2.buildAll', () => build.buildAll());
   reg('mrs2.rebuildAll', () => build.rebuildAll());
   reg('mrs2.deleteOutputKeepImages', () => build.deleteOutputFiles());
@@ -250,32 +253,32 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
-      vscode.window.showErrorMessage('MRVC: open a workspace folder first — the solution is saved in it.'); // low-traffic: kept English
+      vscode.window.showErrorMessage(t('openFolderFirst'));
 
       return;
     }
     const name = await vscode.window.showInputBox({
-      prompt: `Save solution as (in ${folder.uri.fsPath})`,
+      prompt: t('solutionSaveAs', folder.uri.fsPath),
       value: path.basename(folder.uri.fsPath),
-      placeHolder: 'solution file name',
-      validateInput: (v) => (!v || /[\\/:*?"<>|]/.test(v) ? 'Invalid file name' : undefined),
+      placeHolder: t('solutionFileName'),
+      validateInput: (v) => (!v || /[\\/:*?"<>|]/.test(v) ? t('invalidFileName') : undefined),
     });
     if (!name) return;
     const base = name.toLowerCase().endsWith('.wvsln') ? name : `${name}.wvsln`;
     const file = path.join(folder.uri.fsPath, base);
     if (fs.existsSync(file)) {
-      const pick = await vscode.window.showWarningMessage(`"${base}" already exists. Overwrite?`, { modal: true }, 'Overwrite');
-      if (pick !== 'Overwrite') return;
+      const pick = await vscode.window.showWarningMessage(t('overwriteConfirm', base), { modal: true }, t('overwrite'));
+      if (pick !== t('overwrite')) return;
     }
     try {
       writeSolution(file, all.map((p) => p.root));
     } catch (e) {
-      vscode.window.showErrorMessage(`MRVC: writing solution failed — ${msg(e)}`);
+      vscode.window.showErrorMessage(t('solutionWriteFailed', msg(e)));
       return;
     }
     store.removeSolution(file); // overwrite: drop the stale loaded instance
     store.addSolution(file);
-    vscode.window.showInformationMessage(`MRVC: solution "${base}" created with ${all.length} projects.`);
+    vscode.window.showInformationMessage(t('solutionCreated', base, all.length));
   });
 
   // file management (tree context menu)
@@ -304,7 +307,7 @@ export function activate(context: vscode.ExtensionContext): void {
     try {
       setCppNature(project.root, !project.cproject.isCpp);
     } catch (e) {
-      vscode.window.showErrorMessage(`MRVC: switching project type failed — ${e instanceof Error ? e.message : String(e)}`);
+      vscode.window.showErrorMessage(t('switchTypeFailed', e instanceof Error ? e.message : String(e)));
       return;
     }
     store.reloadProject(project);
@@ -316,7 +319,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // discover projects already inside the workspace (debounced once at start)
   setTimeout(() => {
-    void store.discoverInWorkspace().then(() => ensureIntellisenseConfig(store));
+    void store.discoverInWorkspace().then(() => {
+      ensureIntellisenseConfig(store);
+      // the databases are only half of code navigation — make sure the
+      // extension that consumes them is present and new enough
+      maybePromptCppTools(context, store);
+    });
   }, 800);
 
   // build dir watcher: refresh products after a build finishes (single and

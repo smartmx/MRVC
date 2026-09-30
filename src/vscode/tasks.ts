@@ -9,9 +9,25 @@ import { ProjectStore, MrsProject, MrsSolution, msg, getInstall } from './projec
 import { generateMakefiles } from '../core/makefile';
 import { clearOutputDir, removeOutputDir } from '../core/output';
 import { t } from '../core/i18n';
-import { buildRecordFile } from '../core/buildLog';
+import { buildRecordFile, buildWrapperFile } from '../core/buildLog';
+import { encodeArtifact } from '../core/platformEncoding';
+import { downloadProject } from './flash';
 
 export type BuildKind = 'build' | 'rebuild' | 'clean';
+
+/** cmd batch-file escaping for LITERAL paths embedded in a wrapper body:
+ * a single % would start variable expansion ("100% done" is fine but
+ * "a%x%y" would lose "x%y" as a variable reference) — doubling makes cmd
+ * emit one literal percent. %VAR% references must NOT be escaped. */
+function pct(s: string): string {
+  return s.replace(/%/g, '%%');
+}
+
+export interface RunOptions {
+  /** MRS2 "Build Project And Download" mode: wait for the build to end and
+   * download only on success */
+  andDownload?: boolean;
+}
 
 export interface BuildAllResult {
   project: string;
@@ -46,12 +62,13 @@ export class BuildManager {
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const toolchainReq = cfg.get<string>('toolchain', 'auto');
     const jobs = cfg.get<number>('build.parallelJobs', 0) || os.cpus().length;
+    const analysis = cfg.get<boolean>('build.analysis', false);
     return this.runBatch(this.store.all, {
-      progressTitle: 'MRVC: Build All',
+      progressTitle: t('progressBuildAll'),
       label: 'Build All',
-      emptyMessage: 'No MRS project loaded. Use "MRVC: Open MRS Project" first.',
+      emptyMessage: t('noProjectsLoaded'),
       needsMake: true,
-      worker: (p, install) => this.buildOne(p, install, toolchainReq, jobs),
+      worker: (p, install) => this.buildOne(p, install, toolchainReq, jobs, analysis),
     });
   }
 
@@ -65,12 +82,13 @@ export class BuildManager {
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const toolchainReq = cfg.get<string>('toolchain', 'auto');
     const jobs = cfg.get<number>('build.parallelJobs', 0) || os.cpus().length;
+    const analysis = cfg.get<boolean>('build.analysis', false);
     return this.runBatch(members, {
-      progressTitle: `MRVC: Build Solution - ${sol.name}`,
+      progressTitle: t('progressBuildSolution', sol.name),
       label: `Build Solution (${sol.name})`,
       emptyMessage: t('solutionNoMembers', sol.name),
       needsMake: true,
-      worker: (p, install) => this.buildOne(p, install, toolchainReq, jobs),
+      worker: (p, install) => this.buildOne(p, install, toolchainReq, jobs, analysis),
     });
   }
 
@@ -79,12 +97,13 @@ export class BuildManager {
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const toolchainReq = cfg.get<string>('toolchain', 'auto');
     const jobs = cfg.get<number>('build.parallelJobs', 0) || os.cpus().length;
+    const analysis = cfg.get<boolean>('build.analysis', false);
     return this.runBatch(this.store.all, {
-      progressTitle: 'MRVC: Rebuild All',
+      progressTitle: t('progressRebuildAll'),
       label: 'Rebuild All',
-      emptyMessage: 'No MRS project loaded. Use "MRVC: Open MRS Project" first.',
+      emptyMessage: t('noProjectsLoaded'),
       needsMake: true,
-      worker: (p, install) => this.rebuildOne(p, install, toolchainReq, jobs),
+      worker: (p, install) => this.rebuildOne(p, install, toolchainReq, jobs, analysis),
     });
   }
 
@@ -95,9 +114,9 @@ export class BuildManager {
    */
   async deleteOutputFiles(): Promise<void> {
     await this.runBatch(this.store.all, {
-      progressTitle: 'MRVC: Delete Output Files (Keep hex/bin)',
+      progressTitle: t('progressDeleteKeep'),
       label: 'Delete Output Files (Keep hex/bin)',
-      emptyMessage: 'No MRS project loaded. Use "MRVC: Open MRS Project" first.',
+      emptyMessage: t('noProjectsLoaded'),
       worker: (p) => this.deleteOutputOne(p, true),
     });
     this.refreshTree();
@@ -106,9 +125,9 @@ export class BuildManager {
   /** Delete every project's whole output directory. */
   async deleteOutputDirs(): Promise<void> {
     await this.runBatch(this.store.all, {
-      progressTitle: 'MRVC: Delete Output Directories',
+      progressTitle: t('progressDeleteDirs'),
       label: 'Delete Output Directories',
-      emptyMessage: 'No MRS project loaded. Use "MRVC: Open MRS Project" first.',
+      emptyMessage: t('noProjectsLoaded'),
       worker: (p) => this.deleteOutputOne(p, false),
     });
     this.refreshTree();
@@ -126,9 +145,9 @@ export class BuildManager {
    */
   async cleanAll(): Promise<void> {
     return this.runBatch(this.store.all, {
-      progressTitle: 'MRVC: Clean All',
+      progressTitle: t('progressCleanAll'),
       label: 'Clean All',
-      emptyMessage: 'No MRS project loaded. Use "MRVC: Open MRS Project" first.',
+      emptyMessage: t('noProjectsLoaded'),
       needsMake: true,
       worker: (p, install) => this.cleanOne(p, install),
     });
@@ -138,13 +157,13 @@ export class BuildManager {
   async cleanSolution(sol: MrsSolution): Promise<void> {
     const members = sol.members;
     if (!members.length) {
-      vscode.window.showErrorMessage(`MRVC: solution "${sol.name}" has no loadable projects.`);
+      vscode.window.showErrorMessage(t('solutionNoMembers', sol.name));
       return;
     }
     return this.runBatch(members, {
-      progressTitle: `MRVC: Clean Solution - ${sol.name}`,
+      progressTitle: t('progressCleanSolution', sol.name),
       label: `Clean Solution (${sol.name})`,
-      emptyMessage: `MRVC: solution "${sol.name}" has no loadable projects.`,
+      emptyMessage: t('solutionNoMembers', sol.name),
       needsMake: true,
       worker: (p, install) => this.cleanOne(p, install),
     });
@@ -221,12 +240,12 @@ export class BuildManager {
   }
 
   /** Clean one project, then build it fresh; a failed clean fails the rebuild. */
-  private async rebuildOne(p: MrsProject, install: NonNullable<ReturnType<typeof getInstall>>, toolchainReq: string, jobs: number): Promise<BuildAllResult> {
+  private async rebuildOne(p: MrsProject, install: NonNullable<ReturnType<typeof getInstall>>, toolchainReq: string, jobs: number, analysis: boolean): Promise<BuildAllResult> {
     const cleaned = await this.cleanOne(p, install);
     if (!cleaned.ok) {
       return { project: p.projectName, ok: false, detail: `clean failed: ${cleaned.detail}` };
     }
-    return this.buildOne(p, install, toolchainReq, jobs);
+    return this.buildOne(p, install, toolchainReq, jobs, analysis);
   }
 
   /** Delete output entries (keepImages: spare 工程名.hex/.bin); never throws. */
@@ -268,8 +287,7 @@ export class BuildManager {
         { type: 'mrvc-clean-all' },
         'MRVC: Clean All',
         'MRVC',
-        new vscode.ProcessExecution(path.join(install.makeBin, 'make.exe'), ['clean'], {
-          cwd: p.buildDir,
+        new vscode.ProcessExecution(this.writeCleanWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe')), [], {
           env: { PATH: `${install.makeBin};${process.env['PATH'] ?? ''}` },
         }),
         []
@@ -292,7 +310,7 @@ export class BuildManager {
   }
 
   /** Build one project; never throws. */
-  private buildOne(p: MrsProject, install: NonNullable<ReturnType<typeof getInstall>>, toolchainReq: string, jobs: number): Promise<BuildAllResult> {
+  private buildOne(p: MrsProject, install: NonNullable<ReturnType<typeof getInstall>>, toolchainReq: string, jobs: number, analysis: boolean): Promise<BuildAllResult> {
     const fail = (detail: string): BuildAllResult => ({ project: p.projectName, ok: false, detail });
     let toolchainBinDir = '';
     try {
@@ -300,7 +318,7 @@ export class BuildManager {
       const tc = p.toolchain(install, toolchainReq);
       if (!tc) return Promise.resolve(fail('no RISC-V toolchain found'));
       toolchainBinDir = path.join(tc.dir, 'bin');
-      generateMakefiles(p.cproject, tc);
+      generateMakefiles(p.cproject, tc, { analysis });
     } catch (e) {
       return Promise.resolve(fail(msg(e)));
     }
@@ -315,12 +333,12 @@ export class BuildManager {
         const code = e.exitCode ?? -1;
         resolve({ project: p.projectName, ok: code === 0, detail: code === 0 ? '' : `make exit ${code}` });
       });
+      const wrapper = this.writeBuildWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe'), ['-j' + jobs, 'all'], buildRecordFile(p.root));
       const task = new vscode.Task(
         { type: 'mrvc-build-all' },
         'MRVC: Build All',
         'MRVC',
-        new vscode.ProcessExecution(path.join(install.makeBin, 'make.exe'), ['-j' + jobs, 'all'], {
-          cwd: p.buildDir,
+        new vscode.ProcessExecution(wrapper, [], {
           env: { PATH: `${toolchainBinDir};${install.makeBin};${process.env['PATH'] ?? ''}` },
         }),
         ['$mrvcgcc']
@@ -340,7 +358,7 @@ export class BuildManager {
     });
   }
 
-  async run(kind: BuildKind, proj?: MrsProject): Promise<void> {
+  async run(kind: BuildKind, proj?: MrsProject, opts?: RunOptions): Promise<void> {
     const project = proj ?? (await this.pickProject());
     if (!project) return;
     this.store.setActive(project); // last explicitly built project = status bar target
@@ -348,9 +366,7 @@ export class BuildManager {
     const install = getInstall();
     const tc = project.toolchain(install, vscode.workspace.getConfiguration('mrvc').get('toolchain', 'auto'));
     if (!tc) {
-      vscode.window.showErrorMessage(
-        'No RISC-V toolchain found. Check the "mrvc.mrs2InstallPath" setting — it must point to your MRS2 (MounRiver Studio 2) installation folder.'
-      );
+      vscode.window.showErrorMessage(t('noToolchainFound'));
       return;
     }
     if (!install || !fs.existsSync(path.join(install.makeBin, 'make.exe'))) {
@@ -368,6 +384,7 @@ export class BuildManager {
       vscode.window.showErrorMessage(t('makefileGenFailed', msg(e)));
       return;
     }
+    void genResult;
 
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const jobs = cfg.get<number>('build.parallelJobs', 0) || os.cpus().length;
@@ -383,25 +400,19 @@ export class BuildManager {
 
     const envPath = [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].join(path.delimiter);
     const target = kind === 'clean' ? 'MRVC: clean' : kind === 'rebuild' ? 'MRVC: rebuild' : 'MRVC: build';
-    // full make output is captured into MRS2's build record location, so
-    // "Show Full Build Output" can open the complete log of the last build.
-    // The redirection lives in a generated .cmd wrapper — a ShellExecution
-    // string with cmd.exe nesting breaks VSCode's auto-quoting ("文件名、
-    // 目录名或卷标语法不正确"), while a wrapper file has fixed quoting.
-    const recordFile = buildRecordFile(project.root);
     const makeExe = path.join(install.makeBin, 'make.exe');
-    const wrapper = path.join(project.buildDir, 'mrs2-build.cmd');
-    const wrapperBody =
-      `@echo off\r\n` +
-      `"${makeExe}" ${makeArgs.join(' ')} > "${recordFile}" 2>&1\r\n` +
-      `set "MRVC_EXIT=%errorlevel%"\r\n` +
-      `type "${recordFile}"\r\n` +
-      `exit /b %MRVC_EXIT%\r\n`;
-    fs.writeFileSync(wrapper, wrapperBody, 'utf-8');
-    const shell = new vscode.ProcessExecution(wrapper, [], {
-      cwd: project.buildDir,
-      env: { PATH: envPath },
-    });
+    const shell =
+      kind === 'clean'
+        ? // a clean must not trample the last build's record — run make via
+          // the clean wrapper (no record writes, same metacharacter safety)
+          new vscode.ProcessExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe), [], {
+            env: { PATH: envPath },
+          })
+        : new vscode.ProcessExecution(
+            this.writeBuildWrapper(project.root, project.buildDir, makeExe, makeArgs, buildRecordFile(project.root)),
+            [],
+            { env: { PATH: envPath } }
+          );
     const task = new vscode.Task(
       { type: 'mrvc-build', task: target, project: project.projectName },
       project.projectName ? `${target} - ${project.projectName}` : target,
@@ -419,8 +430,7 @@ export class BuildManager {
         { type: 'mrvc-clean', project: project.projectName },
         `MRVC: clean - ${project.projectName}`,
         'MRVC',
-        new vscode.ProcessExecution(path.join(install.makeBin, 'make.exe'), ['clean'], {
-          cwd: project.buildDir,
+        new vscode.ProcessExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe), [], {
           env: { PATH: envPath },
         }),
         []
@@ -434,8 +444,25 @@ export class BuildManager {
     }
 
     this.store.reloadActive();
+    if (opts?.andDownload) {
+      // MRS2 buildAndDownload semantics (buildSuccessCallback): the download
+      // runs only after a successful build — a failed or cancelled build
+      // stops here.
+      const code = await this.executeAndWait(task, 'mrvc-build');
+      if (code !== 0) {
+        vscode.window.showErrorMessage(t('buildFailedNoDownload', project.projectName, code ?? 'unknown'));
+        return;
+      }
+      await downloadProject(this.store, project);
+      return;
+    }
     await vscode.tasks.executeTask(task);
-    void genResult;
+  }
+
+  /** MRS2 "Build Project And Download": one pipeline — build, then flash the
+   * fresh firmware; the download never runs after a failed build. */
+  async buildAndDownload(proj?: MrsProject): Promise<void> {
+    await this.run('build', proj, { andDownload: true });
   }
 
   /** Execute a task and resolve when ITS process ends (matched by execution
@@ -463,6 +490,71 @@ export class BuildManager {
         }
       );
     });
+  }
+
+  /**
+   * The generated wrapper captures the build output into the MRS2 build-record
+   * location (%TEMP%/mrs-cache/<project>-<md5>/buildContentRecord.txt, read by
+   * "Show Full Build Output"), echoes it into the task terminal and propagates
+   * make's exit code. The redirection lives in a wrapper FILE — a
+   * ShellExecution string with cmd.exe nesting breaks VSCode's auto-quoting
+   * ("文件名、目录名或卷标语法不正确") — and both build paths (single and
+   * batch) go through it so the record always reflects the last build.
+   *
+   * The wrapper lives under %TEMP%/mrs-build/<md5>.cmd, NOT in the build
+   * directory: VSCode hands the task command line to the terminal shell
+   * UNQUOTED, and a user-controlled project path containing cmd
+   * metacharacters (`EVT-IPV4&6` is a common EVT folder name) gets split by
+   * cmd at every `&`. The hash-named temp path has nothing to split; the
+   * build directory is entered via `cd /d "<buildDir>"` inside the file
+   * (quoted — cmd keeps `&` inside quotes literal), so the ProcessExecution
+   * carries neither a metacharacter command nor a cwd for VSCode to echo.
+   *
+   * MRS's makefile recipes carry `@` silencing prefixes, so make's own output
+   * never contains the per-file command lines. The record therefore ends with
+   * a `make -n -B` dry run, which prints every command the makefile drives
+   * (all sources, link, objcopy) — the record then answers "how was each file
+   * compiled", which neither MRS2's nor a bare make log does.
+   */
+  private writeBuildWrapper(projectRoot: string, buildDir: string, makeExe: string, makeArgs: string[], recordFile: string): string {
+    const wrapper = buildWrapperFile(projectRoot);
+    const body =
+      `@echo off\r\n` +
+      // `!` is only safe with delayed expansion off — a parent environment can
+      // turn it on (AutoRun / /v:on), which would eat `!` in the build path
+      `setlocal DisableDelayedExpansion\r\n` +
+      `cd /d "${pct(buildDir)}"\r\n` +
+      `"${pct(makeExe)}" ${makeArgs.join(' ')} > "${pct(recordFile)}" 2>&1\r\n` +
+      `set "MRVC_EXIT=%errorlevel%"\r\n` +
+      `type "${pct(recordFile)}"\r\n` +
+      `>> "${pct(recordFile)}" echo(\r\n` +
+      `>> "${pct(recordFile)}" echo ===== All Build Commands (dry run: make -n -B) =====\r\n` +
+      `"${pct(makeExe)}" -n -B all >> "${pct(recordFile)}" 2>&1\r\n` +
+      `exit /b %MRVC_EXIT%\r\n`;
+    // the paths inside the wrapper (record lives under %TEMP%) are not ASCII
+    // on machines with a Chinese user name, and cmd parses the file in the
+    // ANSI code page — same encoding the generated makefiles use
+    fs.writeFileSync(wrapper, encodeArtifact(body));
+    return wrapper;
+  }
+
+  /**
+   * Same metacharacter-safe shape as writeBuildWrapper, for `make clean`:
+   * no record writes (a clean must not trample the last build's record) and
+   * no dry-run appendix. Used by single Clean, Rebuild's clean step and
+   * batch Clean — every make invocation carries a wrapper, so no
+   * ProcessExecution ever carries a user-controlled cwd again.
+   */
+  private writeCleanWrapper(projectRoot: string, buildDir: string, makeExe: string): string {
+    const wrapper = buildWrapperFile(projectRoot, 'clean');
+    const body =
+      `@echo off\r\n` +
+      `setlocal DisableDelayedExpansion\r\n` +
+      `cd /d "${pct(buildDir)}"\r\n` +
+      `"${pct(makeExe)}" clean\r\n` +
+      `exit /b %errorlevel%\r\n`;
+    fs.writeFileSync(wrapper, encodeArtifact(body));
+    return wrapper;
   }
 
   private async pickProject(): Promise<MrsProject | undefined> {

@@ -13,6 +13,7 @@ import { TemplateData, readTemplate, writeTemplate } from '../core/templateFile'
 import { ADDRESS_RE } from '../core/flash';
 import { ChipDb, chipDbRoot, scanChipDb } from '../core/chipdb';
 import { WlinkArgs, WlinkOp, describeResult, runWlinkOp } from '../core/wlink';
+import { t } from '../core/i18n';
 
 export type FieldType = 'bool' | 'enum' | 'string' | 'list';
 
@@ -526,7 +527,7 @@ export class ConfigView {
   async show(proj?: MrsProject): Promise<void> {
     const project = proj ?? this.store.active;
     if (!project) {
-      vscode.window.showErrorMessage('No active MRS project.');
+      vscode.window.showErrorMessage(t('noActiveProject'));
       return;
     }
     this.project = project;
@@ -596,9 +597,9 @@ export class ConfigView {
         writeTemplate(project.root, tpl);
         project.reload();
         this.panel.webview.postMessage({ command: 'saved' });
-        vscode.window.showInformationMessage(`MRVC: download settings saved (${path.basename(project.root)})`);
+        vscode.window.showInformationMessage(t('downloadSettingsSaved', path.basename(project.root)));
       } catch (e) {
-        vscode.window.showErrorMessage(`MRVC: failed to save download settings (${e instanceof Error ? e.message : String(e)})`);
+        vscode.window.showErrorMessage(t('downloadSettingsSaveFailed', e instanceof Error ? e.message : String(e)));
       }
       return;
     }
@@ -671,12 +672,12 @@ export class ConfigView {
       const conflicts = macroConflicts(m.values);
       if (conflicts.length) {
         const apply = await vscode.window.showWarningMessage(
-          `Macro definition conflict (${conflicts.length}):`,
+          t('macroConflictTitle', conflicts.length),
           { modal: true, detail: conflicts.join('\n') },
-          'Apply anyway',
-          'Go back'
+          t('macroConflictApply'),
+          t('macroConflictBack')
         );
-        if (apply !== 'Apply anyway') return;
+        if (apply !== t('macroConflictApply')) return;
       }
       try {
         // .template fields first (chip identity / download address), batched
@@ -721,9 +722,9 @@ export class ConfigView {
         cp.save();
         project.reload();
         this.panel.webview.postMessage({ command: 'saved' });
-        vscode.window.showInformationMessage(`MRVC: project properties saved (${path.basename(project.root)})`);
+        vscode.window.showInformationMessage(t('propertiesSaved', path.basename(project.root)));
       } catch (e) {
-        vscode.window.showErrorMessage(`MRVC: failed to save configuration (${e instanceof Error ? e.message : String(e)})`);
+        vscode.window.showErrorMessage(t('propertiesSaveFailed', e instanceof Error ? e.message : String(e)));
       }
     }
   }

@@ -34,6 +34,38 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   yes: { en: 'Yes', 'zh-cn': '是' },
   no: { en: 'No', 'zh-cn': '否' },
   overwrite: { en: 'Overwrite', 'zh-cn': '覆盖' },
+  relPathNoProject: {
+    en: 'MRVC: "{0}" is outside the project and not under any linked folder — no project-relative path exists.',
+    'zh-cn': 'MRVC：" {0} "在工程之外且不在任何链接文件夹下——不存在工程相对路径。',
+  },
+  noToolchainFound: {
+    en: 'No RISC-V toolchain found. Check the "mrvc.mrs2InstallPath" setting — it must point to your MRS2 (MounRiver Studio 2) installation folder.',
+    'zh-cn': '未找到 RISC-V 工具链。请检查 "mrvc.mrs2InstallPath" 设置——它必须指向您的 MRS2（MounRiver Studio 2）安装文件夹。',
+  },
+
+  // batch progress titles (notification popups)
+  progressBuildAll: { en: 'MRVC: Build All', 'zh-cn': 'MRVC：构建全部工程' },
+  progressBuildSolution: { en: 'MRVC: Build Solution - {0}', 'zh-cn': 'MRVC：构建解决方案 - {0}' },
+  progressRebuildAll: { en: 'MRVC: Rebuild All', 'zh-cn': 'MRVC：重新构建全部工程' },
+  progressDeleteKeep: { en: 'MRVC: Delete Output Files (Keep hex/bin)', 'zh-cn': 'MRVC：删除输出文件（保留 hex/bin）' },
+  progressDeleteDirs: { en: 'MRVC: Delete Output Directories', 'zh-cn': 'MRVC：删除输出目录' },
+  progressCleanAll: { en: 'MRVC: Clean All', 'zh-cn': 'MRVC：清理全部工程' },
+  progressCleanSolution: { en: 'MRVC: Clean Solution - {0}', 'zh-cn': 'MRVC：清理解决方案 - {0}' },
+
+  // wizard prompts / placeholders
+  wizardSeries: { en: 'New MounRiver Project — chip series (1/3)', 'zh-cn': '新建 MounRiver 工程——芯片系列（1/3）' },
+  wizardRtos: { en: 'New MounRiver Project — RTOS (2/3)', 'zh-cn': '新建 MounRiver 工程——RTOS（2/3）' },
+  wizardChip: { en: 'New MounRiver Project — device template (3/3)', 'zh-cn': '新建 MounRiver 工程——器件模板（3/3）' },
+  wizardLocationTitle: { en: 'Parent folder for the new project', 'zh-cn': '新工程的父文件夹' },
+  wizardLocationPlaceholder: {
+    en: 'Type or paste the full folder path (it will be created), or pick Browse',
+    'zh-cn': '键入或粘贴完整的文件夹路径（不存在会自动创建），或选择浏览',
+  },
+  wizardBrowse: { en: 'Browse for folder…', 'zh-cn': '浏览文件夹…' },
+  wizardCreateHere: { en: 'Create here', 'zh-cn': '在此创建' },
+  solutionSaveAs: { en: 'Save solution as (in {0})', 'zh-cn': '解决方案另存为（位于 {0}）' },
+  solutionFileName: { en: 'solution file name', 'zh-cn': '解决方案文件名' },
+  invalidFileName: { en: 'Invalid file name', 'zh-cn': '文件名无效' },
   remove: { en: 'Remove', 'zh-cn': '移除' },
   delete: { en: 'Delete', 'zh-cn': '删除' },
   continue: { en: 'Continue', 'zh-cn': '继续' },
@@ -165,6 +197,16 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   // intellisense
   intellisenseOk: { en: 'MRVC: IntelliSense configuration updated ({0} files from {1} projects).', 'zh-cn': 'MRVC：IntelliSense 配置已更新（来自 {1} 个工程的 {0} 个文件）。' },
   intellisenseFail: { en: 'MRVC: IntelliSense configuration failed — {0}', 'zh-cn': 'MRVC：IntelliSense 配置失败——{0}' },
+  cpptoolsMissing: {
+    en: 'MRVC: code navigation (Go to Definition) needs the "C/C++" extension (ms-vscode.cpptools) — install it from the Extensions view.',
+    'zh-cn': 'MRVC：代码跳转需要 "C/C++" 扩展（ms-vscode.cpptools）——请在扩展面板安装。',
+  },
+  cpptoolsTooOld: {
+    en: 'MRVC: the "C/C++" extension (ms-vscode.cpptools) is version {0} — code navigation needs 1.23.5 or later. Please update it.',
+    'zh-cn': 'MRVC："C/C++" 扩展（ms-vscode.cpptools）当前版本 {0}——代码跳转需要 1.23.5 或更高版本，请更新。',
+  },
+  installCpptools: { en: 'Open "C/C++"', 'zh-cn': '打开 "C/C++"' },
+  cpptoolsDontAsk: { en: "Don't ask again", 'zh-cn': '不再提示' },
   // build / batch
   solutionNoMembers: { en: 'MRVC: solution "{0}" has no loadable projects.', 'zh-cn': 'MRVC：解决方案" {0} "没有可加载的工程。' },
   batchRunning: { en: 'MRVC: another batch operation is already running.', 'zh-cn': 'MRVC：已有批量操作在执行中。' },
@@ -182,6 +224,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   downloadFailed: {
     en: 'MRVC: download failed for "{0}" (exit code {1}) — see the task output.',
     'zh-cn': 'MRVC：" {0} "下载失败（退出码 {1}）——请查看任务输出。',
+  },
+  buildFailedNoDownload: {
+    en: 'MRVC: build failed for "{0}" (exit code {1}) — download skipped.',
+    'zh-cn': 'MRVC：" {0} " 编译失败（退出码 {1}）——已跳过下载。',
   },
 
   // remove / restore (filteredResources)
@@ -210,6 +256,105 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     en: "Invalid project name (no spaces or \\ / : * ? \" < > |)",
     'zh-cn': "工程名称无效（不能含空格或 \\ / : * ? \" < > |）",
   },
+
+  // analysis reports
+  analysisNoBuildDir: {
+    en: 'MRVC: no build directory yet — build with "mrvc.build.analysis" enabled first.',
+    'zh-cn': 'MRVC：尚无构建目录——请先开启 "mrvc.build.analysis" 构建一次。',
+  },
+  analysisNoSu: {
+    en: 'MRVC: no .su files found — enable "mrvc.build.analysis" and rebuild.',
+    'zh-cn': 'MRVC：未发现 .su 文件——请开启 "mrvc.build.analysis" 并重新构建。',
+  },
+  analysisNoRecords: { en: 'MRVC: .su files found but no usable records.', 'zh-cn': 'MRVC：已找到 .su 文件，但没有可用记录。' },
+  analysisNoDumps: {
+    en: 'MRVC: no expand dumps found — enable "mrvc.build.analysis" and rebuild.',
+    'zh-cn': 'MRVC：未发现调用图转储文件——请开启 "mrvc.build.analysis" 并重新构建。',
+  },
+  analysisNoCalls: { en: 'MRVC: expand dumps found but no call edges extracted.', 'zh-cn': 'MRVC：已找到调用图转储文件，但未能提取调用关系。' },
+
+  // MRS Tools launchers
+  mrsToolsNoInstallStart: {
+    en: 'MRVC: cannot start {0} — MRS2 installation not found (set mrvc.mrs2InstallPath).',
+    'zh-cn': 'MRVC：无法启动 {0}——未找到 MRS2 安装（请设置 mrvc.mrs2InstallPath）。',
+  },
+  mrsToolsNotFound: {
+    en: 'MRVC: {0} not found under the MRS2 installation ({1}).',
+    'zh-cn': 'MRVC：在 MRS2 安装目录下未找到 {0}（{1}）。',
+  },
+  mrsToolsStartFailed: { en: 'MRVC: failed to start {0} — {1}', 'zh-cn': 'MRVC：启动 {0} 失败——{1}' },
+
+  // new project wizard
+  newProjectScanning: { en: 'MRVC: scanning project templates…', 'zh-cn': 'MRVC：正在扫描工程模板…' },
+  newProjectNamePrompt: {
+    en: 'Project name (folder created inside the chosen location) — template: {0}',
+    'zh-cn': '工程名称（将在所选位置创建文件夹）——模板：{0}',
+  },
+  newProjectCreated: {
+    en: 'MRVC: project "{0}" created at "{1}" from {2} ({3} / {4}).',
+    'zh-cn': 'MRVC：已从 {2}（{3} / {4}）在" {1} "创建工程" {0} "。',
+  },
+  openInNewWindow: { en: 'Open in New Window', 'zh-cn': '在新窗口打开' },
+  // store / solution misc
+  noProjectInFolder: {
+    en: 'No .project found in the selected folder (not an MRS project?).',
+    'zh-cn': '所选文件夹中没有 .project（不是 MRS 工程？）。',
+  },
+  wsFileWriteFailed: { en: 'MRVC: cannot write workspace file — {0}', 'zh-cn': 'MRVC：无法写入工作区文件——{0}' },
+  wvprojOnlySkipped: {
+    en: 'Skipped "{0}": found a .wvproj marker but no .project (MRVC-only project cannot be parsed).',
+    'zh-cn': '已跳过" {0} "：发现了 .wvproj 标记但没有 .project（无法解析该工程）。',
+  },
+  openProjectFailed: { en: 'Failed to open MRS project: {0}', 'zh-cn': '打开 MRS 工程失败：{0}' },
+  openFolderFirst: {
+    en: 'MRVC: open a workspace folder first — the solution is saved in it.',
+    'zh-cn': 'MRVC：请先打开一个工作区文件夹——解决方案将保存在其中。',
+  },
+  solutionWriteFailed: { en: 'MRVC: writing solution failed — {0}', 'zh-cn': 'MRVC：写入解决方案失败——{0}' },
+  solutionCreated: {
+    en: 'MRVC: solution "{0}" created with {1} projects.',
+    'zh-cn': 'MRVC：解决方案" {0} "已创建，共 {1} 个工程。',
+  },
+  switchTypeFailed: { en: 'MRVC: switching project type failed — {0}', 'zh-cn': 'MRVC：切换工程类型失败——{0}' },
+  languageReload: {
+    en: 'MRVC: the UI language setting changed — reload the window to apply it.',
+    'zh-cn': 'MRVC：界面语言设置已更改——请重载窗口以生效。',
+  },
+  reloadWindow: { en: 'Reload Window', 'zh-cn': '重载窗口' },
+
+  // properties / download settings pages
+  downloadSettingsSaved: { en: 'MRVC: download settings saved ({0})', 'zh-cn': 'MRVC：下载设置已保存（{0}）' },
+  downloadSettingsSaveFailed: { en: 'MRVC: failed to save download settings ({0})', 'zh-cn': 'MRVC：保存下载设置失败（{0}）' },
+  macroConflictTitle: { en: 'Macro definition conflict ({0}):', 'zh-cn': '宏定义冲突（{0} 个）：' },
+  macroConflictApply: { en: 'Apply anyway', 'zh-cn': '仍然保存' },
+  macroConflictBack: { en: 'Go back', 'zh-cn': '返回修改' },
+  propertiesSaved: { en: 'MRVC: project properties saved ({0})', 'zh-cn': 'MRVC：工程属性已保存（{0}）' },
+  propertiesSaveFailed: { en: 'MRVC: failed to save configuration ({0})', 'zh-cn': 'MRVC：保存配置失败（{0}）' },
+
+  // linked folders
+  linkedCpUpdateFailed: {
+    en: 'MRVC: linked folder added to .project, but .cproject update failed: {0}',
+    'zh-cn': 'MRVC：链接文件夹已写入 .project，但 .cproject 更新失败：{0}',
+  },
+  linkedRemoved: { en: 'MRVC: linked folder "{0}" removed', 'zh-cn': 'MRVC：链接文件夹" {0} "已移除' },
+
+  // file ops leftovers
+  clipboardEmpty: {
+    en: 'MRVC: clipboard is empty — use "Copy" on a file or folder first.',
+    'zh-cn': 'MRVC：剪贴板为空——请先对文件或文件夹使用"复制"。',
+  },
+  pasteIntoSelf: { en: 'MRVC: cannot paste a folder into itself.', 'zh-cn': 'MRVC：无法将文件夹粘贴到其自身内部。' },
+  nodeNotInProject: { en: 'MRVC: node is not attached to a project.', 'zh-cn': 'MRVC：该节点未挂接到任何工程。' },
+  removeOrDeletePrompt: { en: 'Remove or delete "{0}"?', 'zh-cn': '移除还是删除" {0} "？' },
+  removeOrDeleteDirDetail: {
+    en: 'Remove hides it from the project (files stay on disk, restorable). Delete removes the files from disk.',
+    'zh-cn': '移除会将其从工程中隐藏（文件保留在磁盘上，可恢复）；删除会从磁盘上移除这些文件。',
+  },
+  removeOrDeleteFileDetail: {
+    en: 'Remove hides it from the project (the file stays on disk, restorable). Delete removes the file from disk.',
+    'zh-cn': '移除会将其从工程中隐藏（文件保留在磁盘上，可恢复）；删除会从磁盘上移除该文件。',
+  },
+  overwriteConfirm: { en: '"{0}" already exists. Overwrite?', 'zh-cn': '" {0} "已存在。是否覆盖？' },
 
   // rename project
   renameProjectTitle: { en: 'Rename project "{0}"', 'zh-cn': '重命名工程" {0} "' },

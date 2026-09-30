@@ -57,7 +57,7 @@ export async function copyNode(node: TreeNode): Promise<void> {
 
 export async function pasteNode(store: ProjectStore, node?: TreeNode): Promise<void> {
   if (!clip) {
-    vscode.window.showInformationMessage('MRVC: clipboard is empty — use "Copy" on a file or folder first.');
+    vscode.window.showInformationMessage(t('clipboardEmpty'));
     return;
   }
   const dir = (node && targetDir(node)) ?? store.active?.root;
@@ -69,7 +69,7 @@ export async function pasteNode(store: ProjectStore, node?: TreeNode): Promise<v
   const samePath = (a: string, b: string): boolean => ProjectStore.key(a) === ProjectStore.key(b);
   const keyStartsWith = (a: string, b: string): boolean => ProjectStore.key(a).startsWith(ProjectStore.key(b) + path.sep);
   if (samePath(src, dir) || keyStartsWith(dir, src)) {
-    vscode.window.showErrorMessage('MRVC: cannot paste a folder into itself.');
+    vscode.window.showErrorMessage(t('pasteIntoSelf'));
     return;
   }
   const dest = uniqueDest(dir, path.basename(src));
@@ -155,15 +155,13 @@ export async function copyProjectRelativePath(node: TreeNode): Promise<void> {
         (l) => l.type === 2 && (fsPath === l.location || fsPath.startsWith(l.location + path.sep))
       );
       if (!link) {
-        vscode.window.showErrorMessage(
-          `MRVC: "${path.basename(fsPath)}" is outside the project and not under any linked folder — no project-relative path exists.`
-        );
+        vscode.window.showErrorMessage(t('relPathNoProject', path.basename(fsPath)));
         return;
       }
       logic = toPosix(path.join(link.name, path.relative(link.location, fsPath)));
     }
   } else {
-    vscode.window.showErrorMessage('MRVC: node is not attached to a project.');
+    vscode.window.showErrorMessage(t('nodeNotInProject'));
     return;
   }
   const text = `\${workspace_loc:/\${ProjName}/${logic}}`;
@@ -208,12 +206,10 @@ export async function deleteNode(node: TreeNode): Promise<void> {
   // tree and the build (filteredResources, restorable via Restore Removed
   // Resources), [Delete] really removes the files — one dialog, two buttons.
   const confirm = await vscode.window.showWarningMessage(
-    `Remove or delete "${name}"?`,
+    t('removeOrDeletePrompt', name),
     {
       modal: true,
-      detail: isDir
-        ? 'Remove hides it from the project (files stay on disk, restorable). Delete removes the files from disk.'
-        : 'Remove hides it from the project (the file stays on disk, restorable). Delete removes the file from disk.',
+      detail: isDir ? t('removeOrDeleteDirDetail') : t('removeOrDeleteFileDetail'),
     },
     t('remove'),
     t('delete')

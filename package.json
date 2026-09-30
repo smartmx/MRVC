@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "mrvc",
   "private": true,
   "license": "MIT",
@@ -193,303 +193,308 @@
     "commands": [
       {
         "command": "mrs2.openFolder",
-        "title": "Open MRS Folder",
+        "title": "%command.mrs2.openFolder.title%",
         "category": "MRVC",
         "icon": "$(folder)"
       },
       {
         "command": "mrs2.openProject",
-        "title": "Open MRS Project",
+        "title": "%command.mrs2.openProject.title%",
         "category": "MRVC",
         "icon": "$(folder-opened)"
       },
       {
         "command": "mrs2.build",
-        "title": "Build Project",
+        "title": "%command.mrs2.build.title%",
         "category": "MRVC",
         "icon": "media/build_project.svg"
       },
       {
+        "command": "mrs2.buildAndDownload",
+        "title": "%command.mrs2.buildAndDownload.title%",
+        "category": "MRVC"
+      },
+      {
         "command": "mrs2.buildAll",
-        "title": "Build All Projects",
+        "title": "%command.mrs2.buildAll.title%",
         "category": "MRVC",
         "icon": "media/build_all_project.svg"
       },
       {
         "command": "mrs2.cleanAll",
-        "title": "Clean All Projects",
+        "title": "%command.mrs2.cleanAll.title%",
         "category": "MRVC",
         "icon": "$(clear-all)"
       },
       {
         "command": "mrs2.generateSolution",
-        "title": "Generate Solution From All Projects",
+        "title": "%command.mrs2.generateSolution.title%",
         "category": "MRVC",
         "icon": "$(layers)"
       },
       {
         "command": "mrs2.rebuildAll",
-        "title": "Rebuild All Projects",
+        "title": "%command.mrs2.rebuildAll.title%",
         "category": "MRVC",
         "icon": "media/rebuild_project.svg"
       },
       {
         "command": "mrs2.deleteOutputKeepImages",
-        "title": "Delete Output Files (Keep hex/bin)",
+        "title": "%command.mrs2.deleteOutputKeepImages.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.deleteOutputDirs",
-        "title": "Delete Output Directories",
+        "title": "%command.mrs2.deleteOutputDirs.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.buildSolution",
-        "title": "Build Solution",
+        "title": "%command.mrs2.buildSolution.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.cleanSolution",
-        "title": "Clean Solution",
+        "title": "%command.mrs2.cleanSolution.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.addProjectToSolution",
-        "title": "Add MRS Project to Solution",
+        "title": "%command.mrs2.addProjectToSolution.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.addProjectsByBatch",
-        "title": "Batch Import of Projects",
+        "title": "%command.mrs2.addProjectsByBatch.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.setBuildOrder",
-        "title": "Identify Build Order",
+        "title": "%command.mrs2.setBuildOrder.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.closeSolution",
-        "title": "Close Solution",
+        "title": "%command.mrs2.closeSolution.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.collapseAll",
-        "title": "Collapse All Projects",
+        "title": "%command.mrs2.collapseAll.title%",
         "category": "MRVC",
         "icon": "$(collapse-all)"
       },
       {
         "command": "mrs2.rebuild",
-        "title": "Rebuild Project",
+        "title": "%command.mrs2.rebuild.title%",
         "category": "MRVC",
         "icon": "media/rebuild_project.svg"
       },
       {
         "command": "mrs2.flash",
-        "title": "Download",
+        "title": "%command.mrs2.flash.title%",
         "category": "MRVC",
         "icon": "media/flash.svg"
       },
       {
         "command": "mrs2.clean",
-        "title": "Clean Project",
+        "title": "%command.mrs2.clean.title%",
         "category": "MRVC",
         "icon": "$(trash)"
       },
       {
         "command": "mrs2.flashUtility",
-        "title": "Open WCH-LinkUtility",
+        "title": "%command.mrs2.flashUtility.title%",
         "category": "MRVC",
         "icon": "$(tools)"
       },
       {
         "command": "mrs2.configure",
-        "title": "Project Properties",
+        "title": "%command.mrs2.configure.title%",
         "category": "MRVC",
         "icon": "$(settings-gear)"
       },
       {
         "command": "mrs2.renameProject",
-        "title": "Rename Project",
+        "title": "%command.mrs2.renameProject.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.syncProjectName",
-        "title": "Sync Project Name from Folder",
+        "title": "%command.mrs2.syncProjectName.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.syncSettings",
-        "title": "Sync Setting Across Projects",
+        "title": "%command.mrs2.syncSettings.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.ispTool",
-        "title": "WCH In-System Programmer",
+        "title": "%command.mrs2.ispTool.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.touchkeyTool",
-        "title": "WCH Touchkey Calibrate Tool",
+        "title": "%command.mrs2.touchkeyTool.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.uiDesigner",
-        "title": "WCHGUIDesigner",
+        "title": "%command.mrs2.uiDesigner.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.hexBinTool",
-        "title": "HexBin Studio",
+        "title": "%command.mrs2.hexBinTool.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.comTransmit",
-        "title": "Serial Port Debug Tool",
+        "title": "%command.mrs2.comTransmit.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.updateIntellisense",
-        "title": "Update IntelliSense Configuration",
+        "title": "%command.mrs2.updateIntellisense.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.switchProjectType",
-        "title": "Switch Project Type (C/C++)",
+        "title": "%command.mrs2.switchProjectType.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.generateCMakeList",
-        "title": "Generate CMakeLists File",
+        "title": "%command.mrs2.generateCMakeList.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.exportAsCMake",
-        "title": "Export As CMake Project",
+        "title": "%command.mrs2.exportAsCMake.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.showFullBuildOutput",
-        "title": "Show Full Build Output",
+        "title": "%command.mrs2.showFullBuildOutput.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.createProject",
-        "title": "New MounRiver Project",
+        "title": "%command.mrs2.createProject.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.createStaticLib",
-        "title": "New MounRiver Static Library",
+        "title": "%command.mrs2.createStaticLib.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.restoreRemoved",
-        "title": "Restore Removed Resources",
+        "title": "%command.mrs2.restoreRemoved.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.showStackUsage",
-        "title": "Static Stack Usage",
+        "title": "%command.mrs2.showStackUsage.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.showCallAnalysis",
-        "title": "Function Call Analysis",
+        "title": "%command.mrs2.showCallAnalysis.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.addLinkedFolder",
-        "title": "Add Linked Folder (external source folder)",
+        "title": "%command.mrs2.addLinkedFolder.title%",
         "category": "MRVC",
         "icon": "$(new-folder)"
       },
       {
         "command": "mrs2.removeLinkedFolder",
-        "title": "Remove Linked Folder",
+        "title": "%command.mrs2.removeLinkedFolder.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.changeLinkedFolder",
-        "title": "Change Linked Location",
+        "title": "%command.mrs2.changeLinkedFolder.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.openMrsTerminal",
-        "title": "Open MRS Command Terminal",
+        "title": "%command.mrs2.openMrsTerminal.title%",
         "category": "MRVC",
         "icon": "$(terminal)"
       },
       {
         "command": "mrs2.revealProducts",
-        "title": "Show Build Products in Explorer",
+        "title": "%command.mrs2.revealProducts.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.refreshTree",
-        "title": "Refresh",
+        "title": "%command.mrs2.refreshTree.title%",
         "category": "MRVC",
         "icon": "$(refresh)"
       },
       {
         "command": "mrs2.file.newFile",
-        "title": "New File",
+        "title": "%command.mrs2.file.newFile.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.file.newFolder",
-        "title": "New Folder",
+        "title": "%command.mrs2.file.newFolder.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.file.copy",
-        "title": "Copy",
+        "title": "%command.mrs2.file.copy.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.file.paste",
-        "title": "Paste",
+        "title": "%command.mrs2.file.paste.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.file.copyPath",
-        "title": "Copy Absolute Path",
+        "title": "%command.mrs2.file.copyPath.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.file.copyRelPath",
-        "title": "Copy Project Relative Path",
+        "title": "%command.mrs2.file.copyRelPath.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.file.copyName",
-        "title": "Copy File Name",
+        "title": "%command.mrs2.file.copyName.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.file.rename",
-        "title": "Rename",
+        "title": "%command.mrs2.file.rename.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.file.delete",
-        "title": "Delete",
+        "title": "%command.mrs2.file.delete.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.file.reveal",
-        "title": "Open Containing Folder",
+        "title": "%command.mrs2.file.reveal.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.excludeFromBuild",
-        "title": "Exclude From Build",
+        "title": "%command.mrs2.excludeFromBuild.title%",
         "category": "MRVC"
       },
       {
         "command": "mrs2.includeFromBuild",
-        "title": "Include From Build",
+        "title": "%command.mrs2.includeFromBuild.title%",
         "category": "MRVC"
       }
     ],
@@ -873,19 +878,24 @@
           "group": "1_project@1"
         },
         {
-          "command": "mrs2.rebuild",
+          "command": "mrs2.buildAndDownload",
           "when": "view == mrs2.projectExplorer && viewItem == project",
           "group": "1_project@2"
         },
         {
-          "command": "mrs2.clean",
+          "command": "mrs2.rebuild",
           "when": "view == mrs2.projectExplorer && viewItem == project",
           "group": "1_project@3"
         },
         {
-          "command": "mrs2.flash",
+          "command": "mrs2.clean",
           "when": "view == mrs2.projectExplorer && viewItem == project",
           "group": "1_project@4"
+        },
+        {
+          "command": "mrs2.flash",
+          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "group": "1_project@5"
         },
         {
           "command": "mrs2.configure",
@@ -895,17 +905,17 @@
         {
           "command": "mrs2.renameProject",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "1_project@5"
+          "group": "1_project@6"
         },
         {
           "command": "mrs2.syncProjectName",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "1_project@6"
+          "group": "1_project@7"
         },
         {
           "command": "mrs2.switchProjectType",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "1_project@7"
+          "group": "1_project@8"
         },
         {
           "command": "mrs2.addLinkedFolder",
@@ -940,27 +950,27 @@
         {
           "command": "mrs2.generateCMakeList",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "1_project@8"
+          "group": "1_project@9"
         },
         {
           "command": "mrs2.exportAsCMake",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "1_project@9"
+          "group": "1_project@10"
         },
         {
           "command": "mrs2.restoreRemoved",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "1_project@10"
+          "group": "1_project@11"
         },
         {
           "command": "mrs2.showStackUsage",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "1_project@11"
+          "group": "1_project@12"
         },
         {
           "command": "mrs2.showCallAnalysis",
           "when": "view == mrs2.projectExplorer && viewItem == project",
-          "group": "1_project@12"
+          "group": "1_project@13"
         },
         {
           "command": "mrs2.changeLinkedFolder",
@@ -968,9 +978,20 @@
           "group": "mrs2link@3"
         }
       ],
+      "editor/context": [
+        {
+          "command": "mrs2.showFullBuildOutput",
+          "when": "view == workbench.panel.output",
+          "group": "8_showFullBuildOutput"
+        }
+      ],
       "commandPalette": [
         {
           "command": "mrs2.build",
+          "when": "mrs2.hasActiveProject"
+        },
+        {
+          "command": "mrs2.buildAndDownload",
           "when": "mrs2.hasActiveProject"
         },
         {

@@ -2,6 +2,7 @@
 
 一个 VSCode 扩展（插件名 **MRVC**），直接打开/配置/编译/**下载烧录** WCH（南京沁恒）MRS / MounRiver 工程，
 无需 MRS2 IDE 本体（仅复用其安装目录中的工具链与工具组件）。
+**当前仅支持 Windows**（Linux/macOS 暂不支持）。
 活动栏视图名为 "Project Explorer"；命令 ID 仍使用 `mrs2.*` 历史前缀（不影响使用），设置键为 `mrvc.*`。
 
 ## 功能
@@ -14,8 +15,12 @@
 | 工程树 | 活动栏 MRVC 容器内的 "Project Explorer"：标题栏 4 个按钮（**Open Mrs Project**（文件对话框）/ **Open Mrs Folder**（只选目录）/ 折叠全部 / **刷新**——外部改名/新增/删除的工程会被自动识别与清理）。工程 → 链接文件夹（蓝色名称）/ 实体目录 / **根级源文件** / 编译输出目录（红色）。**Workspace Files 节点**列出工程同级目录的散落源文件。**源文件自动刷新**：工作区与每个工程内的源文件新建/删除/改名即时反映到树（400ms 防抖），配置文件有专属监听 |
 | 文件管理 | 树节点右键（每类节点独立菜单）：New File / New Folder / **Copy→Paste**（插件内剪贴板，同名自动 `- copy` 递增，文件夹递归复制）/ Copy Absolute Path / **Copy Project Relative Path**（`${workspace_loc:/${ProjName}/…}` 形式的 CDT 逻辑路径）/ Copy File Name / Rename / Delete（均带确认）/ Open Containing Folder。链接文件夹禁用 Rename/Delete（防误删真实目录），其内部文件操作不受限 |
 | 排除 / 恢复编译 | 文件与文件夹右键 **Exclude From Build / Include From Build**（与 MRS 的 Resource Configurations → Exclude from Build 等价）：写回 `.cproject` 各配置 `sourceEntries` 的 `excluding` 列表（`|` 分隔；目录带命名 sourceEntry 时写目录内相对路径，否则写工程根相对全路径并在缺失时自动创建根 entry——与 MRS2 两种工程风格完全一致）。被排除的资源在树中显示为**灰色**（行尾 `×`）并排在最后；下次编译生效；编译输出目录不可排除 |
-| 编译 / 重建 / 清理 | 每次构建前从 `.cproject` 重新生成 CDT 风格 makefile，再调 MRS 自带 `make`；错误进问题面板（`$mrvcgcc` problemMatcher）。行内 Build / Rebuild / Download 按钮 + 右键菜单；Build All / Clean All / Solution 构建批处理（单工程失败不中断、可取消带汇总）；**Pre-build / Post-build steps** 参与生成的 makefile |
-| 下载烧录 | 工程行内 **Flash 按钮** / 右键 **Download**：通过 MRS2 的 OpenOCD 下载 `obj/` 产物（hex/bin，地址取自 `.template` 的 Address，双核工程自动选 `wch-dual-core.cfg`）；输出进任务终端，失败弹提示 |
+| 编译 / 重建 / 清理 | 每次构建前从 `.cproject` 重新生成 CDT 风格 makefile（**现行 MRS 2.1.0 风格**，与 MRS2 金标逐字节一致；1.9.2 布局亦可复现），再调 MRS 自带 `make`；错误进问题面板（`$mrvcgcc` problemMatcher）。行内 Build / Rebuild / Download 按钮 + 右键菜单；Build All / Clean All / Solution 构建批处理（单工程失败不中断、可取消带汇总）；**Pre-build / Post-build steps** 参与生成的 makefile |
+| **Build Project And Download** | 工程右键 / 命令面板 **构建工程并下载**：编译 + 下载一条龙，编译成功才下载（与 MRS2 同名命令语义一致） |
+| **Show Full Build Output** | 命令面板 / 输出面板右键打开上次构建的完整输出（MRS2 同款 buildContentRecord.txt 位置），单工程与批量构建均记录，尾部附**全量编译指令清单**（每个源文件的完整命令行） |
+| **静态栈分析** | 设置 `mrvc.build.analysis` 开启后构建自动注入 `-fstack-usage` / `-fdump-rtl-expand`；**Static Stack Usage** / **Function Call Analysis** 命令生成分析报告（开源方案替代 MRS2 闭源解析器） |
+| 新建工程向导 | `…` 菜单 → **新建 MounRiver 工程 / 静态库**：扫描 MRS2 SDK 模板（系列 → RTOS → 器件三步选择）→ 工程名 → **位置（可键入任意新路径自动创建，或点浏览按钮选择；默认上次创建目录）**，创建完成提示可一键在新窗口打开；renameProject 全套联动，MRS2 无损打开 |
+| 下载烧录 | 工程行内 **Flash 按钮** / 右键 **Download**：通过 MRS2 的 OpenOCD 下载 `obj/` 产物（hex/bin，地址取自 `.template` 的 Address，双核工程自动选 `wch-dual-core.cfg`；`.template` 勾选 **Erase All** 时下载前全片擦除）；输出进任务终端，失败弹提示 |
 | Download Settings | 属性页 → Download → Download Settings（镜像 MRS2）：**读保护状态查询 / 使能 / 解除**、**调试保护**、**Linked MCU Type 查询**、**Erase Code Flash**（By Pin NRST / By Power off）、**MCU Memory Assign**（Query/Apply）、**Operation Record** 操作日志；右侧完整编辑下载参数（MCU Type / Memory Type / Program Address / Debug Interface Mode / CLK Speed / Target File / Main Operations 八项），全部写回 `.template`（MRS2 无损打开）。硬件操作经系统 32 位 PowerShell P/Invoke 调用 MRS2 的 McuCompilerDll.dll，零新增依赖；芯片 ID 与能力开关自动来自芯片库，不支持的选项按芯片自动灰显 |
 | 芯片选择器 | 属性页 → General → Chip / Target：MRS2 同款 "Target MCU Type" 选择器——系列树（RISC-V/ARM 分组）→ 型号列表 → 信息区；数据实时扫描 MRS2 的 SDK 组件目录（40+ 系列），选中后自动填充 Series / MCU / Mcu Type / Address 并写回 `.template`；SDK 缺失时回退文本编辑 |
 | Build Steps / Build Artifact | 属性页 → C/C++ Build 分组：**Build Steps**（Pre/Post-build 的 Command 与 Description，进 makefile）；**Build Artifact**（Artifact Type：Executable/Static Library；Artifact name 按 MRS 变量形式显示 `${ProjName}`；Artifact extension；Output prefix——产物名前缀与自定义扩展名在生成的 makefile 中生效） |
@@ -31,6 +36,9 @@
 
 快捷键：`F7` 编译，`Shift+F7` 重建，`F8` 下载（与 MRS 一致）。
 
+**界面语言**：命令菜单跟随 VSCode 显示语言自动中英文切换（内置双语资源）；提示/报错等
+运行时消息由 `mrvc.language` 设置驱动（`auto`/`en`/`zh-cn`，默认 auto）。
+
 ## 打包与安装（.vsix）
 
 ```bash
@@ -39,8 +47,8 @@ npm run package      # 生成 mrvc-<version>.vsix（@vscode/vsce，--no-dependen
 ```
 
 安装（三种任选）：
-- VSCode 图形界面：扩展视图 → 右上角 `···`（Views and More Actions）→ **Install from VSIX...** → 选择生成的 `mrvc-0.1.3.vsix`
-- 命令行：`code --install-extension mrvc-0.1.3.vsix`
+- VSCode 图形界面：扩展视图 → 右上角 `···`（Views and More Actions）→ **Install from VSIX...** → 选择生成的 `mrvc-0.1.5.vsix`
+- 命令行：`code --install-extension mrvc-0.1.5.vsix`
 - 直接把 `.vsix` 拖进扩展视图
 
 > `.vscodeignore` 已配置只打包 `out/extension.js`(+map)、`media/*.svg`、README、package.json；
@@ -48,7 +56,7 @@ npm run package      # 生成 mrvc-<version>.vsix（@vscode/vsce，--no-dependen
 
 ## 使用
 
-> **前置条件：需要先安装 [MounRiver Studio 2（MRS2）](https://www.mounriver.com/)**。
+> **前置条件：需要先安装 [MounRiver Studio 2（MRS2）Windows 版](https://www.mounriver.com/)**。
 > MRVC 不自带工具链，而是复用 MRS2 安装目录中的 RISC-V 工具链（GCC8/12/15）、make、
 > OpenOCD、WCH-LinkUtility 与芯片库组件——没有 MRS2 就无法编译/下载。
 

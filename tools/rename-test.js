@@ -114,7 +114,10 @@ renameProject(proj, 'NewName');
   check('space-dir project: targetName from .project name (no spaces)', cp.targetName === 'I2C');
   generateMakefiles(cp, goldenTc());
   const mk = fs.readFileSync(path.join(spaced, cp.configName, 'makefile'), 'utf-8');
-  check('makefile targets use space-free name', mk.includes('all: I2C.elf') && mk.includes('I2C.elf: $(OBJS) $(USER_OBJS)'));
+  check(
+    'makefile targets use space-free name',
+    mk.includes('I2C.elf: $(OBJS) $(USER_OBJS)') && (mk.includes('all: I2C.elf') || mk.includes('main-build: I2C.elf'))
+  );
   check('makefile has no space-bearing unquoted targets', !/^\S*\s*I2C copy\.elf/m.test(mk));
   check('linker recipe quotes the real artifact name', mk.includes('-o "I2C.elf"'));
 

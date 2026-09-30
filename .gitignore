@@ -1,2 +1,8 @@
 out/
 node_modules/
+.scratch/
+.mimosa/
+buildlogs/
+# never ignore the release artifact, even if a develop-side .gitignore
+# (which has *.vsix) ever gets copied over this file wholesale
+!mrvc-*.vsix

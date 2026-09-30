@@ -98,17 +98,32 @@ export async function flashProject(store: ProjectStore, proj?: MrsProject): Prom
     vscode.window.showErrorMessage(t('noActiveProject'));
     return;
   }
+  try {
+    await downloadProject(store, project);
+  } catch (e) {
+    vscode.window.showErrorMessage(`MRVC: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * The download pipeline shared by the Download command and Build and
+ * Download (the latter calls it only after a successful build). Resolves
+ * false when the download failed; a firmware-picker cancellation is not a
+ * failure and resolves true. The project only becomes ACTIVE once the user
+ * commits to a firmware (cancelling the picker must not switch contexts).
+ */
+export async function downloadProject(store: ProjectStore, project: MrsProject): Promise<boolean> {
   const install = getInstall();
   if (!install) {
     vscode.window.showErrorMessage(t('installNotFound'));
-    return;
+    return false;
   }
 
   const hex = await pickFirmware(project);
-  if (!hex) return;
+  if (!hex) return true;
   if (!fs.existsSync(hex)) {
     vscode.window.showErrorMessage(t('firmwareNotFound', hex));
-    return;
+    return false;
   }
 
   const cfg = vscode.workspace.getConfiguration('mrvc');
@@ -116,11 +131,11 @@ export async function flashProject(store: ProjectStore, proj?: MrsProject): Prom
   const boardCfg = selectBoardCfg(project, cfg);
   if (!fs.existsSync(openocd)) {
     vscode.window.showErrorMessage(t('openocdNotFound', openocd));
-    return;
+    return false;
   }
   if (!fs.existsSync(boardCfg)) {
     vscode.window.showErrorMessage(t('openocdCfgNotFound', boardCfg));
-    return;
+    return false;
   }
 
   // address priority: explicit setting → .template (written by MRS2/the
@@ -135,6 +150,10 @@ export async function flashProject(store: ProjectStore, proj?: MrsProject): Prom
     reset: cfg.get<boolean>('flash.reset', true),
     boardCfg,
     firmware: hex,
+    // .template "Erase All" checkbox (MRS2's Chip properties page): scrub
+    // the whole flash before writing; dual-core cfgs expose two banks
+    eraseAll: String(project.template.values['Erase All'] ?? '').trim().toLowerCase() === 'true',
+    banks: project.kernel ? 2 : 1,
   });
 
   store.setActive(project);
@@ -148,7 +167,9 @@ export async function flashProject(store: ProjectStore, proj?: MrsProject): Prom
   const code = await executeFlashTask(task);
   if (code !== 0) {
     vscode.window.showErrorMessage(t('downloadFailed', project.projectName, code ?? 'unknown'));
+    return false;
   }
+  return true;
 }
 
 export function openLinkUtility(): void {

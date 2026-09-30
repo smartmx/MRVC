@@ -11,6 +11,7 @@ import { readTemplate, TemplateData } from '../core/templateFile';
 import { locateInstall, mergeCustomToolchains, CustomToolchain, MrsInstall, selectToolchain, ToolchainInfo } from '../core/toolchain';
 import { findProjectRoots } from '../core/discover';
 import { parseSolution } from '../core/solution';
+import { t } from '../core/i18n';
 
 export class MrsProject {
   readonly root: string;
@@ -229,7 +230,7 @@ export class ProjectStore implements vscode.Disposable {
   /** open a project folder in a new window; projects are discovered there */
   private async openFolderWindow(root: string): Promise<void> {
     if (!fs.existsSync(path.join(root, '.project')) && !findProjectRoots(root).length) {
-      vscode.window.showErrorMessage('No .project found in the selected folder (not an MRS project?).');
+      vscode.window.showErrorMessage(t('noProjectInFolder'));
       return;
     }
     await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(root), { forceNewWindow: true });
@@ -252,10 +253,9 @@ export class ProjectStore implements vscode.Disposable {
     try {
       fs.writeFileSync(wsFile, JSON.stringify(ws, null, '\t'), 'utf-8');
     } catch (e) {
-      vscode.window.showErrorMessage(`MRVC: cannot write workspace file — ${msg(e)}`);
+      vscode.window.showErrorMessage(t('wsFileWriteFailed', msg(e)));
       return;
-    }
-    await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(wsFile), { forceNewWindow: true });
+    }    await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(wsFile), { forceNewWindow: true });
   }
 
   add(root: string): MrsProject | null {
@@ -263,7 +263,7 @@ export class ProjectStore implements vscode.Disposable {
       // discovered via 工程名.wvproj (the MRS marker) but the parseable
       // project description is absent — MRVC-only project
       vscode.window.showWarningMessage(
-        `Skipped "${path.basename(root)}": found a .wvproj marker but no .project (MRVC-only project cannot be parsed).`
+        t('wvprojOnlySkipped', path.basename(root))
       );
       return null;
     }
@@ -282,7 +282,7 @@ export class ProjectStore implements vscode.Disposable {
       this._onDidChange.fire();
       return proj;
     } catch (e) {
-      vscode.window.showErrorMessage(`Failed to open MRS project: ${msg(e)}`);
+      vscode.window.showErrorMessage(t('openProjectFailed', msg(e)));
       return null;
     }
   }
@@ -386,6 +386,20 @@ export class ProjectStore implements vscode.Disposable {
     this.context.workspaceState.update('mrs2.active', this._active?.root ?? undefined);
     // solutions are deliberately NOT persisted: they only exist because the
     // user explicitly opened a .wvsln in this session
+  }
+
+  /**
+   * Last folder a project was created in (MRS2 HistroyManager.lastCreateProjectPath
+   * equivalent): the new-project wizard pre-fills its location picker with it.
+   * globalState on purpose — MRS2's history is machine-wide, not per workspace.
+   */
+  getLastCreateDir(): string | undefined {
+    const dir = this.context.globalState.get<string>('mrs2.lastCreateDir');
+    return dir && fs.existsSync(dir) ? dir : undefined;
+  }
+
+  setLastCreateDir(dir: string): void {
+    void this.context.globalState.update('mrs2.lastCreateDir', dir);
   }
 
   restoreState(): void {

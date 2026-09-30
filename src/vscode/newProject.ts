@@ -8,62 +8,115 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { ProjectStore, getInstall, msg } from './projects';
-import { scanTemplates, createProjectFromTemplate, TemplateChip, SdkTemplates } from '../core/newProject';
+import { scanTemplates, createProjectFromTemplate, normalizeParentDirInput, TemplateChip, SdkTemplates } from '../core/newProject';
+import { t } from '../core/i18n';
 
 async function pickTemplate(db: SdkTemplates): Promise<TemplateChip | undefined> {
   const seriesNames = [...db.series.keys()].sort((a, b) => a.localeCompare(b));
-  const seriesPick = await vscode.window.showQuickPick(seriesNames, { placeHolder: 'New MounRiver Project — chip series (1/3)' });
+  const seriesPick = await vscode.window.showQuickPick(seriesNames, { placeHolder: t('wizardSeries') });
   if (!seriesPick) return undefined;
   const osNames = [...db.series.get(seriesPick)!.keys()].sort((a, b) => a.localeCompare(b));
-  const osPick = await vscode.window.showQuickPick(osNames, { placeHolder: 'New MounRiver Project — RTOS (2/3)' });
+  const osPick = await vscode.window.showQuickPick(osNames, { placeHolder: t('wizardRtos') });
   if (!osPick) return undefined;
   const chips = db.series.get(seriesPick)!.get(osPick) ?? [];
   const chipPick = await vscode.window.showQuickPick(
     chips.map((c) => ({ label: c.chip, description: c.os, template: c })),
-    { placeHolder: 'New MounRiver Project — device template (3/3)' }
+    { placeHolder: t('wizardChip') }
   );
   return chipPick?.template;
 }
 
-async function pickLocation(): Promise<string | undefined> {
-  const picks = await vscode.window.showOpenDialog({
-    title: 'Parent folder for the new project',
-    canSelectFiles: false,
-    canSelectFolders: true,
-    canSelectMany: false,
-    openLabel: 'Create here',
+/**
+ * Location step, MRS2-style: its wizard field accepts ANY folder path
+ * (createRealProject mkdirs it recursively), so typing must be possible —
+ * a plain folder dialog can only pick existing directories. This is the
+ * "Open Folder" interaction: an editable QuickPick pre-filled with the last
+ * creation folder, plus a Browse item that opens the system dialog.
+ */
+async function pickLocation(defaultDir?: string): Promise<string | undefined> {
+  const qp = vscode.window.createQuickPick();
+  qp.title = t('wizardLocationTitle');
+  qp.placeholder = t('wizardLocationPlaceholder');
+  qp.value = defaultDir ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+  qp.ignoreFocusOut = true;
+  // the browse action must be a BUTTON, not a list item: QuickPick filters
+  // items against the typed path, so a pre-filled value would hide it
+  const browseButton: vscode.QuickInputButton = {
+    iconPath: new vscode.ThemeIcon('folder-opened'),
+    tooltip: t('wizardBrowse'),
+  };
+  qp.buttons = [browseButton];
+  const browseWithDialog = (seed: string): void => {
+    void vscode.window.showOpenDialog({
+      title: t('wizardLocationTitle'),
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      defaultUri: seed && /^[A-Za-z]:[\\/]/.test(seed) ? vscode.Uri.file(seed) : undefined,
+      openLabel: t('wizardCreateHere'),
+    }).then((picks) => {
+      if (picks?.length) {
+        qp.value = picks[0].fsPath; // feed the choice back into the editor
+      }
+    });
+  };
+  return new Promise<string | undefined>((resolve) => {
+    let settled = false;
+    const done = (v: string | undefined) => {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+    };
+    qp.onDidTriggerButton((b) => {
+      if (b === browseButton) browseWithDialog(qp.value.trim());
+    });
+    qp.onDidAccept(() => {
+      done(normalizeParentDirInput(qp.value) || undefined);
+      qp.hide();
+    });
+    qp.onDidHide(() => {
+      done(undefined);
+      qp.dispose(); // hide() only hides — the QuickInput is a Disposable
+    });
+    qp.show();
   });
-  return picks?.length ? picks[0].fsPath : undefined;
 }
 
 async function runWizard(store: ProjectStore, artifactType: 'exe' | 'lib'): Promise<void> {
   const install = getInstall();
   if (!install) {
-    vscode.window.showErrorMessage(
-      'MRS2 (MounRiver Studio 2) installation not found — set "mrvc.mrs2InstallPath" to your MRS2 install folder.'
-    );
+    vscode.window.showErrorMessage(t('installNotFound'));
     return;
   }
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'MRVC: scanning project templates…', cancellable: false },
+    { location: vscode.ProgressLocation.Notification, title: t('newProjectScanning'), cancellable: false },
     () => Promise.resolve(scanTemplates(install.resourcesWin32))
   ).then((db) => pickTemplate(db))
     .then(async (template) => {
       if (!template) return;
       const name = await vscode.window.showInputBox({
-        prompt: `Project name (folder created inside the chosen location) — template: ${template.chip}`,
-        validateInput: (v) => (v && !/[\\/:*?"<>|]/.test(v.trim()) ? undefined : 'Invalid project name'),
+        prompt: t('newProjectNamePrompt', template.chip),
+        validateInput: (v) => (v && !/[\\/:*?"<>|]/.test(v.trim()) ? undefined : t('invalidProjectName')),
       });
       if (!name) return;
-      const parentDir = await pickLocation();
+      const parentDir = await pickLocation(store.getLastCreateDir());
       if (!parentDir) return;
       try {
         const result = createProjectFromTemplate(template, { projectName: name.trim(), parentDir, artifactType });
+        store.setLastCreateDir(parentDir);
         store.add(result.projectRoot);
         store.setActive(store.get(result.projectRoot)!);
-        await vscode.window.showInformationMessage(
-          `MRVC: project "${result.finalName}" created from ${template.chip} (${template.series} / ${template.os}).`
+        // the created project lives outside this workspace — offer the same
+        // "new window" opening the Open MRS Project command uses
+        const openPick = await vscode.window.showInformationMessage(
+          t('newProjectCreated', result.finalName, result.projectRoot, template.chip, template.series, template.os),
+          t('openInNewWindow')
         );
+        if (openPick === t('openInNewWindow')) {
+          void vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(result.projectRoot), {
+            forceNewWindow: true,
+          });
+        }
       } catch (e) {
         vscode.window.showErrorMessage(`MRVC: ${msg(e)}`);
       }

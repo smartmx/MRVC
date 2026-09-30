@@ -192,13 +192,42 @@ check('regex rejects bare hex and overflow', !ADDRESS_RE.test('0x00G00000') && !
 
 // 11. ANSI-artifact encoding selection, aligned with MRS2's
 // getSystemANSIEncoding (ACP 936 -> GBK, detection failure -> GBK,
-// everything else incl. UTF-8 beta 65001 and non-Windows -> UTF-8)
+// CJK ACPs -> the matched double-byte charset, everything else incl.
+// UTF-8 beta 65001 and non-Windows -> UTF-8)
 {
   check('acp: 936 (Chinese) -> gbk', encodingForAcp('936') === 'gbk');
   check('acp: 65001 (UTF-8 beta) -> utf-8', encodingForAcp('65001') === 'utf-8');
   check('acp: 1252 (Western) -> utf-8', encodingForAcp('1252') === 'utf-8');
   check('acp: undetectable -> gbk (MRS2 fallback)', encodingForAcp(undefined) === 'gbk');
   check('acp: non-Windows always utf-8', encodingForAcp('936', 'linux') === 'utf-8' && encodingForAcp(undefined, 'darwin') === 'utf-8');
+  check('acp: 932 (Japanese) -> shift-jis (MRS2 matched encoding)', encodingForAcp('932') === 'shift-jis');
+  check('acp: 949 (Korean) -> euc-kr', encodingForAcp('949') === 'euc-kr');
+  check('acp: 950 (Trad. Chinese) -> big5', encodingForAcp('950') === 'big5');
+}
+
+// 12. Erase All (.template flag): the OpenOCD program proc expanded with a
+// full-bank scrub inserted between reset init and the write - the proc's
+// own unconditional `init` forbids prepending an erase to a `program` call
+{
+  fs.rmSync(scratch, { recursive: true, force: true });
+  prepareFlash({ ...base, eraseAll: true });
+  const lines = readCfg(scratch).split('\n').filter((l) => l.trim());
+  check('eraseAll: address override stays first (bank base at probe time)', lines[0] === 'wlink_set_address 0x00000000');
+  check('eraseAll: init once, then reset init', lines[1] === 'init' && lines[2] === 'reset init');
+  check('eraseAll: single bank scrubbed to last sector', lines[3] === 'flash erase_sector 0 0 last');
+  check('eraseAll: write_image erase keeps the offset', lines[4] === 'flash write_image erase "E:/prj/obj/LED.hex" 0x00000000');
+  check(
+    'eraseAll: verify/reset/shutdown mirror the program proc',
+    lines[5] === 'verify_image "E:/prj/obj/LED.hex" 0x00000000' && lines[6] === 'poll off' && lines[7] === 'reset run' && lines[8] === 'shutdown'
+  );
+  fs.rmSync(scratch, { recursive: true, force: true });
+  prepareFlash({ ...base, eraseAll: true, banks: 2 });
+  const dual = readCfg(scratch);
+  check('eraseAll dual-core: banks 0 and 1 both scrubbed', dual.includes('flash erase_sector 0 0 last') && dual.includes('flash erase_sector 1 0 last'));
+  fs.rmSync(scratch, { recursive: true, force: true });
+  prepareFlash({ ...base, eraseAll: true, verify: false, reset: false });
+  const bare = readCfg(scratch);
+  check('eraseAll: verify/reset omitted when disabled', !bare.includes('verify_image') && !bare.includes('reset run') && bare.trimEnd().endsWith('shutdown'));
 }
 
 console.log(failures ? `\n${failures} FAILURES` : '\nall flash tests passed');

@@ -93,6 +93,19 @@ export interface CreateProjectResult {
  * name to the requested one (renames .launch/.wvproj and rewrites
  * .template Target Path, never moves the folder).
  */
+/**
+ * Normalize the typed parent-folder input: trim trailing separators EXCEPT
+ * on a drive root — "C:" alone must become "C:\", because path.resolve("C:")
+ * resolves to THAT DRIVE'S CURRENT DIRECTORY and the project would land
+ * somewhere else entirely.
+ */
+export function normalizeParentDirInput(raw: string): string {
+  const v = raw.trim();
+  // one branch covers every drive-root shape: "C:", "C:\", "C:/", "C:\\", "C://"
+  if (/^[A-Za-z]:[\\/]*$/.test(v)) return v.slice(0, 2) + '\\';
+  return v.replace(/[\\/]+$/, '');
+}
+
 export function createProjectFromTemplate(template: TemplateChip, opts: CreateProjectOptions): CreateProjectResult {
   const name = opts.projectName.trim();
   // PowerShell metacharacters are rejected in addition to filesystem-illegal
@@ -114,13 +127,17 @@ export function createProjectFromTemplate(template: TemplateChip, opts: CreatePr
   fs.mkdirSync(projectRoot, { recursive: true });
 
   // extract (PowerShell Expand-Archive ships with Windows; the template
-  // zip layout is a plain project folder)
+  // zip layout is a plain project folder). Both paths go in as PowerShell
+  // SINGLE-quoted literals ('' escapes an inner quote): inside double quotes
+  // PowerShell would expand `$vars` and eat backticks in user-typed folder
+  // names, silently extracting to a different location
   const zip = path.resolve(template.zipPath);
   if (!fs.existsSync(zip)) throw new Error(`Template zip not found: ${zip}`);
+  const psLit = (s: string) => `'${s.replace(/'/g, "''")}'`;
   try {
     execFileSync(
       'powershell.exe',
-      ['-NoProfile', '-Command', `Expand-Archive -LiteralPath "${zip}" -DestinationPath "${projectRoot}" -Force`],
+      ['-NoProfile', '-Command', `Expand-Archive -LiteralPath ${psLit(zip)} -DestinationPath ${psLit(projectRoot)} -Force`],
       { stdio: 'pipe', timeout: 120000 }
     );
   } catch (e) {

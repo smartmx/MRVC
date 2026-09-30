@@ -118,12 +118,12 @@ for (const proj of projects) {
   // older CDT generations (MRS 1.9.2, e.g. the FreeRTOS golden) group OBJS
   // between SRCS and DEPS; newer ones (MRS 2.1.0, HarmonyOS golden) emit each
   // DEPS block right after its SRCS group
-  const blocksFirst = /^2\./.test(verStr);
+  const mrs2Style = /^2\./.test(verStr);
   // per-project toolchain: inferred from the golden text (review §4.1a —
   // a fixed riscv-none-elf- prefix was an analysis artifact that inflated
   // the HarmonyOS diff list)
   const goldenTc = TcFor(inferPrefixFromGolden(goldenMakefile));
-  const res = generateMakefiles(cp, goldenTc, { headerTool: `MRS Version: ${verStr}`, blocksFirst });
+  const res = generateMakefiles(cp, goldenTc, { headerTool: `MRS Version: ${verStr}`, mrs2Style });
 
   const goldenDir = path.join(proj, 'obj');
   const files = ['makefile', 'sources.mk', 'objects.mk', ...res.dirs.filter(Boolean).map((d) => `${d}/subdir.mk`)];
@@ -137,7 +137,15 @@ for (const proj of projects) {
     }
     const aRaw = fs.readFileSync(genFile, 'utf-8');
     // normalize the scratch project prefix back to the original project path
-    const aText = aRaw.split(scratch.replace(/\\/g, '/')).join(proj.replace(/\\/g, '/')).split(scratch).join(proj);
+    // (both drive cases: the 2.x output lowercases the drive letter)
+    const scratchFwd = scratch.replace(/\\/g, '/');
+    const projFwd = proj.replace(/\\/g, '/');
+    const lower = (s) => s.slice(0, 1).toLowerCase() + s.slice(1);
+    const aText = aRaw
+      .split(scratchFwd).join(projFwd)
+      .split(lower(scratchFwd)).join(lower(projFwd))
+      .split(scratch).join(proj)
+      .split(lower(scratch)).join(lower(proj));
     const bRaw = fs.readFileSync(goldenFile, 'utf-8');
     if (aText === bRaw) {
       identical++;

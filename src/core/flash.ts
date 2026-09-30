@@ -64,6 +64,12 @@ export interface FlashOptions {
   reset: boolean;
   boardCfg: string;
   firmware: string;
+  /** .template "Erase All=true" — scrub every flash bank before writing
+   * (write_image erase only clears the sectors the image occupies) */
+  eraseAll?: boolean;
+  /** how many flash banks to scrub in eraseAll mode — dual-core board cfgs
+   * expose two (core1's bank sits at 0x00005000); default 1 */
+  banks?: number;
 }
 
 export interface FlashPlan {
@@ -123,15 +129,33 @@ export function prepareFlash(opts: FlashOptions): FlashPlan {
       // unreadable firmware — keep the raw address as the offset
     }
   }
-  const steps = [`wlink_set_address ${bank}`];
   // Firmware path: forward slashes (Jim Tcl eats backslashes inside double
   // quotes — "E:\x\y" becomes E:xy) + quotes to keep spaces one argument
   const fwPosix = opts.firmware.replace(/\\/g, '/');
-  const prog = ['program', `"${fwPosix}"`, offset];
-  if (opts.verify) prog.push('verify');
-  if (opts.reset) prog.push('reset');
-  prog.push('exit');
-  steps.push(prog.join(' '));
+  const steps: string[] = [];
+  if (opts.eraseAll) {
+    // explicit expansion of OpenOCD's program proc (extracted verbatim from
+    // openocd.exe — its unconditional `init` means we cannot prepend an
+    // erase to a `program` call) with the full-chip erase inserted between
+    // reset init and the write. wlink_set_address stays first: the WCH
+    // driver captures the bank base at probe time, i.e. during init.
+    steps.push(`wlink_set_address ${bank}`);
+    steps.push('init');
+    steps.push('reset init');
+    const nBanks = Math.max(1, opts.banks ?? 1);
+    for (let b = 0; b < nBanks; b++) steps.push(`flash erase_sector ${b} 0 last`);
+    steps.push(`flash write_image erase "${fwPosix}" ${offset}`);
+    if (opts.verify) steps.push(`verify_image "${fwPosix}" ${offset}`);
+    if (opts.reset) steps.push('poll off', 'reset run');
+    steps.push('shutdown');
+  } else {
+    steps.push(`wlink_set_address ${bank}`);
+    const prog = ['program', `"${fwPosix}"`, offset];
+    if (opts.verify) prog.push('verify');
+    if (opts.reset) prog.push('reset');
+    prog.push('exit');
+    steps.push(prog.join(' '));
+  }
 
   const scriptPath = path.join(opts.buildDir, 'mrs2_flash.cfg');
   fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
