@@ -37,7 +37,19 @@ const vscodeStub = {
     showInputBox: () => Promise.resolve(undefined),
   },
   workspace: {
-    getConfiguration: () => ({ get: (_k, d) => d }),
+    // mrvc.mrs2InstallPath resolves to a real MRS2 install when one exists
+    // on this machine (default C:\MounRiver otherwise) — the chip picker
+    // render path then exercises a live SDK scan where available
+    getConfiguration: () => ({
+      get: (k, d) => {
+        if (k === 'mrs2InstallPath') {
+          for (const c of [process.env.MRS2_HOME, 'C:\\MounRiver\\MounRiver_Studio2', 'D:\\MounRiver\\MounRiver_Studio2']) {
+            if (c && fs.existsSync(path.join(c, 'resources', 'app', 'resources', 'win32', 'components', 'WCH', 'manifest.json'))) return c;
+          }
+        }
+        return d;
+      },
+    }),
     workspaceFolders: [],
     createFileSystemWatcher: () => ({ onDidChange() { return { dispose() {} }; }, onDidCreate() { return { dispose() {} }; }, onDidDelete() { return { dispose() {} }; }, dispose() {} }),
     onDidChangeWorkspaceFolders() { return { dispose() {} }; },
@@ -74,7 +86,13 @@ const check = (name, cond) => {
   if (!cond) failures++;
 };
 
-const PROJ = 'F:/CH585/EVT/V1_2/EXAM/LED';
+const PROJ = ['F:/CH585/EVT/V1_2/EXAM/LED', 'E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED', 'E:/WORK/CH585/V1_7/EXAM/LED'].find(
+  (p) => fs.existsSync(path.join(p, '.cproject'))
+);
+if (!PROJ) {
+  console.log('SKIP  webview render (no real LED tree found)');
+  process.exit(0);
+}
 // build the stub store from the REAL project files so render() exercises
 // the genuine option model
 const { Cproject } = require(path.join(__dirname, '..', 'out', 'core', 'cproject.js'));
@@ -108,7 +126,18 @@ await view.show(store.active);
   check('panel title set', stubPanel.title.includes('LED'));
   check('CSP meta present', html.includes("http-equiv=\"Content-Security-Policy\""));
   check('hostile project name escaped in PROJ_NAME (no </script> leak)', !/>const PROJ_NAME = \"LED<x>\"<\/script>/.test(html) || html.includes('\\u003C'));
-  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  // nonce policy: script-src must not allow 'unsafe-inline' (style-src may),
+  // and every <script> tag must carry the nonce the CSP declares
+  const csp = (html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]*)"/) || [])[1] ?? '';
+  const scriptSrc = (csp.match(/script-src ([^;]*)/) || [])[1] ?? '';
+  const cspNonce = (scriptSrc.match(/'nonce-([0-9a-f]+)'/) || [])[1];
+  check('CSP gates scripts by nonce (no unsafe-inline in script-src)', !!cspNonce && !scriptSrc.includes("'unsafe-inline'"));
+  const scriptTags = [...html.matchAll(/<script([^>]*)>/g)].map((m) => m[1]);
+  check(
+    `every script tag carries the CSP nonce (${scriptTags.length} tags)`,
+    scriptTags.length >= 2 && scriptTags.every((attrs) => attrs.includes(`nonce="${cspNonce}"`))
+  );
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
   check(`captured ${scripts.length} script blocks`, scripts.length >= 2);
   scripts.forEach((s, i) => {
     try {
@@ -195,6 +224,14 @@ await view.show(store.active);
   check('sync page: unique page keys + breadcrumb display', syncHtml.includes('data-page="opt"') && syncHtml.includes('data-page="warn"') && syncHtml.includes('Warnings') && !syncHtml.includes('data-page="Warnings"'));
   check('sync page: cpp-only rows annotated', syncHtml.includes('cpponly'));
   check('sync page: hostile string escaped', !syncHtml.includes('LED<x>"</script>') || syncHtml.includes('\\u003C'));
+  // nonce policy on the sync page too (script-src gated, every tag tagged)
+  {
+    const cspS = (syncHtml.match(/<meta http-equiv="Content-Security-Policy" content="([^"]*)"/) || [])[1] ?? '';
+    const ssS = (cspS.match(/script-src ([^;]*)/) || [])[1] ?? '';
+    const nS = (ssS.match(/'nonce-([0-9a-f]+)'/) || [])[1];
+    const tagsS = [...syncHtml.matchAll(/<script([^>]*)>/g)].map((m) => m[1]);
+    check('sync page: CSP nonce policy', !!nS && !ssS.includes("'unsafe-inline'") && tagsS.length >= 1 && tagsS.every((a) => a.includes(`nonce="${nS}"`)));
+  }
 
   // drive the batch: tick two bool boxes + one enum, then applySync
   // (simulate the webview collector on the real HTML)

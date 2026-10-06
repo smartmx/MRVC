@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { TreeNode } from './tree';
 import { ProjectStore, MrsProject, msg } from './projects';
+import { Cproject } from '../core/cproject';
 import { isLogicExcluded, exclusionFsPaths } from '../core/scan';
 import { t as translate } from '../core/i18n';
 
@@ -35,8 +36,14 @@ export async function excludeFromBuild(store: ProjectStore, node?: TreeNode): Pr
     return;
   }
   try {
-    t.proj.cproject.excludeResource(t.logic);
-    t.proj.cproject.save();
+    // fresh-load .cproject before the read-modify-write: the store's cached
+    // model can be stale when the file changed since the last watcher event
+    // (MRS2 had it open, an external editor saved it) — writing the cached
+    // snapshot would clobber those edits. Same discipline as the property
+    // page and the sync page.
+    const cp = Cproject.load(t.proj.root);
+    cp.excludeResource(t.logic);
+    cp.save();
   } catch (e) {
     vscode.window.showErrorMessage(translate('excludeFailed', msg(e)));
     return;
@@ -55,8 +62,10 @@ export async function includeFromBuild(store: ProjectStore, node?: TreeNode): Pr
     return;
   }
   try {
-    t.proj.cproject.includeResource(t.logic);
-    t.proj.cproject.save();
+    // fresh-load for the same reason as excludeFromBuild (no lost updates)
+    const cp = Cproject.load(t.proj.root);
+    cp.includeResource(t.logic);
+    cp.save();
   } catch (e) {
     vscode.window.showErrorMessage(translate('includeFailed', msg(e)));
     return;

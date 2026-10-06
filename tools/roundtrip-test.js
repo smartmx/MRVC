@@ -6,7 +6,7 @@ const { addLinkedFolder, removeLinkedFolder, readProjectFile, setCppNature } = r
 
 const scratch = path.join(__dirname, '..', '.scratch', 'roundtrip');
 // real EVT tree: prefer the local TEST copy, fall back to the F:/ layout
-const LED_PROJ = ['E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED', 'F:/CH585/EVT/V1_2/EXAM/LED'].find((r) => fs.existsSync(r));
+const LED_PROJ = ['E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED', 'F:/CH585/EVT/V1_2/EXAM/LED', 'E:/WORK/CH585/V1_7/EXAM/LED'].find((r) => fs.existsSync(r));
 if (!LED_PROJ) {
   console.log('SKIP: LED project not found (no real EVT tree)');
   process.exit(0);

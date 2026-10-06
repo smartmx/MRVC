@@ -102,11 +102,15 @@ export async function exportAsCMakeCmd(store: ProjectStore, item?: unknown): Pro
     async () => {
       fs.rmSync(dst, { recursive: true, force: true });
       fs.mkdirSync(dst, { recursive: true });
-      // 1. portable CMakeLists (same generator as in-place generate)
-      buildCMakeContent(project.cproject, tc, path.join(dst, 'CMakeLists.txt'), { forExport: true });
-      // 2. project files (skip outputs/metadata), 3. linked folder targets
-      //    copied under their link names so relative includes still resolve
+      // 1. project files (skip outputs/metadata), 2. portable CMakeLists,
+      //    3. linked folder targets copied under their link names so
+      //    relative includes still resolve. Order matters: a project that
+      //    ever ran "Generate CMakeLists File" carries an in-place
+      //    CMakeLists.txt full of this machine's absolute paths —copying
+      //    first and generating after keeps the portable version from being
+      //    overwritten by it.
       copyTree(project.root, dst);
+      buildCMakeContent(project.cproject, tc, path.join(dst, 'CMakeLists.txt'), { forExport: true });
       for (const [name, target] of project.cproject.linkedFolders) {
         if (fs.existsSync(target)) copyTree(target, path.join(dst, name));
       }

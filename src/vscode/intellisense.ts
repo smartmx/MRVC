@@ -19,32 +19,217 @@ import { t } from '../core/i18n';
 
 const CONFIG_NAME = 'MRVC';
 
-type JsonRead = Record<string, unknown> | null | undefined;
-
-function readJson(file: string): JsonRead {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(file, 'utf-8');
-  } catch {
-    return null; // file absent
-  }
-  try {
-    return JSON.parse(raw);
-  } catch {
-    // cpptools' c_cpp_properties.json is JSONC (comments / trailing commas
-    // are officially allowed) — strip them and retry; still unparsable =>
-    // "unreadable" sentinel: the file must NEVER be overwritten by us
-    try {
-      const stripped = raw
-        .replace(/^\uFEFF/, '')
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/^\s*\/\/.*$/gm, '')
-        .replace(/,(\s*[}\]])/g, '$1');
-      return JSON.parse(stripped);
-    } catch {
-      return undefined;
+/**
+ * c_cpp_properties.json is officially JSONC (cpptools tolerates comments,
+ * trailing commas, BOM). stripJsonc blanks those OFFSET-PRESERVING (comment
+ * bytes become spaces) so one text serves both JSON.parse and the surgical
+ * editor in writePropsFile — user comments must survive our updates, and
+ * line-end comments (which the old whole-file rewriter destroyed or choked
+ * on) parse like any other.
+ */
+function stripJsonc(raw: string): string {
+  const out: string[] = [];
+  let i = 0;
+  let inStr = false;
+  const blankTo = (end: number): void => {
+    while (i < end) {
+      out.push(raw[i] === '\n' || raw[i] === '\r' ? raw[i] : ' ');
+      i++;
     }
+  };
+  if (raw.charCodeAt(0) === 0xfeff) {
+    out.push(' '); // BOM -> whitespace: JSON.parse skips it, offsets stay
+    i = 1;
   }
+  while (i < raw.length) {
+    const c = raw[i];
+    if (inStr) {
+      out.push(c);
+      if (c === '\\') {
+        out.push(raw[i + 1] ?? '');
+        i += 2;
+        continue;
+      }
+      if (c === '"') inStr = false;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      inStr = true;
+      out.push(c);
+      i++;
+      continue;
+    }
+    if (c === '/' && raw[i + 1] === '/') {
+      let j = i;
+      while (j < raw.length && raw[j] !== '\n') j++;
+      blankTo(j);
+      continue;
+    }
+    if (c === '/' && raw[i + 1] === '*') {
+      let j = i + 2;
+      while (j < raw.length && !(raw[j] === '*' && raw[j + 1] === '/')) j++;
+      blankTo(Math.min(j + 2, raw.length));
+      continue;
+    }
+    if (c === ',') {
+      // trailing comma — the closer may sit behind whitespace or a comment
+      let j = i + 1;
+      while (j < raw.length) {
+        if (/\s/.test(raw[j])) {
+          j++;
+          continue;
+        }
+        if (raw[j] === '/' && raw[j + 1] === '/') {
+          while (j < raw.length && raw[j] !== '\n') j++;
+          continue;
+        }
+        if (raw[j] === '/' && raw[j + 1] === '*') {
+          j += 2;
+          while (j + 1 < raw.length && !(raw[j] === '*' && raw[j + 1] === '/')) j++;
+          j += 2;
+          continue;
+        }
+        break;
+      }
+      if (raw[j] === '}' || raw[j] === ']') {
+        out.push(' ');
+        i++;
+        continue;
+      }
+    }
+    out.push(c);
+    i++;
+  }
+  return out.join('');
+}
+
+// ---- minimal offset arithmetic over stripped JSONC (comments are spaces;
+// strings still need their own state so brackets inside them never count) ----
+
+function matchString(s: string, open: number): number {
+  let i = open + 1;
+  while (i < s.length) {
+    if (s[i] === '\\') i += 2;
+    else if (s[i] === '"') return i + 1;
+    else i++;
+  }
+  return -1;
+}
+
+function matchBracket(s: string, open: number): number {
+  const closeCh = s[open] === '{' ? '}' : ']';
+  let depth = 0;
+  let i = open;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '"') {
+      i = matchString(s, i);
+      if (i < 0) return -1;
+      continue;
+    }
+    if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') {
+      depth--;
+      if (depth === 0) return c === closeCh ? i : -1;
+    }
+    i++;
+  }
+  return -1;
+}
+
+function skipWs(s: string, p: number): number {
+  while (p < s.length && /\s/.test(s[p])) p++;
+  return p;
+}
+
+/** whitespace between the line start and pos (non-whitespace becomes spaces:
+ * still a usable indent even when pos is not the first token of its line) */
+function indentOf(s: string, pos: number): string {
+  const lineStart = s.lastIndexOf('\n', pos - 1) + 1;
+  return s.slice(lineStart, pos).replace(/\S/g, '');
+}
+
+function reindent(json: string, indent: string): string {
+  const lines = json.split('\n');
+  return lines.map((l, i) => (i === 0 ? l : indent + l)).join('\n');
+}
+
+interface ValueSpan {
+  start: number;
+  end: number; // exclusive
+}
+
+/** spans of the ROOT object's properties (key must be a string, value span
+ * stops at the next same-depth comma or the root close) */
+function objectProps(s: string): Array<{ key: string; value: ValueSpan }> | null {
+  const open = skipWs(s, 0);
+  if (s[open] !== '{') return null;
+  const close = matchBracket(s, open);
+  if (close < 0) return null;
+  const props: Array<{ key: string; value: ValueSpan }> = [];
+  let p = skipWs(s, open + 1);
+  while (p < close) {
+    if (s[p] !== '"') return null;
+    const kEnd = matchString(s, p);
+    if (kEnd < 0) return null;
+    let key: string;
+    try {
+      key = JSON.parse(s.slice(p, kEnd)) as string;
+    } catch {
+      return null;
+    }
+    const colon = skipWs(s, kEnd);
+    if (s[colon] !== ':') return null;
+    const vStart = skipWs(s, colon + 1);
+    let depth = 0;
+    let i = vStart;
+    while (i < close) {
+      const c = s[i];
+      if (c === '"') {
+        i = matchString(s, i);
+        if (i < 0) return null;
+        continue;
+      }
+      if (c === '{' || c === '[') depth++;
+      else if (c === '}' || c === ']') depth--;
+      else if (c === ',' && depth === 0) break;
+      i++;
+    }
+    const vEnd = i < close ? i : close;
+    props.push({ key, value: { start: vStart, end: vEnd } });
+    p = skipWs(s, vEnd + 1); // past the separating comma
+  }
+  return props;
+}
+
+/** spans of an array's elements (between the brackets, split at depth-1 commas) */
+function arrayElements(s: string, open: number): ValueSpan[] | null {
+  if (s[open] !== '[') return null;
+  const close = matchBracket(s, open);
+  if (close < 0) return null;
+  const spans: ValueSpan[] = [];
+  let p = skipWs(s, open + 1);
+  while (p < close) {
+    let depth = 0;
+    let i = p;
+    while (i < close) {
+      const c = s[i];
+      if (c === '"') {
+        i = matchString(s, i);
+        if (i < 0) return null;
+        continue;
+      }
+      if (c === '{' || c === '[') depth++;
+      else if (c === '}' || c === ']') depth--;
+      else if (c === ',' && depth === 0) break;
+      i++;
+    }
+    const end = i < close ? i : close;
+    spans.push({ start: p, end });
+    p = skipWs(s, end + 1);
+  }
+  return spans;
 }
 
 function writeIfChanged(file: string, content: string): boolean {
@@ -55,6 +240,117 @@ function writeIfChanged(file: string, content: string): boolean {
   }
   fs.writeFileSync(file, content, 'utf-8');
   return true;
+}
+
+type PropsWrite = 'written' | 'unchanged' | 'unreadable';
+
+/**
+ * Add/update the MRVC configuration entry in one c_cpp_properties.json.
+ * Plain-JSON files (and absent ones) are re-serialized whole — byte-stable
+ * with what MRVC wrote before. Files carrying JSONC features (comments,
+ * trailing commas, BOM) get a surgical splice of ONLY our entry: the strip
+ * preserves offsets, so every user comment stays byte-for-byte. 'unreadable'
+ * means the file cannot be understood and is never touched.
+ */
+function writePropsFile(propsFile: string, mine: Record<string, unknown>): PropsWrite {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(propsFile, 'utf-8');
+  } catch {
+    raw = ''; // absent — a fresh plain-JSON file is created below
+  }
+  const stripped = stripJsonc(raw);
+  let parsed: Record<string, unknown> | undefined;
+  if (raw !== '') {
+    try {
+      parsed = JSON.parse(stripped) as Record<string, unknown>;
+    } catch {
+      return 'unreadable';
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'unreadable';
+  }
+  if (raw === stripped) {
+    const props = (parsed ?? {}) as { configurations?: Array<Record<string, unknown>>; [k: string]: unknown };
+    if (!Array.isArray(props.configurations)) props.configurations = [];
+    const idx = props.configurations.findIndex((c) => c && c.name === CONFIG_NAME);
+    if (idx >= 0) props.configurations[idx] = { ...props.configurations[idx], ...mine };
+    else props.configurations.push(mine);
+    // declare the schema version only when the user's file doesn't carry one
+    if (props.version === undefined) props.version = 4;
+    return writeIfChanged(propsFile, JSON.stringify(props, null, 2) + '\n') ? 'written' : 'unchanged';
+  }
+
+  // ---- JSONC path: splice only our entry into the original text ----
+  const props = objectProps(stripped);
+  if (!props) return 'unreadable';
+  const rootOpen = skipWs(stripped, 0);
+  const rootClose = matchBracket(stripped, rootOpen);
+  if (rootClose < 0) return 'unreadable';
+  /** last significant (non-ws) char before pos — trailing-comma detection */
+  const sigBefore = (pos: number): string => {
+    let j = pos - 1;
+    while (j >= 0 && /\s/.test(stripped[j])) j--;
+    return j >= 0 ? stripped[j] : '';
+  };
+  const rootIndent = indentOf(stripped, rootOpen) + '  ';
+  const entryJson = JSON.stringify(mine, null, 2);
+  const cfg = props.find((p) => p.key === 'configurations');
+  if (cfg && stripped[cfg.value.start] !== '[') return 'unreadable';
+  const hasVersion = props.some((p) => p.key === 'version');
+  // edits never overlap; apply back-to-front so earlier offsets stay valid
+  const edits: Array<{ start: number; end: number; text: string }> = [];
+
+  if (cfg) {
+    const cfgOpen = cfg.value.start;
+    const cfgClose = matchBracket(stripped, cfgOpen);
+    const spans = cfgClose >= 0 ? arrayElements(stripped, cfgOpen) : null;
+    if (!spans || cfgClose < 0) return 'unreadable';
+    let replaced = false;
+    for (const sp of spans) {
+      let frag: Record<string, unknown>;
+      try {
+        frag = JSON.parse(stripped.slice(sp.start, sp.end)) as Record<string, unknown>;
+      } catch {
+        return 'unreadable';
+      }
+      if (!frag || frag.name !== CONFIG_NAME) continue;
+      const merged = { ...frag, ...mine };
+      edits.push({
+        start: sp.start,
+        end: sp.end,
+        text: reindent(JSON.stringify(merged, null, 2), indentOf(stripped, sp.start)),
+      });
+      replaced = true;
+      break;
+    }
+    if (!replaced) {
+      const ind = spans.length ? indentOf(stripped, spans[0].start) : rootIndent + '  ';
+      const entryText = reindent(entryJson, ind);
+      if (spans.length === 0) {
+        const closeOwnLine = stripped.lastIndexOf('\n', cfgClose - 1) > cfgOpen;
+        const fill = closeOwnLine ? `\n${ind}${entryText}\n${indentOf(stripped, cfgClose)}` : ` ${entryText} `;
+        edits.push({ start: cfgOpen + 1, end: cfgClose, text: fill });
+      } else {
+        // insert before ']': a trailing comma already in the file separates
+        const sep = sigBefore(cfgClose) === ',' ? '' : ',';
+        edits.push({ start: cfgClose, end: cfgClose, text: `${sep}\n${ind}${entryText}` });
+      }
+    }
+    if (!hasVersion) edits.push({ start: rootOpen + 1, end: rootOpen + 1, text: `\n${rootIndent}"version": 4,` });
+  } else {
+    // no configurations property — append one (folding in version when also
+    // missing, so both edits land as one insert and cannot collide)
+    const sep = sigBefore(rootClose) === ',' ? '' : ',';
+    const verLine = hasVersion ? '' : `\n${rootIndent}"version": 4,`;
+    const entryText = reindent(entryJson, rootIndent + '  ');
+    const text = `${sep}${verLine}\n${rootIndent}"configurations": [\n${rootIndent}  ${entryText}\n${rootIndent}]`;
+    edits.push({ start: rootClose, end: rootClose, text });
+  }
+
+  edits.sort((a, b) => b.start - a.start || b.end - a.end);
+  let out = raw;
+  for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  return writeIfChanged(propsFile, out) ? 'written' : 'unchanged';
 }
 
 export interface IntellisenseResult {
@@ -294,48 +590,58 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
     }
 
     // 2. c_cpp_properties.json — add/update only OUR configuration entry,
-    // leaving any user-defined configurations untouched
-    const propsFile = path.join(vscodeDir, 'c_cpp_properties.json');
-    const parsed = readJson(propsFile);
-    if (parsed === undefined) {
-      // user file exists but we cannot parse it even as JSONC — leave it
-      // completely untouched rather than risk destroying their configs
-      return { projects: all.length, entries, updated: ccUpdated, error: 'c_cpp_properties.json unreadable — left untouched' };
+    // leaving any user-defined configurations AND their comments untouched
+    // (writePropsFile). EVERY workspace folder gets one: cpptools resolves
+    // IntelliSense per root, so files edited under folder[2] of a multi-root
+    // workspace must find the databases too — those entries point at the
+    // primary folder's .vscode/mrvc/cc with absolute paths.
+    let propsUpdated = false;
+    const unreadableFolders: string[] = [];
+    for (const wf of vscode.workspace.workspaceFolders ?? []) {
+      const isPrimary = wf.uri.fsPath.toLowerCase() === folder.uri.fsPath.toLowerCase();
+      const mine: Record<string, unknown> = {
+        name: CONFIG_NAME,
+        compileCommands: isPrimary
+          ? ['${workspaceFolder}/.vscode/mrvc/cc/_shared.json', '${workspaceFolder}/.vscode/mrvc/cc/_active.json']
+          : [sharedDbFile(folder.uri.fsPath), activeCcFile(folder.uri.fsPath)],
+        // browse fallback for files no compile database covers (cpptools logs
+        // a "not found in compile_commands.json" warning for those and falls
+        // back to includePath — keep that fallback useful): everything inside
+        // the workspace recursively plus every absolute include dir referenced
+        // by any project (linked trees can live outside the workspace folder)
+        includePath: ['${workspaceFolder}/**', ...[...includeDirs].sort()],
+        intelliSenseMode: 'gcc-x64',
+      };
+      if (firstTc) {
+        mine.compilerPath = firstTc.compilerC;
+        mine.cppCompilerPath = firstTc.compilerCpp;
+      }
+      if (firstCp) {
+        // cpptools accepts c99/c11/c17/c23 and gnu* variants; exotic CDT
+        // names (ansi, iso9899:199409) fall back to gnu11 instead of an
+        // invalid value cpptools would reject
+        const std = firstCp.languageStandard;
+        mine.cStandard = /^(c|gnu)(9[09]|1[178]|2[03])$/.test(std) ? std : 'gnu11';
+        mine.cppStandard = 'gnu++14';
+      }
+      try {
+        const wfVscodeDir = path.join(wf.uri.fsPath, '.vscode');
+        fs.mkdirSync(wfVscodeDir, { recursive: true });
+        const r = writePropsFile(path.join(wfVscodeDir, 'c_cpp_properties.json'), mine);
+        if (r === 'written') propsUpdated = true;
+        else if (r === 'unreadable') unreadableFolders.push(wf.name);
+      } catch {
+        unreadableFolders.push(wf.name);
+      }
     }
-    const props = (parsed ?? {}) as { configurations?: Array<Record<string, unknown>>; [k: string]: unknown };
-    if (!Array.isArray(props.configurations)) props.configurations = [];
-    const mine: Record<string, unknown> = {
-      name: CONFIG_NAME,
-      compileCommands: [
-        '${workspaceFolder}/.vscode/mrvc/cc/_shared.json',
-        '${workspaceFolder}/.vscode/mrvc/cc/_active.json',
-      ],
-      // browse fallback for files no compile database covers (cpptools logs
-      // a "not found in compile_commands.json" warning for those and falls
-      // back to includePath — keep that fallback useful): everything inside
-      // the workspace recursively plus every absolute include dir referenced
-      // by any project (linked trees can live outside the workspace folder)
-      includePath: ['${workspaceFolder}/**', ...[...includeDirs].sort()],
-      intelliSenseMode: 'gcc-x64',
-    };
-    if (firstTc) {
-      mine.compilerPath = firstTc.compilerC;
-      mine.cppCompilerPath = firstTc.compilerCpp;
+    if (unreadableFolders.length) {
+      return {
+        projects: all.length,
+        entries,
+        updated: ccUpdated || propsUpdated,
+        error: `c_cpp_properties.json unreadable in: ${unreadableFolders.join(', ')} — left untouched`,
+      };
     }
-    if (firstCp) {
-      // cpptools accepts c99/c11/c17/c23 and gnu* variants; exotic CDT
-      // names (ansi, iso9899:199409) fall back to gnu11 instead of an
-      // invalid value cpptools would reject
-      const std = firstCp.languageStandard;
-      mine.cStandard = /^(c|gnu)(9[09]|1[178]|2[03])$/.test(std) ? std : 'gnu11';
-      mine.cppStandard = 'gnu++14';
-    }
-    const idx = props.configurations.findIndex((c) => c && c.name === CONFIG_NAME);
-    if (idx >= 0) props.configurations[idx] = { ...props.configurations[idx], ...mine };
-    else props.configurations.push(mine);
-    // declare the schema version only when the user's file doesn't carry one
-    if (props.version === undefined) props.version = 4;
-    const propsUpdated = writeIfChanged(propsFile, JSON.stringify(props, null, 2) + '\n');
 
     return { projects: all.length, entries, updated: ccUpdated || propsUpdated };
   } catch (e) {

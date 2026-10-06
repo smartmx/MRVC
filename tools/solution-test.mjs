@@ -20,11 +20,12 @@ const { scanSources } = require(path.join(outCore, 'scan.js'));
 
 // real EVT trees: prefer the local TEST copies, fall back to the F:/ layout
 const TEST_ROOT = 'E:/Projects/MRS_VSCODE/TEST';
-const pick = (local, f) => [local, f].find((r) => fs.existsSync(r)) ?? f;
+const pick = (...cands) => cands.find((r) => fs.existsSync(r)) ?? cands[cands.length - 1];
 const H417 = pick(TEST_ROOT + '/CH32H417EVT/EXAM', 'F:/CH32H417/EVT/V1_0/EXAM');
+const HAS_H417 = fs.existsSync(H417);
 const LEGACY_TREES = [
-  pick(TEST_ROOT + '/CH585EVT/EXAM', 'F:/CH585/EVT/V1_2/EXAM'),
-  pick(TEST_ROOT + '/CH587EVT/EXAM', 'F:/CH587/EVT/V1_0/EXAM'),
+  pick(TEST_ROOT + '/CH585EVT/EXAM', 'F:/CH585/EVT/V1_2/EXAM', 'E:/WORK/CH585/V1_7/EXAM'),
+  pick(TEST_ROOT + '/CH587EVT/EXAM', 'F:/CH587/EVT/V1_0/EXAM', 'E:/WORK/CH587/V1_1/EXAM'),
   'F:/ch573/EVT/V2_4/EXAM',
   pick(TEST_ROOT + '/CH32V307EVT/EXAM', 'F:/CH32V307/EVT/V2_9/EXAM'),
 ].filter((t) => fs.existsSync(t));
@@ -56,7 +57,7 @@ const truthSln = [];
 })(H417, 0);
 check(
   `discovered all ${truthSln.length} solutions in CH32H417 (got ${slnFiles.length})`,
-  slnFiles.length === truthSln.length && new Set(slnFiles.map((f) => f.toLowerCase())).size === truthSln.length
+  !HAS_H417 || (slnFiles.length === truthSln.length && new Set(slnFiles.map((f) => f.toLowerCase())).size === truthSln.length)
 );
 // legacy trees have no NATIVE solutions (which always live in a project
 // subdirectory); a root-level .wvsln can legitimately exist as a
@@ -69,7 +70,7 @@ for (const tree of LEGACY_TREES) {
 // ---------- 2. parse all solutions: members exist and are real projects ----------
 let parseFailures = 0;
 let uniqueMembers = new Set();
-for (const f of slnFiles) {
+for (const f of HAS_H417 ? slnFiles : []) {
   const p = parseSolution(f);
   if (!p.entries.length) {
     console.log(`  FAIL: ${f} has no resolvable members`);
@@ -87,13 +88,17 @@ for (const f of slnFiles) {
 check(`all ${slnFiles.length} solutions resolve >=1 real project member`, parseFailures === 0);
 
 // every discoverable project in the tree is reachable as a solution member
-const roots = findProjectRoots(H417);
-const rootKeys = new Set(roots.map((r) => r.toLowerCase()));
-const missing = roots.filter((r) => !uniqueMembers.has(r.toLowerCase()));
-check(`solution members cover all ${roots.length} discovered projects (missing ${missing.length})`, missing.length === 0);
+if (HAS_H417) {
+  const roots = findProjectRoots(H417);
+  const rootKeys = new Set(roots.map((r) => r.toLowerCase()));
+  const missing = roots.filter((r) => !uniqueMembers.has(r.toLowerCase()));
+  check(`solution members cover all ${roots.length} discovered projects (missing ${missing.length})`, missing.length === 0);
+} else {
+  console.log('SKIP  2b. H417 member coverage (tree not present)');
+}
 
 // ---------- 3. stale absolute paths + dedupe (CH372Device) ----------
-{
+if (HAS_H417) {
   // tree copies differ: upstream ships 2 stale absolute member lines, the
   // local TEST copy ships none — expect exactly the stale lines the file has
   const staleCount = (raw) =>
@@ -112,10 +117,12 @@ check(`solution members cover all ${roots.length} discovered projects (missing $
   check(`Host_UDisk_Exams: 2 members are its local V3F/V5F (got ${local.length})`, h.entries.length === 2 && local.length === 2);
   const rawHost = fs.readFileSync(path.join(H417, 'USBFS/HOST/Host_UDisk_Exams/Host_UDisk_Exams.wvsln'), 'utf-8');
   check('Host_UDisk_Exams: stale CH372Device absolute paths dropped', h.dropped.length === staleCount(rawHost));
+} else {
+  console.log('SKIP  3. CH372Device stale-path parsing (tree not present)');
 }
 
 // ---------- 4. member projects work with the existing core ----------
-{
+if (HAS_H417) {
   const cp = Cproject.load(path.join(H417, 'GPIO/GPIO_Toggle/V3F'));
   const sources = [...scanSources(cp).values()].reduce((n, v) => n + v.length, 0);
   // tree copies differ in the recorded rvGcc (12 upstream, 15 local): any
@@ -124,6 +131,8 @@ check(`solution members cover all ${roots.length} discovered projects (missing $
   check('GPIO_Toggle V3F: scan finds sources', sources > 0);
   const linkedNames = [...cp.linkedFolders.keys()].sort().join(',');
   check(`GPIO_Toggle V3F: linked folders resolved (${linkedNames})`, cp.linkedFolders.size >= 5);
+} else {
+  console.log('SKIP  4. H417 member core (tree not present)');
 }
 
 // ---------- 5. BuildOrder + header + config lines (synthetic fixture) ----------
@@ -154,10 +163,24 @@ check(`solution members cover all ${roots.length} discovered projects (missing $
   check('fixture: nothing dropped', p.dropped.length === 0);
 }
 
+// ---------- 6/7 member fixtures: the H417 dual-core projects where the
+// tree exists, else synthetic same-name projects (a .project + <name>.wvproj
+// is all parseSolution/appendSolutionMembers look at) ----------
+const memberRoot = path.join(here, '..', '.scratch', 'solution-members');
+const H417_MEMBERS = { V3F: 'GPIO/GPIO_Toggle/V3F', V5F: 'GPIO/GPIO_Toggle/V5F', ADC_DMA_V3F: 'ADC/ADC_DMA/V3F' };
+const memberDir = (name) => {
+  if (HAS_H417) return path.join(H417, H417_MEMBERS[name]);
+  const d = path.join(memberRoot, name);
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, '.project'), `<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>${name}</name></projectDescription>`);
+  fs.writeFileSync(path.join(d, `${name}.wvproj`), '');
+  return d;
+};
+
 // ---------- 6. writeSolution round-trip (generate -> parse back) ----------
 {
   const fixtureDir = path.join(here, '..', '.scratch', 'solution-fixture');
-  const members = [path.join(H417, 'GPIO/GPIO_Toggle/V3F'), path.join(H417, 'GPIO/GPIO_Toggle/V5F')];
+  const members = [memberDir('V3F'), memberDir('V5F')];
   const file = path.join(fixtureDir, 'Generated.wvsln');
   writeSolution(file, members);
   const raw = fs.readFileSync(file, 'utf-8');
@@ -176,25 +199,29 @@ check(`solution members cover all ${roots.length} discovered projects (missing $
   check('round-trip: nothing dropped', back.dropped.length === 0);
   check('round-trip: no BuildOrder written', back.buildOrder === undefined);
 
-  // generating at the tree root: all 140 projects round-trip
-  const allRoots = findProjectRoots(H417);
-  const rootFile = path.join(H417, '_MRVC_AllProjects.wvsln');
-  writeSolution(rootFile, allRoots);
-  const backAll = parseSolution(rootFile);
-  check(
-    `round-trip at tree root: all ${allRoots.length} projects resolve back`,
-    backAll.entries.length === allRoots.length &&
-      JSON.stringify(backAll.entries.map((e) => norm(e.resolved)).sort()) === JSON.stringify(allRoots.map(norm).sort())
-  );
-  fs.rmSync(rootFile, { force: true }); // do not leave a synthetic solution in the real tree
+  if (HAS_H417) {
+    // generating at the tree root: all 140 projects round-trip
+    const allRoots = findProjectRoots(H417);
+    const rootFile = path.join(H417, '_MRVC_AllProjects.wvsln');
+    writeSolution(rootFile, allRoots);
+    const backAll = parseSolution(rootFile);
+    check(
+      `round-trip at tree root: all ${allRoots.length} projects resolve back`,
+      backAll.entries.length === allRoots.length &&
+        JSON.stringify(backAll.entries.map((e) => norm(e.resolved)).sort()) === JSON.stringify(allRoots.map(norm).sort())
+    );
+    fs.rmSync(rootFile, { force: true }); // do not leave a synthetic solution in the real tree
+  } else {
+    console.log('SKIP  6b. tree-root round-trip (H417 tree not present)');
+  }
 }
 
 // ---------- 7. solution lifecycle: appendSolutionMembers + recordBuildOrder ----------
 {
   const fixtureDir = path.join(here, '..', '.scratch', 'solution-fixture');
-  const m1 = path.join(H417, 'GPIO/GPIO_Toggle/V3F');
-  const m2 = path.join(H417, 'GPIO/GPIO_Toggle/V5F');
-  const m3 = path.join(H417, 'ADC/ADC_DMA/V3F');
+  const m1 = memberDir('V3F');
+  const m2 = memberDir('V5F');
+  const m3 = memberDir('ADC_DMA_V3F');
   const file = path.join(fixtureDir, 'Lifecycle.wvsln');
   writeSolution(file, [m1, m2], ['V5F', 'V3F']);
   const before = fs.readFileSync(file, 'utf-8');
@@ -223,9 +250,34 @@ check(`solution members cover all ${roots.length} discovered projects (missing $
   );
   const pOrder = parseSolution(file);
   check('recordOrder: new order parses back', pOrder.buildOrder?.join(',') === 'V3F,V5F,ADC_DMA_V3F');
-  // MRS2 placement: the line sits right after the first line (toolchain block head)
+  // MRS2 placement: an EXISTING line is rewritten in place — inserting after
+  // the first line as well is exactly the duplicate-line bug (one call on a
+  // file that already had BuildOrder= used to produce TWO lines, and every
+  // further "Set Build Order" click added one more)
   const rawLines = fs.readFileSync(file, 'utf-8').split(/\r?\n/);
-  check('recordOrder: line position after first line', rawLines[1].startsWith('BuildOrder='));
+  const posBefore = afterAppend.split(/\r?\n/).findIndex((l) => l.startsWith('BuildOrder='));
+  check('recordOrder: existing line rewritten in place', rawLines[posBefore] === 'BuildOrder=V3F,V5F,ADC_DMA_V3F');
+  check('recordOrder: exactly one BuildOrder line', rawLines.filter((l) => l.startsWith('BuildOrder=')).length === 1);
+
+  recordBuildOrder(file, ['V3F', 'V5F', 'ADC_DMA_V3F']);
+  recordBuildOrder(file, ['V5F', 'V3F', 'ADC_DMA_V3F']);
+  const rawRepeat = fs.readFileSync(file, 'utf-8').split(/\r?\n/);
+  check('recordOrder: repeated calls never accumulate', rawRepeat.filter((l) => l.startsWith('BuildOrder=')).length === 1);
+  check('recordOrder: last call wins', parseSolution(file).buildOrder?.join(',') === 'V5F,V3F,ADC_DMA_V3F');
+
+  // absent line: inserted right after the first line (toolchain block head)
+  const noOrder = path.join(fixtureDir, 'NoOrder.wvsln');
+  fs.writeFileSync(
+    noOrder,
+    afterAppend.split(/\r?\n/).filter((l) => !l.startsWith('BuildOrder=')).join('\r\n'),
+    'utf-8'
+  );
+  recordBuildOrder(noOrder, ['V5F', 'V3F']);
+  const noOrderLines = fs.readFileSync(noOrder, 'utf-8').split(/\r?\n/);
+  check('recordOrder: missing line inserted after first line', noOrderLines[1] === 'BuildOrder=V5F,V3F');
+  check('recordOrder: insert keeps every other line', noOrderLines.filter((l, i) => i !== 1 && !l.startsWith('BuildOrder=')).join('\n') === afterAppend.split(/\r?\n/).filter((l) => !l.startsWith('BuildOrder=')).join('\n'));
+  check('recordOrder: insert leaves exactly one line', noOrderLines.filter((l) => l.startsWith('BuildOrder=')).length === 1);
+  fs.rmSync(noOrder, { force: true });
 
   fs.rmSync(file, { force: true });
 }

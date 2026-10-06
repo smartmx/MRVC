@@ -51,6 +51,11 @@ interface BatchOptions {
 export class BuildManager {
   private buildAllRunning = false;
   private buildAllChannel: vscode.OutputChannel | null = null;
+  /** projects with a make task in flight (single-build guard): two
+   * concurrent `make -jN` runs write the same obj/ and append to the same
+   * build-record file. Keyed by the lowercased project root; the stored
+   * execution lets a repeated trigger terminate the running task. */
+  private building = new Map<string, { exec?: vscode.TaskExecution }>();
 
   constructor(private store: ProjectStore) {}
 
@@ -322,6 +327,14 @@ export class BuildManager {
     } catch (e) {
       return Promise.resolve(fail(msg(e)));
     }
+    // single-build guard, shared with run(): a batch member and a manual
+    // Build of the same project must not both write its obj/
+    const key = path.resolve(p.root).toLowerCase();
+    if (this.building.has(key)) return Promise.resolve(fail(t('buildAlreadyRunning', p.projectName)));
+    // the entry must carry the execution once it starts, so a manual Build
+    // during the batch can offer "Terminate Build" and actually stop it
+    const entry: { exec?: vscode.TaskExecution } = {};
+    this.building.set(key, entry);
     return new Promise<BuildAllResult>((resolve) => {
       let settled = false;
       let exec: vscode.TaskExecution | undefined;
@@ -331,6 +344,7 @@ export class BuildManager {
         settled = true;
         sub.dispose();
         const code = e.exitCode ?? -1;
+        this.building.delete(key);
         resolve({ project: p.projectName, ok: code === 0, detail: code === 0 ? '' : `make exit ${code}` });
       });
       const wrapper = this.writeBuildWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe'), ['-j' + jobs, 'all'], buildRecordFile(p.root));
@@ -347,11 +361,13 @@ export class BuildManager {
       vscode.tasks.executeTask(task).then(
         (e) => {
           exec = e;
+          entry.exec = e;
         },
         () => {
           if (settled) return;
           settled = true;
           sub.dispose();
+          this.building.delete(key);
           resolve(fail('task failed to start'));
         }
       );
@@ -362,6 +378,20 @@ export class BuildManager {
     const project = proj ?? (await this.pickProject());
     if (!project) return;
     this.store.setActive(project); // last explicitly built project = status bar target
+
+    // one make per project at a time — F7 double-press, an inline button
+    // double-click, or a per-project Build while Build All runs that project
+    // would otherwise start two `make -jN` on the same obj/
+    const buildKey = path.resolve(project.root).toLowerCase();
+    if (this.building.has(buildKey)) {
+      const inFlight = this.building.get(buildKey)!;
+      void vscode.window
+        .showWarningMessage(t('buildAlreadyRunning', project.projectName), t('terminateBuild'))
+        .then((pick) => {
+          if (pick === t('terminateBuild')) inFlight.exec?.terminate();
+        });
+      return;
+    }
 
     const install = getInstall();
     const tc = project.toolchain(install, vscode.workspace.getConfiguration('mrvc').get('toolchain', 'auto'));
@@ -397,6 +427,9 @@ export class BuildManager {
       makeArgs.push(`-j${jobs}`);
     }
     makeArgs.push(kind === 'clean' ? 'clean' : 'all');
+
+    // from here on a make may run: hold the guard until its process ends
+    this.building.set(buildKey, {});
 
     const envPath = [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].join(path.delimiter);
     const target = kind === 'clean' ? 'MRVC: clean' : kind === 'rebuild' ? 'MRVC: rebuild' : 'MRVC: build';
@@ -444,19 +477,32 @@ export class BuildManager {
     }
 
     this.store.reloadActive();
-    if (opts?.andDownload) {
-      // MRS2 buildAndDownload semantics (buildSuccessCallback): the download
-      // runs only after a successful build — a failed or cancelled build
-      // stops here.
-      const code = await this.executeAndWait(task, 'mrvc-build');
-      if (code !== 0) {
-        vscode.window.showErrorMessage(t('buildFailedNoDownload', project.projectName, code ?? 'unknown'));
+    try {
+      if (opts?.andDownload) {
+        // MRS2 buildAndDownload semantics (buildSuccessCallback): the download
+        // runs only after a successful build — a failed or cancelled build
+        // stops here.
+        const code = await this.executeBuildTask(buildKey, task);
+        if (code !== 0) {
+          vscode.window.showErrorMessage(t('buildFailedNoDownload', project.projectName, code ?? 'unknown'));
+          return;
+        }
+        // downloadProject surfaces its own failures; this catch is the last
+        // net so no rejection escapes after an otherwise successful build
+        try {
+          await downloadProject(this.store, project);
+        } catch (e) {
+          vscode.window.showErrorMessage(t('downloadThrew', project.projectName, msg(e)));
+        }
         return;
       }
-      await downloadProject(this.store, project);
-      return;
+      // fire-and-forget build: the guard releases when THIS make process ends,
+      // not when run() returns — handled inside executeBuildTask
+      await this.executeBuildTask(buildKey, task);
+    } finally {
+      this.building.delete(buildKey);
     }
-    await vscode.tasks.executeTask(task);
+
   }
 
   /** MRS2 "Build Project And Download": one pipeline — build, then flash the
@@ -486,6 +532,43 @@ export class BuildManager {
           if (settled) return;
           settled = true;
           sub.dispose();
+          resolve(undefined);
+        }
+      );
+    });
+  }
+
+  /**
+   * Run the single-build task to completion and resolve with make's exit
+   * code, holding the single-build guard for the whole run: the execution is
+   * recorded under `key` (so a repeated trigger can terminate it) and the
+   * key is released when THIS make process ends — or at once if the task
+   * never started. Same execution-identity matching as executeAndWait, so
+   * concurrent tasks of the same type cannot cross-fire.
+   */
+  private executeBuildTask(key: string, task: vscode.Task): Promise<number | undefined> {
+    const entry = this.building.get(key);
+    return new Promise<number | undefined>((resolve) => {
+      let settled = false;
+      let exec: vscode.TaskExecution | undefined;
+      const sub = vscode.tasks.onDidEndTaskProcess((e) => {
+        if (settled || e.execution.task.definition.type !== 'mrvc-build') return;
+        if (exec && e.execution !== exec) return;
+        settled = true;
+        sub.dispose();
+        this.building.delete(key);
+        resolve(e.exitCode);
+      });
+      vscode.tasks.executeTask(task).then(
+        (e) => {
+          exec = e;
+          if (entry) entry.exec = e;
+        },
+        () => {
+          if (settled) return;
+          settled = true;
+          sub.dispose();
+          this.building.delete(key);
           resolve(undefined);
         }
       );

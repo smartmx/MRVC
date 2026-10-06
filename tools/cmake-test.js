@@ -22,9 +22,21 @@ const { Cproject } = require('../out/core/cproject.js');
 const { locateInstall, selectToolchain } = require('../out/core/toolchain.js');
 const { buildCMakeContent } = require('../out/core/cmake.js');
 
-const PROJ = 'F:/CH585/EVT/V1_2/EXAM/LED';
+// real EVT tree: dev TEST copy, F:/ layout, or the local E:/WORK tree
+const PROJ = ['F:/CH585/EVT/V1_2/EXAM/LED', 'E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED', 'E:/WORK/CH585/V1_7/EXAM/LED'].find(
+  (p) => fs.existsSync(path.join(p, '.cproject'))
+);
+if (!PROJ) {
+  console.log('SKIP  cmake-test (no real LED tree found)');
+  process.exit(0);
+}
 const cp = Cproject.load(PROJ);
-const tc = selectToolchain(locateInstall(), 'auto', cp.rvGccVersion, cp.storedPrefix);
+const MRS2_ROOT =
+  process.env.MRS2_HOME ||
+  ['C:/MounRiver/MounRiver_Studio2', 'D:/MounRiver/MounRiver_Studio2'].find((r) =>
+    fs.existsSync(path.join(r, 'resources', 'app', 'resources', 'win32', 'components', 'WCH', 'manifest.json'))
+  );
+const tc = selectToolchain(locateInstall(MRS2_ROOT), 'auto', cp.rvGccVersion, cp.storedPrefix);
 check('toolchain resolved', !!tc && !!tc.compilerC);
 
 const file = path.join(WS, 'CMakeLists.txt');

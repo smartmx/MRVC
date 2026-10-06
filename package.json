@@ -163,6 +163,11 @@
           "default": true,
           "description": "Reset target after download.",
           "order": 8
+        },
+        "mrvc.solution": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Solution (`.wvsln`) this window was opened for. Managed by the extension: opening a `.wvsln` writes it into the generated `.code-workspace` so the solution reloads on activation. Do not edit manually — clear it (or use Close Solution) to detach the window from the solution."
         }
       }
     },

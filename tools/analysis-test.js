@@ -45,19 +45,25 @@ const tc = require('../out/core/toolchain.js');
 // ---------- 3. RTL dump call extraction ----------
 {
   const dump = [
-    ';; Function main',
+    // real GCC headers (GCC8/12/15): "name (name, funcid=1)"; a bare name must be tolerated too
+    ';; Function main (main, funcid=1)',
     '',
     '\t(insn 10 8 12 (set (mem/f (plus (reg) (reg)) [0 S4 A32]))',
     '\t    (call (mem:SI (symbol_ref:SI ("led_on") [flags 0x3]) [0 S4 A32]) ()))',
     '',
-    ';; Function led_on',
+    ';; Function led_on (led_on, funcdef=1)',
     '',
     '\t(call (mem:SI (symbol_ref:SI ("delay_ms") [flags 0x3]) ()))',
+    '',
+    ';; Function bare_header',
+    '\t(call (mem:SI (symbol_ref:SI ("noop") [flags 0x3]) ()))',
   ].join('\r\n');
   const calls = a.parseDumpCalls(dump);
-  check('dump: 2 edges', calls.length === 2);
+  check('dump: 3 edges', calls.length === 3);
   check('dump: main -> led_on', calls.some((e) => e.caller === 'main' && e.callee === 'led_on'));
   check('dump: led_on -> delay_ms', calls.some((e) => e.caller === 'led_on' && e.callee === 'delay_ms'));
+  check('dump: bare header still a caller', calls.some((e) => e.caller === 'bare_header' && e.callee === 'noop'));
+  check('dump: caller never carries the (name, funcid=..) tail', calls.every((e) => !/[()]/.test(e.caller)));
   const rep = a.callReport(calls);
   check('call report: markdown edges', rep.includes('- led_on -> delay_ms') && rep.includes('- main -> led_on'));
   check('call report: empty safe', a.callReport([]).includes('(no call edges found)'));

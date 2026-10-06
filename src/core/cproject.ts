@@ -354,8 +354,28 @@ export class Cproject {
    * named sourceEntry of the top-level folder when one exists (CH585 style),
    * else as the full logic path into the root entry (CH587 style), creating
    * that entry if the project has none.
+   *
+   * A top-level folder that carries its own named sourceEntry is special:
+   * CDT union semantics make the entry re-include the folder, so a root-entry
+   * token alone is a "don't double-scan" marker the scanner ignores — the
+   * exclusion that actually works is REMOVING the entry (and writing the
+   * token, which becomes a real exclusion precisely because the entry is
+   * gone; includeResource rebuilds it).
    */
   excludeResource(logicPath: string): void {
+    if (!logicPath.includes('/')) {
+      const named = this.namedEntryEl(logicPath);
+      if (named) {
+        named.parent?.removeChild(named);
+        const root = this.rootEntryEl(true)!;
+        const cur = splitExcluding(root);
+        if (!cur.includes(logicPath)) {
+          cur.push(logicPath);
+          setExcludingAttr(root, cur.join('|'));
+        }
+        return;
+      }
+    }
     const { entry, token } = this.exclusionTarget(logicPath);
     const cur = splitExcluding(entry);
     if (cur.includes(token)) return;
@@ -367,13 +387,18 @@ export class Cproject {
    * Re-include a previously excluded resource: strip the token (full-path
    * and folder-relative, with and without trailing slash) from the root
    * entry and from the top folder's named entry. An emptied list keeps the
-   * attribute as excluding="" (MRS2 style).
+   * attribute as excluding="" (MRS2 style). A top-level folder whose entry
+   * excludeResource removed gets that entry BACK — MRS2 files pair such
+   * folders with their own sourceEntry, and without it the leftover root
+   * token would keep reading as a real exclusion.
    */
   includeResource(logicPath: string): void {
     const top = logicPath.includes('/') ? logicPath.slice(0, logicPath.indexOf('/')) : '';
     const rel = logicPath.includes('/') ? logicPath.slice(logicPath.indexOf('/') + 1) : logicPath;
     const variants = new Set([logicPath, logicPath + '/', rel, rel + '/']);
-    const targets = [this.namedEntryEl(top), this.rootEntryEl(false)];
+    const rootEl = this.rootEntryEl(false);
+    const wasTopExcluded = !top && !!rootEl && splitExcluding(rootEl).some((tk) => tk === logicPath || tk === logicPath + '/');
+    const targets = [this.namedEntryEl(top), rootEl];
     for (const entry of targets) {
       if (!entry) continue;
       const cur = splitExcluding(entry);
@@ -381,6 +406,16 @@ export class Cproject {
       if (next.length !== cur.length) {
         setExcludingAttr(entry, next.join('|'));
       }
+    }
+    if (wasTopExcluded && !this.namedEntryEl(logicPath)) {
+      const wrap = this.sourceEntriesWrap(true)!;
+      const el = new XElement('entry');
+      // the exact shape MRS2 writes for a plain included folder (no
+      // excluding attribute at all)
+      el.setAttr('flags', 'VALUE_WORKSPACE_PATH|RESOLVED');
+      el.setAttr('kind', 'sourcePath');
+      el.setAttr('name', logicPath);
+      wrap.append(el);
     }
   }
 
@@ -401,14 +436,7 @@ export class Cproject {
     );
     if (existing.length) return existing[0];
     if (!create) return undefined;
-    let wrap = this.config.find((e) => e.name === 'sourceEntries');
-    if (!wrap) {
-      wrap = new XElement('sourceEntries');
-      // real CDT files keep <sourceEntries> as a sibling of <folderInfo>,
-      // i.e. a child of the inner <configuration> (the toolChain's
-      // grandparent); synthetic fixtures nest it under <cconfiguration>
-      (this.toolChain?.parent?.parent ?? this.config).append(wrap);
-    }
+    const wrap = this.sourceEntriesWrap(true)!;
     const el = new XElement('entry');
     el.setAttr('flags', 'VALUE_WORKSPACE_PATH');
     el.setAttr('kind', 'sourcePath');
@@ -417,9 +445,27 @@ export class Cproject {
     return el;
   }
 
+  /** the <sourceEntries> wrapper, optionally created where real CDT files
+   * keep it: a sibling of <folderInfo>, i.e. a child of the inner
+   * <configuration> (the toolChain's grandparent); synthetic fixtures nest
+   * it under <cconfiguration> */
+  private sourceEntriesWrap(create: boolean): XElement | undefined {
+    const wrap = this.config.find((e) => e.name === 'sourceEntries');
+    if (wrap || !create) return wrap;
+    const el = new XElement('sourceEntries');
+    (this.toolChain?.parent?.parent ?? this.config).append(el);
+    return el;
+  }
+
   private namedEntryEl(name: string): XElement | undefined {
     if (!name) return undefined;
-    return this.config.findAll((e) => e.name === 'entry' && e.attr('kind') === 'sourcePath' && (e.attr('name') ?? '') === name)[0];
+    // folded compare on Windows: EVT files sometimes spell a sourceEntry
+    // name with different case than the .project link name — the scanner's
+    // marker logic folds too, so exclude/include must find the same element
+    const fold = (s: string): string => (process.platform === 'win32' ? s.toLowerCase() : s);
+    return this.config.findAll(
+      (e) => e.name === 'entry' && e.attr('kind') === 'sourcePath' && fold(e.attr('name') ?? '') === fold(name)
+    )[0];
   }
 
   setOptionValue(suffix: string, value: string | undefined): void {

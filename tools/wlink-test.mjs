@@ -53,9 +53,16 @@ const ARGS = { chipId: 6, clkSpeed: 1, dbgMode: 0 };
 
 // 2. load.wcfg parsing against the real MRS2 installation (present-only)
 {
-  const WCH = 'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH';
+  const MRS2_ROOT =
+    process.env.MRS2_HOME ||
+    ['C:/MounRiver/MounRiver_Studio2', 'D:/MounRiver/MounRiver_Studio2'].find((r) =>
+      fs.existsSync(path.join(r, 'resources', 'app', 'resources', 'win32', 'components', 'WCH', 'manifest.json'))
+    );
+  const WCH = MRS2_ROOT
+    ? `${MRS2_ROOT}/resources/app/resources/win32/components/WCH`
+    : 'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH';
   if (fs.existsSync(path.join(WCH, 'Others', 'CommunicationLib'))) {
-    const win32 = 'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32';
+    const win32 = `${MRS2_ROOT}/resources/app/resources/win32`;
     const lib = resolveCommLib({ resourcesWin32: win32, root: '', components: '', makeBin: '', openocdExe: '', openocdCfg: '', linkUtilityExe: '', toolchains: [] });
     check('commLib: resolved from the real installation', !!lib && /McuCompilerDll\.dll$/i.test(lib.mcuDll));
     check('commLib: DLL actually exists on disk', !!lib && fs.existsSync(lib.mcuDll));

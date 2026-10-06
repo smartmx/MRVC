@@ -221,6 +221,19 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     en: 'No MRS project loaded. Use "MRVC: Open MRS Project" first.',
     'zh-cn': '尚未加载任何 MRS 工程。请先使用"MRVC: Open MRS Project"。',
   },
+  flashAddressInvalid: {
+    en: 'MRVC: download aborted for "{0}" — {1}',
+    'zh-cn': 'MRVC：" {0} " 的下载已中止——{1}',
+  },
+  buildAlreadyRunning: {
+    en: 'MRVC: "{0}" is already building — wait for it to finish or terminate the running task.',
+    'zh-cn': 'MRVC：" {0} " 正在编译中——请等待完成，或结束正在运行的任务。',
+  },
+  terminateBuild: { en: 'Terminate Build', 'zh-cn': '结束编译' },
+  downloadThrew: {
+    en: 'MRVC: download did not run for "{0}" — {1}',
+    'zh-cn': 'MRVC：" {0} " 的下载未执行——{1}',
+  },
   downloadFailed: {
     en: 'MRVC: download failed for "{0}" (exit code {1}) — see the task output.',
     'zh-cn': 'MRVC：" {0} "下载失败（退出码 {1}）——请查看任务输出。',

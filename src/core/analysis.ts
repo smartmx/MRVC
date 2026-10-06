@@ -134,6 +134,12 @@ function unquote(s: string): string {
  * with a ";; Function <name>" header; within a section, lines containing
  * the word "call" (whitespace-bounded) carry the callee as the first
  * quoted string.
+ *
+ * Real GCC (8 / 12 / 15 alike) writes the header as
+ * `;; Function main (main, funcid=1)` — the bare function name is the
+ * FIRST token; the parenthesised tail is GCC bookkeeping and must not
+ * leak into the caller name (it would never match a .su record or the
+ * UI's function list).
  */
 export function parseDumpCalls(dump: string): CallEdge[] {
   const calls: CallEdge[] = [];
@@ -141,7 +147,8 @@ export function parseDumpCalls(dump: string): CallEdge[] {
   const seen = new Set<string>();
   for (const line of dump.split(/\r?\n/)) {
     if (line.startsWith(FUNC_HEADER_MARK)) {
-      caller = line.slice(FUNC_HEADER_MARK.length).trim();
+      const header = line.slice(FUNC_HEADER_MARK.length).match(/^\s*([^\s(]+)/);
+      caller = header ? header[1] : '';
       continue;
     }
     if (!caller) continue;

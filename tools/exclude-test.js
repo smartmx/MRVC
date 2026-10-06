@@ -13,9 +13,9 @@ const { generateMakefiles } = require('../out/core/makefile.js');
 // real EVT trees: prefer the local TEST copies, fall back to the F:/ layout
 // the assertions were originally written against
 const TREES = {
-  CH585: ['E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM', 'F:/CH585/EVT/V1_2/EXAM'],
+  CH585: ['E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM', 'F:/CH585/EVT/V1_2/EXAM', 'E:/WORK/CH585/V1_7/EXAM'],
   CH32V307: ['E:/Projects/MRS_VSCODE/TEST/CH32V307EVT/EXAM', 'F:/CH32V307/EVT/V2_9/EXAM'],
-  CH587: ['E:/Projects/MRS_VSCODE/TEST/CH587EVT/EXAM', 'F:/CH587/EVT/V1_0/EXAM'],
+  CH587: ['E:/Projects/MRS_VSCODE/TEST/CH587EVT/EXAM', 'F:/CH587/EVT/V1_0/EXAM', 'E:/WORK/CH587/V1_1/EXAM'],
 };
 const treeRoot = (key) => TREES[key].find((r) => fs.existsSync(r));
 const CH585_EXAM = treeRoot('CH585');
@@ -54,8 +54,10 @@ if (HAS_BLE) {
 // ---------- 2. root-entry style (CH32V307 HOST_IAP) query ----------
 {
   const host = treeRoot('CH32V307') && findProjectWith(treeRoot('CH32V307'), 'usb_host_iap_0.c');
-  check('root-entry style project found', !!host);
-  if (host) {
+  if (!host) {
+    console.log('SKIP  2. root-entry style query (CH32V307 tree not present)');
+  } else {
+    check('root-entry style project found', !!host);
     const cp = Cproject.load(host);
     check('root entry full-path token excluded', isLogicExcluded(cp, 'User/usb_host_iap_0.c') === true);
     check('root entry full-path header token excluded', isLogicExcluded(cp, 'User/usb_host_iap_0.h') === true);
@@ -151,7 +153,9 @@ check('new root entry written with excluding as first attribute', /<entry exclud
 // ---------- 7. case-variant link-name marker must not exclude the link ----------
 // root entry marker `stdperiphdriver` (lowercase) vs link name `StdPeriphDriver`:
 // with folded matching the marker must still be recognized and NOT nuke the
-// whole linked folder
+// whole linked folder — but only while the paired named entry exists (CDT
+// union semantics). A root token naming the link WITHOUT its entry is a real
+// exclusion (that is the state Exclude From Build on a linked folder writes).
 {
   const base = path.join(DEVELOP_DIR, '.scratch', 'excl-marker');
   const proj = path.join(base, 'proj');
@@ -165,9 +169,10 @@ check('new root entry written with excluding as first attribute', /<entry exclud
     path.join(proj, '.project'),
     `<?xml version="1.0" encoding="UTF-8"?>\n<projectDescription>\n<name>marker</name>\n<linkedResources>\n<link>\n<name>StdPeriphDriver</name>\n<type>2</type>\n<location>${libs}</location>\n</link>\n</linkedResources>\n</projectDescription>`
   );
+  // paired case-variant entry: the token is a "don't double-scan" marker
   fs.writeFileSync(
     path.join(proj, '.cproject'),
-    `<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry excluding="stdperiphdriver" flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>`
+    `<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry excluding="stdperiphdriver" flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>\n<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="stdperiphdriver"/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>`
   );
   const cp = Cproject.load(proj);
   const files = (scanSources(cp).get('StdPeriphDriver') ?? []).map((f) => f.logicName);
@@ -175,6 +180,17 @@ check('new root entry written with excluding as first attribute', /<entry exclud
   check('case-variant marker: query says not excluded', isLogicExcluded(cp, 'StdPeriphDriver/keep.c') === false);
   const mapped = exclusionFsPaths(cp, proj);
   check('case-variant marker: skipped by decoration mapping', mapped.length === 0);
+  check('case-variant marker: link itself not excluded', isLogicExcluded(cp, 'StdPeriphDriver') === false);
+
+  // now remove the paired entry (what Exclude From Build on the folder does):
+  // the same token becomes a REAL exclusion of the whole link
+  cp.excludeResource('StdPeriphDriver');
+  check('marker removed: link excluded once entry is gone', isLogicExcluded(cp, 'StdPeriphDriver') === true);
+  check('marker removed: content excluded', isLogicExcluded(cp, 'StdPeriphDriver/keep.c') === true);
+  check('marker removed: scanner drops the whole link', (scanSources(cp).get('StdPeriphDriver') ?? []).length === 0);
+  check('marker removed: decoration maps the link', exclusionFsPaths(cp, proj).includes(libs));
+  cp.includeResource('StdPeriphDriver');
+  check('marker restored: include rebuilds entry + clears token', isLogicExcluded(cp, 'StdPeriphDriver/keep.c') === false && (scanSources(cp).get('StdPeriphDriver') ?? []).some((f) => f.logicName === 'StdPeriphDriver/keep.c'));
 }
 
 // ---------- 8. bare-name root tokens resolve into linked folders (CH585) ----------
@@ -259,6 +275,52 @@ check('new root entry written with excluding as first attribute', /<entry exclud
   } else {
     console.log('SKIP  10. real HOST_IAP regression (tree not present)');
   }
+}
+
+// ---------- 11. Exclude/Include of a top-level folder WITH its own named
+// entry must be REAL: the entry is removed (CDT semantics — a lone root
+// token is only a "don't double-scan" marker while the entry re-includes
+// the folder), the scanner drops the folder, and Include rebuilds the entry
+{
+  const base = path.join(DEVELOP_DIR, '.scratch', 'excl-toplevel');
+  const proj = path.join(base, 'proj');
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.mkdirSync(path.join(proj, 'Startup'), { recursive: true });
+  fs.mkdirSync(path.join(proj, 'User'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'Startup', 'startup_CH585.S'), 'int startup(void){return 0;}\n');
+  fs.writeFileSync(path.join(proj, 'User', 'main.c'), 'int main(void){return 0;}\n');
+  fs.writeFileSync(
+    path.join(proj, '.project'),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<projectDescription>\n<name>toplevel</name>\n</projectDescription>`
+  );
+  fs.writeFileSync(
+    path.join(proj, '.cproject'),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry excluding="Startup|User" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>\n<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Startup"/>\n<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="User"/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>`
+  );
+  const cp = Cproject.load(proj);
+  check('toplevel: folder with entry starts included', isLogicExcluded(cp, 'Startup') === false);
+  cp.excludeResource('Startup');
+  check('toplevel: named entry removed by exclude', !cp.sourceEntries.some((e) => e.name === 'Startup'));
+  check('toplevel: root token becomes the real exclusion', cp.sourceEntries.find((e) => e.name === '').excluding.includes('Startup'));
+  check('toplevel: query now says excluded', isLogicExcluded(cp, 'Startup') === true);
+  check('toplevel: query says content excluded', isLogicExcluded(cp, 'Startup/startup_CH585.S') === true);
+  check('toplevel: scanner drops the folder', (scanSources(cp).get('Startup') ?? []).length === 0);
+  check('toplevel: other folders unaffected', (scanSources(cp).get('User') ?? []).some((f) => f.logicName === 'User/main.c'));
+  check('toplevel: decoration maps the excluded folder', exclusionFsPaths(cp, proj).includes(path.join(proj, 'Startup')));
+  cp.save();
+  const cp2 = Cproject.load(proj);
+  check('toplevel: exclusion survives save/reload', isLogicExcluded(cp2, 'Startup/startup_CH585.S') === true);
+  cp2.includeResource('Startup');
+  check('toplevel: include rebuilds the named entry', cp2.sourceEntries.some((e) => e.name === 'Startup' && e.excluding.length === 0));
+  check('toplevel: root token stripped by include', !cp2.sourceEntries.find((e) => e.name === '').excluding.includes('Startup'));
+  check('toplevel: query back to included', isLogicExcluded(cp2, 'Startup') === false);
+  check('toplevel: scanner re-includes the folder', (scanSources(cp2).get('Startup') ?? []).some((f) => f.logicName === 'Startup/startup_CH585.S'));
+  // the CH587-style shape (token without an entry) stays idempotent
+  cp2.excludeResource('Startup');
+  check('toplevel: re-exclude appends no duplicate token', cp2.sourceEntries.find((e) => e.name === '').excluding.filter((t) => t === 'Startup').length === 1);
+  check('toplevel: no duplicate entry created', cp2.sourceEntries.filter((e) => e.name === 'Startup').length === 0);
+  cp2.includeResource('Startup');
+  check('toplevel: include rebuilds exactly one entry', cp2.sourceEntries.filter((e) => e.name === 'Startup').length === 1);
 }
 
 console.log(failures ? `\n${failures} FAILURES` : '\nall exclude tests passed');

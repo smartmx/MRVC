@@ -11,8 +11,9 @@ const fs = require('fs');
 const WS = path.join(__dirname, '..', '.scratch', 'intellisense-ws');
 fs.rmSync(WS, { recursive: true, force: true });
 fs.mkdirSync(WS, { recursive: true });
-const PROJ = 'F:/CH585/EVT/V1_2/EXAM/LED';
-const HAS_LED = fs.existsSync(path.join(PROJ, '.cproject'));
+// real LED tree: the dev-machine TEST copy, the F:/ layout, or the local
+// E:/WORK EVT tree — first existing wins
+const PROJ = ['F:/CH585/EVT/V1_2/EXAM/LED', 'E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED', 'E:/WORK/CH585/V1_7/EXAM/LED'].find((p) => fs.existsSync(path.join(p, '.cproject')));
 
 const vscodeStub = {
   workspace: {
@@ -56,6 +57,8 @@ const { readProjectFile, addLinkedFolder, removeLinkedFolder } = require('../out
   check('contextDatabases: referencing projects keep their own entries', dbs[0].length === 1 && dbs[1].length === 1);
   check('contextDatabases: non-referencing project gets canonical fallback (lowest root wins)', dbs[2].length === 1 && dbs[2][0].file === 'F:/common/S.c' && dbs[2][0].arguments[0] === 'a2');
 }
+
+const HAS_LED = !!PROJ;
 
 if (HAS_LED) {
   const cp = Cproject.load(PROJ);
@@ -121,6 +124,63 @@ if (HAS_LED) {
   check('MRVC configuration still present', props2.configurations.some((c) => c.name === 'MRVC'));
   const cc2 = JSON.parse(fs.readFileSync(activeCcFile(WS), 'utf-8'));
   check('active slot regenerated after a config change', cc2.length === db.length);
+
+  // ---- JSONC preservation: comments (incl. LINE-END ones, which the old
+  // whole-file rewriter destroyed or choked on) must survive our update;
+  // only the MRVC entry is spliced, everything else stays byte-for-byte ----
+  {
+    const propsFile = path.join(WS, '.vscode', 'c_cpp_properties.json');
+    fs.writeFileSync(
+      propsFile,
+      [
+        '{',
+        '  // user header comment',
+        '  "version": 4, /* version pinned */',
+        '  "configurations": [',
+        '    {',
+        '      "name": "UserCustom", // line-end comment',
+        '      "defines": ["KEEP_ME"]',
+        '    }',
+        '  ]',
+        '}',
+      ].join('\n'),
+      'utf-8'
+    );
+    const rJ = ensureIntellisenseConfig(store);
+    check('jsonc: update succeeds without error', !rJ.error);
+    const after = fs.readFileSync(propsFile, 'utf-8');
+    check('jsonc: header comment survives', after.includes('// user header comment'));
+    check('jsonc: line-end comment survives', after.includes('"name": "UserCustom", // line-end comment'));
+    check('jsonc: block comment survives', after.includes('/* version pinned */'));
+    const parsedJ = JSON.parse(after.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, ''));
+    check('jsonc: MRVC entry added', parsedJ.configurations.some((c) => c.name === 'MRVC'));
+    check('jsonc: user entry still parses next to it', parsedJ.configurations.some((c) => c.name === 'UserCustom' && c.defines.includes('KEEP_ME')));
+    // a stale MRVC entry must be refreshed in place — surgically again
+    fs.writeFileSync(propsFile, after.replace('"intelliSenseMode": "gcc-x64"', '"intelliSenseMode": "stale"'), 'utf-8');
+    ensureIntellisenseConfig(store);
+    const after3 = fs.readFileSync(propsFile, 'utf-8');
+    check('jsonc: stale MRVC entry refreshed', !after3.includes('"stale"'));
+    check('jsonc: comments survive the refresh', after3.includes('// user header comment') && after3.includes('// line-end comment'));
+    check('jsonc: exactly one MRVC entry after two updates', (after3.match(/"name": "MRVC"/g) || []).length === 1);
+  }
+
+  // ---- multi-root: every workspace folder gets its own c_cpp_properties;
+  // secondary folders point at the PRIMARY folder's databases absolutely ----
+  {
+    const WS2 = path.join(__dirname, '..', '.scratch', 'intellisense-ws2');
+    fs.rmSync(WS2, { recursive: true, force: true });
+    vscodeStub.workspace.workspaceFolders.push({ uri: { fsPath: WS2 }, name: 'ws2', index: 1 });
+    ensureIntellisenseConfig(store);
+    const p2 = JSON.parse(fs.readFileSync(path.join(WS2, '.vscode', 'c_cpp_properties.json'), 'utf-8'));
+    const mine2 = p2.configurations.find((c) => c.name === 'MRVC');
+    check('multi-root: secondary folder configured', !!mine2);
+    check(
+      'multi-root: secondary entry uses absolute paths into the primary cc dir',
+      Array.isArray(mine2.compileCommands) && mine2.compileCommands.length === 2 && mine2.compileCommands.every((c) => /[A-Za-z]:[\\/]/.test(c) && c.includes(path.join(WS, '.vscode', 'mrvc', 'cc')))
+    );
+    vscodeStub.workspace.workspaceFolders.pop();
+    fs.rmSync(WS2, { recursive: true, force: true });
+  }
 
   // stale _active.json whose file set no longer matches the context class
   // (older MRVC layouts wrote private/shared compositions) must be re-seeded

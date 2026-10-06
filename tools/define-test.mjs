@@ -18,8 +18,18 @@ const { locateInstall, selectToolchain } = require(path.join(here, '..', 'out', 
 const scratch = path.join(here, '..', '.scratch', 'define-test');
 fs.rmSync(scratch, { recursive: true, force: true });
 fs.mkdirSync(path.join(scratch, 'src'), { recursive: true });
+// real EVT tree: the dev-machine TEST copy, the F:/ layout, or the local
+// E:/WORK tree — first existing wins
+const LED_PROJ = ['F:/CH585/EVT/V1_2/EXAM/LED', 'E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED', 'E:/WORK/CH585/V1_7/EXAM/LED'].find(
+  (p) => fs.existsSync(path.join(p, '.project'))
+);
+if (!LED_PROJ) {
+  console.log('SKIP  define-test (no real LED tree found)');
+  process.exit(0);
+}
+const EXAM_ROOT = path.dirname(LED_PROJ);
 for (const f of ['.project', '.cproject']) {
-  fs.copyFileSync(path.join('F:/CH585/EVT/V1_2/EXAM/LED', f), path.join(scratch, f));
+  fs.copyFileSync(path.join(LED_PROJ, f), path.join(scratch, f));
 }
 // point the scratch project's linked folders at the REAL SRC tree so the
 // link stage (startup, linker script, libISP585) can succeed in isolation
@@ -27,7 +37,7 @@ for (const f of ['.project', '.cproject']) {
   const projFile = path.join(scratch, '.project');
   fs.writeFileSync(
     projFile,
-    fs.readFileSync(projFile, 'utf-8').split('PARENT-1-PROJECT_LOC').join('F:/CH585/EVT/V1_2/EXAM'),
+    fs.readFileSync(projFile, 'utf-8').split('PARENT-1-PROJECT_LOC').join(EXAM_ROOT.replace(/\\/g, '/')),
     'utf-8'
   );
 }
@@ -78,7 +88,12 @@ fs.writeFileSync(
 
 // regenerate makefiles and build with the real toolchain
 const cp2 = Cproject.load(scratch);
-const install = locateInstall(undefined);
+const MRS2_ROOT =
+  process.env.MRS2_HOME ||
+  ['C:/MounRiver/MounRiver_Studio2', 'D:/MounRiver/MounRiver_Studio2'].find((r) =>
+    fs.existsSync(path.join(r, 'resources', 'app', 'resources', 'win32', 'components', 'WCH', 'manifest.json'))
+  );
+const install = locateInstall(MRS2_ROOT);
 const tc = selectToolchain(install, 'auto', cp2.rvGccVersion, cp2.storedPrefix);
 generateMakefiles(cp2, tc);
 

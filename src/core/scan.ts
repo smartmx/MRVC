@@ -91,14 +91,17 @@ export function scanSources(cp: Cproject): LogicDirMap {
   }
 
   // 2. linked folders, always scanned (MRS scans basic.linkedFolders)
+  const named = namedEntryNames(cp);
   for (const [name, target] of cp.linkedFolders) {
     if (!fs.existsSync(target)) continue;
     // tokens may be written relative to the linked folder itself (bare file
     // names) or relative to the project root (StdPeriphDriver/CH58x_x.c) —
-    // walk() matches both via the logic path. Root tokens that are just the
-    // link's own name are "don't double-scan" markers, not content filters
-    // (folded compare: some projects spell the marker with mismatched case)
-    const tokens = [...rootTokens.filter((t) => fold(t) !== fold(name)), ...(dirTokens.get(name) ?? [])];
+    // walk() matches both via the logic path. A root token equal to the
+    // link's own name is a "don't double-scan" marker ONLY while a named
+    // entry still re-includes the folder (folded compare: some projects
+    // spell the marker with mismatched case); Exclude From Build removes
+    // the entry, and the leftover token then really excludes the whole link
+    const tokens = [...rootTokens.filter((t) => !(fold(t) === fold(name) && named.has(fold(name)))), ...(dirTokens.get(name) ?? [])];
     walk(target, target, name, tokens, configNames, exts, addFile, []);
   }
 
@@ -244,14 +247,21 @@ export function isLogicExcluded(cp: Cproject, logic: string): boolean {
   };
   const top = logic.includes('/') ? logic.slice(0, logic.indexOf('/')) : logic;
   if (logic === top) {
-    // A named sourceEntry re-includes the folder and linked folders are
-    // always scanned, so a matching root token is just a "don't double-scan"
-    // marker, not an exclusion
-    if (named.has(fold(top)) || findLink(cp, top)) return false;
+    // A named sourceEntry re-includes the folder, so a matching root token
+    // is just a "don't double-scan" marker, not an exclusion
+    if (named.has(fold(top))) return false;
+    if (findLink(cp, top)) {
+      // linked folders are always scanned — but a root token naming the
+      // link excludes it once its named entry is gone (Exclude From Build
+      // removes the entry; without one the token is a real exclusion)
+      return rootTokens.some((t) => fold(t) === fold(top));
+    }
     return isExcluded(logic, rootTokens);
   }
   const rel = logic.slice(top.length + 1);
   if (findLink(cp, top)) {
+    // the whole link is excluded when its root token lost its entry
+    if (!named.has(fold(top)) && rootTokens.some((t) => fold(t) === fold(top))) return true;
     // linked walks ignore root tokens equal to the link's own name
     // ("don't double-scan" markers, folded compare) and carry their named
     // entry tokens
@@ -289,8 +299,9 @@ export function exclusionFsPaths(cp: Cproject, projectRoot: string): string[] {
         // mismatched case (see the marker filter in scanSources)
         const linkLoc = findLink(cp, segs[0]);
         if (linkLoc) {
-          if (segs.length === 1) continue; // marker, not an exclusion
-          out.push(path.join(linkLoc, ...segs.slice(1)));
+          if (segs.length === 1 && named.has(fold(segs[0]))) continue; // marker: the entry re-includes this link
+          // without its entry the token really excludes the whole link
+          out.push(segs.length === 1 ? linkLoc : path.join(linkLoc, ...segs.slice(1)));
         } else if (segs.length === 1 && named.has(fold(segs[0]))) {
           continue; // marker: a named sourceEntry re-includes this folder
         } else {

@@ -120,7 +120,14 @@ check('regex rejects bare hex and overflow', !ADDRESS_RE.test('0x00G00000') && !
 
 // 7. chip database scan (MRS2 SDK component, present-only guard)
 {
-  const SDK = 'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/SDK/default';
+  const MRS2_ROOT =
+    process.env.MRS2_HOME ||
+    ['C:/MounRiver/MounRiver_Studio2', 'D:/MounRiver/MounRiver_Studio2'].find((r) =>
+      fs.existsSync(path.join(r, 'resources', 'app', 'resources', 'win32', 'components', 'WCH', 'manifest.json'))
+    );
+  const SDK = MRS2_ROOT
+    ? `${MRS2_ROOT}/resources/app/resources/win32/components/WCH/SDK/default`
+    : 'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/SDK/default';
   if (fs.existsSync(SDK)) {
     const db = scanChipDb(SDK);
     check('chipdb: available', db.available === true);
@@ -173,6 +180,7 @@ check('regex rejects bare hex and overflow', !ADDRESS_RE.test('0x00G00000') && !
 {
   const fwBase0 = path.join(scratch, 'fw0.hex');
   const fwBase8 = path.join(scratch, 'fw8.hex');
+  fs.mkdirSync(scratch, { recursive: true }); // an earlier section's rmSync may have removed it
   fs.writeFileSync(fwBase0, ':100000006F00407613000000130000001300000092\n:00000001FF\n', 'utf-8');
   fs.writeFileSync(fwBase8, ':020000040800F2\n:100000006F00407613000000130000001300000092\n:00000001FF\n', 'utf-8');
   check('hexBase: base-0 hex -> 0', hexBaseAddress(fs.readFileSync(fwBase0, 'utf-8')) === 0);

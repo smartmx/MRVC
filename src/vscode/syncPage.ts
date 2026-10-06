@@ -8,6 +8,7 @@
  * Checked rows are applied to ALL loaded projects on Apply.
  */
 import * as vscode from 'vscode';
+import * as crypto from 'crypto';
 import { ProjectStore, MrsProject, msg } from './projects';
 import { Cproject } from '../core/cproject';
 import { FIELDS, PAGES, FieldDef, jsonForScript } from './configView';
@@ -163,6 +164,8 @@ export class SyncPage {
 
   private render(): string {
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    // nonce-gated scripts (same policy as the properties page)
+    const nonce = crypto.randomBytes(16).toString('hex');
     const base = this.store.active ?? this.store.all[0];
     const rows = syncableRows(base);
     const cppCount = rows.filter((r) => r.cppOnly).length;
@@ -233,7 +236,7 @@ export class SyncPage {
     }
 
     return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><style>${STYLE}</style></head><body>
+<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'"><style>${STYLE}</style></head><body>
 <div id="head">
   <span class="title">Sync Setting Across Projects</span>
   <span class="hint">${meta.projectCount} project(s) will receive the checked values (values seeded from <b>${esc(meta.baseProject)}</b>)${meta.cppOnlyNote ? ' — ' + esc(meta.cppOnlyNote) : ''}</span>
@@ -247,7 +250,7 @@ export class SyncPage {
   <button type="button" id="apply">Apply to All Projects</button>
   <span id="status"></span>
 </div>
-<script>
+<script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 const FIELD_META = ${jsonForScript(fieldMeta)};
 let currentPage = null;

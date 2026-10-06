@@ -36,6 +36,23 @@ const POSIX = (p: string) => toPosix(p);
 /** escape spaces for make */
 const ESC = (p: string) => toPosix(p).replace(/\$/g, '$$$$').split(' ').join('\\ ');
 
+/**
+ * Escape a literal `$` for the makefile level, leaving make-syntax tokens
+ * alone. make expands `$x` sequences itself before the shell ever sees the
+ * recipe line, so a user-supplied `$` (an -I/-L/-T/-D path, a macro value)
+ * must be doubled for make to emit one real dollar. Tokens that are make
+ * syntax rather than user text must survive verbatim:
+ *   automatic variables   $@ (the .o being built), $<, $^, $*, $?
+ *   variable references   $(VAR) / ${VAR} written in user option text
+ * CDT's listing flag -Wa,-adhlns="$@.lst" is the case that matters: it
+ * names the .lst after `$@`, and doubling it to `$$@` makes the shell see
+ * an empty `$@`, so every listing silently collapses onto a bare ".lst"
+ * (and the bytes stop matching MRS2's single-$ output).
+ */
+export function escapeMakeDollars(s: string): string {
+  return s.replace(/\$(?![<@^*?({])/g, '$$$$');
+}
+
 /** join a block: "VAR += \\\n a \\\n b \n\n" (last entry loses its backslash) */
 function varBlock(name: string, entries: string[], crlfValues = false): string {
   if (!entries.length) return '';
@@ -119,7 +136,7 @@ export function generateMakefiles(
   const sizeTool = path.basename(tc.size);
 
   const style = mrs2Style ? ('2x' as const) : ('1x' as const);
-  const escMakeDollars = (s: string) => s.replace(/\$/g, '$$$$');
+  const escMakeDollars = escapeMakeDollars;
   // analysis builds add -fstack-usage (.su per function) and -fdump-rtl-expand
   // (call dumps) to every compile line. MRS2 emits the dump flag right after
   // `-fmax-errors=20` in the target-flag section — in the 2.x style it joins
@@ -134,11 +151,9 @@ export function generateMakefiles(
     common = common.replace(' -fmax-errors=20', ` -fmax-errors=20 ${dumpFlag}`);
   }
   const extra = tailFlags.length ? ` ${tailFlags.join(' ')}` : '';
-  // make expands `$x` sequences inside recipe/flag text before the shell ever
-  // sees them — a literal `$` in a user path (an -I/-L/-T/-D entry) must be
-  // doubled so make emits one real dollar. Prereqs/source lists already go
-  // through ESC (which doubles too); %VAR% references are appended later and
-  // stay untouched. No-op for paths without `$` (all goldens).
+  // per-tool option strings go through escMakeDollars (see its comment):
+  // user `$` escaped, make tokens ($@/$(VAR)) preserved. The analysis tail
+  // is appended AFTER escaping so its own text stays engine-generated.
   const cOpts = escMakeDollars(cCompilerOptions(cp, false, style)) + extra;
   const cppOpts = escMakeDollars(cppCompilerOptions(cp, false, style)) + extra;
   const asmOpts = escMakeDollars(assemblerOptions(cp, false, style)) + extra;

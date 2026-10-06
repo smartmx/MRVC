@@ -6,7 +6,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ProjectStore, MrsProject, getInstall } from './projects';
-import { prepareFlash, inferFlashAddress } from '../core/flash';
+import { prepareFlash, inferFlashAddress, FlashPlan } from '../core/flash';
 import { scanSources } from '../core/scan';
 import { t } from '../core/i18n';
 
@@ -143,18 +143,29 @@ export async function downloadProject(store: ProjectStore, project: MrsProject):
   // (EVT trees ship without .template) → CH58x-style default
   const address =
     cfg.get<string>('flash.address') || project.template.values['Address'] || inferFlashAddressFromSources(project) || '0x00000000';
-  const plan = prepareFlash({
-    buildDir: project.buildDir,
-    address,
-    verify: cfg.get<boolean>('flash.verify', true),
-    reset: cfg.get<boolean>('flash.reset', true),
-    boardCfg,
-    firmware: hex,
-    // .template "Erase All" checkbox (MRS2's Chip properties page): scrub
-    // the whole flash before writing; dual-core cfgs expose two banks
-    eraseAll: String(project.template.values['Erase All'] ?? '').trim().toLowerCase() === 'true',
-    banks: project.kernel ? 2 : 1,
-  });
+  // prepareFlash rejects a malformed address (an unset setting key, a .template
+  // Address someone typed by hand). It must surface as an error message here:
+  // callers like "Build And Download" await this after a successful build,
+  // where a thrown error would vanish into an unhandled rejection and the
+  // download would silently not happen.
+  let plan: FlashPlan;
+  try {
+    plan = prepareFlash({
+      buildDir: project.buildDir,
+      address,
+      verify: cfg.get<boolean>('flash.verify', true),
+      reset: cfg.get<boolean>('flash.reset', true),
+      boardCfg,
+      firmware: hex,
+      // .template "Erase All" checkbox (MRS2's Chip properties page): scrub
+      // the whole flash before writing; dual-core cfgs expose two banks
+      eraseAll: String(project.template.values['Erase All'] ?? '').trim().toLowerCase() === 'true',
+      banks: project.kernel ? 2 : 1,
+    });
+  } catch (e) {
+    vscode.window.showErrorMessage(t('flashAddressInvalid', project.projectName, e instanceof Error ? e.message : String(e)));
+    return false;
+  }
 
   store.setActive(project);
   const task = new vscode.Task(

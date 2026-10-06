@@ -112,23 +112,30 @@ export function appendSolutionMembers(file: string, projectRoots: string[], pars
 export function recordBuildOrder(file: string, order: string[]): void {
   const lines = fs.readFileSync(file, 'utf-8').split(/\r?\n/);
   const orderLine = `BuildOrder=${order.join(',')}`;
+  // A file that already carries a BuildOrder line only gets that line
+  // REWRITTEN. Blindly inserting on i === 0 as well would leave two lines
+  // (the inserted one plus the old line replaced in place further down),
+  // and repeated calls would accumulate one more every time.
   const out: string[] = [];
-  let inserted = false;
+  const hasOrder = lines.some((l) => l.startsWith('BuildOrder='));
+  let written = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line.startsWith('BuildOrder=')) {
+      // rewrite the first BuildOrder line, drop any later duplicates
+      if (written) continue;
       out.push(orderLine);
-      inserted = true;
+      written = true;
       continue;
     }
     out.push(line);
     // MRS2 inserts the line right after the first line when absent
-    if (i === 0 && !inserted) {
+    if (i === 0 && !hasOrder && !written) {
       out.push(orderLine);
-      inserted = true;
+      written = true;
     }
   }
-  if (!inserted) out.push(orderLine);
+  if (!written) out.push(orderLine);
   fs.writeFileSync(file, out.join('\r\n'), 'utf-8');
 }
 

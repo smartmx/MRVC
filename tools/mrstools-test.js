@@ -14,10 +14,17 @@ const check = (name, cond) => {
 
 const { resolveMrsTools } = require(path.join(__dirname, '..', 'out', 'core', 'mrsTools.js'));
 
-const WIN32 = 'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32';
+// prefer an env override, then the common install roots — lets the
+// real-install assertions run on any machine with MRS2 installed
+const MRS2_ROOT =
+  process.env.MRS2_HOME ||
+  ['C:/MounRiver/MounRiver_Studio2', 'D:/MounRiver/MounRiver_Studio2'].find((r) =>
+    fs.existsSync(path.join(r, 'resources', 'app', 'resources', 'win32', 'components', 'WCH', 'manifest.json'))
+  );
+const WIN32 = MRS2_ROOT ? `${MRS2_ROOT}/resources/app/resources/win32` : 'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32';
 if (fs.existsSync(path.join(WIN32, 'components', 'WCH', 'manifest.json'))) {
   const install = {
-    root: 'C:/MounRiver/MounRiver_Studio2',
+    root: MRS2_ROOT,
     resourcesWin32: WIN32.replace(/\//g, '\\'),
     components: '', makeBin: '', openocdExe: '', openocdCfg: '', linkUtilityExe: path.join(WIN32, 'components', 'WCH', 'Others', 'SWDTool', 'default', 'WCH-LinkUtility.exe'), toolchains: [],
   };

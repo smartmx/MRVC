@@ -7,7 +7,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-/** EXAM-style trees nest projects up to 4 levels (e.g. USB/USBHS/HOST_IAP/HOST_APP). */
+/** EXAM-style trees nest projects several levels deep (e.g.
+ * USB/USBHS/HOST_IAP/HOST_APP = 4); 6 leaves headroom for future EVT
+ * layouts without scanning entire drives. */
 export const DEFAULT_DISCOVERY_DEPTH = 6;
 
 export function findProjectRoots(dir: string, depth: number = DEFAULT_DISCOVERY_DEPTH): string[] {

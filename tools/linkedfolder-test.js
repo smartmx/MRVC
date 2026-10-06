@@ -8,12 +8,21 @@ const path = require('path');
 
 const WS = path.join(__dirname, '..', '.scratch', 'linkedfolder-ws');
 const PROJ = path.join(WS, 'LED');
-const SRC_TARGET = 'F:/CH585/EVT/V1_2/EXAM/SRC';
-const NEW_TARGET = 'F:/CH585/EVT/V1_2/EXAM/SRC/StdPeriphDriver';
+// real EVT tree: dev TEST copy, F:/ layout, or the local E:/WORK tree
+const LED_SRC = ['F:/CH585/EVT/V1_2/EXAM/LED', 'E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED', 'E:/WORK/CH585/V1_7/EXAM/LED'].find(
+  (p) => fs.existsSync(path.join(p, '.project'))
+);
+const EVT_ROOT = LED_SRC ? path.dirname(LED_SRC) : 'F:/CH585/EVT/V1_2/EXAM';
+const SRC_TARGET = `${EVT_ROOT}/SRC`;
+const NEW_TARGET = `${EVT_ROOT}/SRC/StdPeriphDriver`;
 
 fs.rmSync(WS, { recursive: true, force: true });
 fs.mkdirSync(WS, { recursive: true });
-fs.cpSync('F:/CH585/EVT/V1_2/EXAM/LED', PROJ, { recursive: true });
+if (!LED_SRC) {
+  console.log('SKIP  linkedfolder-test (no real LED tree found)');
+  process.exit(0);
+}
+fs.cpSync(LED_SRC, PROJ, { recursive: true });
 
 let failures = 0;
 const check = (name, cond) => {

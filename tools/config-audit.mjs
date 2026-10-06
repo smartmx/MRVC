@@ -16,7 +16,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const developRoot = path.join(here, '..');
 const { Cproject } = require(path.join(developRoot, 'out', 'core', 'cproject.js'));
 
-const root = process.argv[2] ?? 'F:/CH585/EVT/V1_2/EXAM';
+// real EVT tree: dev TEST copy, F:/ layout, or the local E:/WORK tree
+const root = process.argv[2] ??
+  ['E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM', 'F:/CH585/EVT/V1_2/EXAM', 'E:/WORK/CH585/V1_7/EXAM'].find((r) => fs.existsSync(r)) ??
+  'F:/CH585/EVT/V1_2/EXAM';
 
 const projects = [];
 (function walk(dir, depth) {

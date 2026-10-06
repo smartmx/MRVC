@@ -7,6 +7,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { ProjectStore, MrsProject, getInstall } from './projects';
 import { Cproject } from '../core/cproject';
 import { TemplateData, readTemplate, writeTemplate } from '../core/templateFile';
@@ -761,7 +762,7 @@ export class ConfigView {
   /** Download Settings page (MRS2 mirror): Operations (WCH-Link hardware
    * actions through the 32-bit PowerShell bridge) + Download Parameters
    * (persisted to .template, MRS2-compatible keys) */
-  private dlSettingsHtml(project: MrsProject, chipDb: ChipDb): string {
+  private dlSettingsHtml(project: MrsProject, chipDb: ChipDb, nonce: string): string {
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const tpl = project.template.values;
     const series =
@@ -813,7 +814,7 @@ export class ConfigView {
     </div>
   </fieldset>
 </div>
-<script>const DL_CTX = ${jsonForScript(ctx)};</script>`;
+<script nonce="${nonce}">const DL_CTX = ${jsonForScript(ctx)};</script>`;
   }
 
   private fieldHtml(cp: Cproject, f: FieldDef, tplData?: TemplateData): string {    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -858,6 +859,10 @@ export class ConfigView {
   private render(project: MrsProject): string {
     const cp = project.cproject;
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    // fresh nonce per render: only <script nonce="..."> blocks may run, so a
+    // future escaping slip cannot hand crafted script full acquireVsCodeApi
+    // powers (CSP as a second line of defense, per VSCode webview guidance)
+    const nonce = crypto.randomBytes(16).toString('hex');
 
     // C++ pages exist only for C++ projects (CDT cxx nature) — like MRS2
     const pageDefs = project.cproject.isCpp ? PAGES : PAGES.filter((p) => !p.key.startsWith('cpp'));
@@ -895,14 +900,14 @@ export class ConfigView {
         .join('\n');
       let body = fields;
       if (p.key === 'chip' && chipDb.available) body = this.chipPickerHtml() + body;
-      if (p.key === 'dlset') body = this.dlSettingsHtml(project, chipDb);
+      if (p.key === 'dlset') body = this.dlSettingsHtml(project, chipDb, nonce);
       return `<div class="page" data-page="${p.key}" data-title="${esc(p.title)}" data-desc="${esc(p.description)}" style="display:${i === 0 ? 'block' : 'none'}">${body}</div>`;
     }).join('\n');
 
     const descDefault = PAGES[0];
 
     return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><style>
+<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'"><style>
 body { font-family: var(--vscode-font-family); font-size: 13px; color: var(--vscode-foreground); margin: 0; display: flex; flex-direction: column; height: 100vh; }
 #head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--vscode-editorWidget-border); }
 #head .title { font-weight: 600; }
@@ -996,7 +1001,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
     <div class="mbtns"><button type="button" id="mok">Confirm</button><button type="button" id="mcancel">Cancel</button></div>
   </div>
 </div>
-<script>
+<script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 const PROJ_ROOT = ${jsonForScript(project.root)};
 const PROJ_NAME = ${jsonForScript(project.projectName)};
@@ -1280,7 +1285,7 @@ document.getElementById('mok').addEventListener('click', () => {
   closeModal();
 });
 </script>
-${chipDb.available ? this.chipPickerScript(chipDb) : ''}
+${chipDb.available ? this.chipPickerScript(chipDb, nonce) : ''}
 </body></html>`;
   }
 
@@ -1296,8 +1301,8 @@ ${chipDb.available ? this.chipPickerScript(chipDb) : ''}
 </div></div>`;
   }
 
-  private chipPickerScript(db: ChipDb): string {
-    return `<script>
+  private chipPickerScript(db: ChipDb, nonce: string): string {
+    return `<script nonce="${nonce}">
 const CHIP_DB = ${jsonForScript(db)};
 (function () {
   const seriesSel = document.getElementById('chip-series');

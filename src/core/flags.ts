@@ -27,6 +27,14 @@ export interface TargetProcessorOpts {
   archBase: string; // rv32i ...
   integerAbi: string; // ilp32 ...
   fpAbi: 'none' | 'single' | 'double';
+  /** FPU capability — superClass `target.isa.fp` ("Floating point"). MRS2's
+   * own builder (extensions/mrs-team.mrs-vscode) reads THIS key for the
+   * -march F suffix (single→f, double→fd, quad→fdq), while `target.abi.fp`
+   * ("Floating point ABI") only drives the -mabi suffix (single→f,
+   * double→d). The two options coexist in every real .cproject and carry
+   * the same value in shipped EVT trees, so fixing the key split does not
+   * move any golden byte. */
+  fpu: 'none' | 'single' | 'double' | 'quad';
   rvm: boolean;
   rva: boolean;
   rvc: boolean;
@@ -72,6 +80,10 @@ export function readTargetProcessor(cp: Cproject, toolchainName: string): Target
       const v = cp.optionEnum('target.abi.fp') ?? 'none';
       return v.endsWith('single') ? 'single' : v.endsWith('double') ? 'double' : 'none';
     })(),
+    fpu: ((): 'none' | 'single' | 'double' | 'quad' => {
+      const v = cp.optionEnum('target.isa.fp') ?? 'none';
+      return v.endsWith('quad') ? 'quad' : v.endsWith('double') ? 'double' : v.endsWith('single') ? 'single' : 'none';
+    })(),
     rvm: cp.optionBool('target.isa.multiply'),
     rva: cp.optionBool('target.isa.atomic'),
     rvc: cp.optionBool('target.isa.compressed'),
@@ -91,18 +103,23 @@ function isWchGcc(name: string): boolean {
   return name === 'GCC8' || name === 'GCC12' || name === 'GCC15';
 }
 
-/** -march=... (from getArchParams) */
+/** -march=... (from getArchParams). The F/D suffix follows the FPU CAPABILITY
+ * (`target.isa.fp`), exactly like MRS2's builder: single→f, double→fd,
+ * quad→fdq. NOT the ABI option — the two .cproject keys are independent. */
 function marchFlags(tp: TargetProcessorOpts): string {
   let t = ` -march=${tp.archBase}`;
   if (tp.archBase !== 'rv32g' && tp.archBase !== 'rv64g') {
     if (tp.rvm) t += 'm';
     if (tp.rva) t += 'a';
-    switch (tp.fpAbi) {
+    switch (tp.fpu) {
       case 'single':
         t += 'f';
         break;
       case 'double':
         t += 'fd';
+        break;
+      case 'quad':
+        t += 'fdq';
         break;
       default:
         break;
@@ -125,6 +142,8 @@ function marchFlags(tp: TargetProcessorOpts): string {
 
 function mabiFlags(tp: TargetProcessorOpts): string {
   let t = ` -mabi=${tp.integerAbi}`;
+  // the -mabi suffix follows the ABI option (`target.abi.fp`): single→f,
+  // double→d — MRS2 semantics, deliberately NOT the march suffix set
   switch (tp.fpAbi) {
     case 'single':
       t += 'f';

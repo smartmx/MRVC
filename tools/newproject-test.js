@@ -17,7 +17,13 @@ const { chipDbRoot } = require('../out/core/chipdb.js');
 const { Cproject } = require('../out/core/cproject.js');
 const { scanSources } = require('../out/core/scan.js');
 
-const RES = 'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32';
+// prefer an env override, then the common install roots
+const MRS2_ROOT =
+  process.env.MRS2_HOME ||
+  ['C:/MounRiver/MounRiver_Studio2', 'D:/MounRiver/MounRiver_Studio2'].find((r) =>
+    fs.existsSync(path.join(r, 'resources', 'app', 'resources', 'win32', 'components', 'WCH', 'manifest.json'))
+  );
+const RES = MRS2_ROOT ? `${MRS2_ROOT}/resources/app/resources/win32` : 'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32';
 check('sdkRoot joins resourcesWin32', sdkRoot(RES).endsWith(path.join('components', 'WCH', 'SDK', 'default')));
 check('chipDbRoot agrees on SDK location', path.basename(chipDbRoot(RES)) === 'default');
 

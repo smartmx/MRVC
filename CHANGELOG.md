@@ -1,5 +1,80 @@
 # MRVC 更新日志
 
+## V0.1.6（2026-10-04，未发布）
+
+相对 V0.1.5。三轮代码审查（core 文件格式层 / core 工具进程层 / vscode 集成层）发现的 8 个
+缺陷全部修复；编译旗标按 MRS2 生成器源码逐键对齐（浮点双键拆分）；IntelliSense 配置改
+外科手术式写入并支持多根工作区。回归：17 个断言套件 + mass 全树比对（CH585/CH587/CH32V307
+三棵 EVT 树 400 工程、13341 源文件）全部通过，makefile 逐工程字节稳定。
+
+### 修复
+
+- **BuildOrder 行不再累积重复**（Set Build Order）：`recordBuildOrder` 原实现无条件在首行后
+  插入新行、循环到旧行又替换一次——对已有 `BuildOrder=` 的 solution 调用一次产生 2 行，
+  每点一次"设置编译顺序"再多 1 行。现先探测已有行、原位重写并收敛历史重复行，缺失时仍按
+  MRS2 惯例插在首行之后（`solution.ts`；`solution-test` 新增 8 条幂等断言）。
+- **"生成汇编清单"恢复生效**：`flags.ts` 的 `-Wa,-adhlns="$@.lst"` 含 make 自动变量 `$@`，
+  makefile 生成器把整条选项串的 `$` 一律翻倍成 `$$@`，make 展开后 shell 收到空 `$@`——每个
+  文件的 `.lst` 静默坍缩成同一个 `.lst`，且与 MRS2 的单 `$` 字节失配。新转义函数
+  `escapeMakeDollars` 只翻倍用户文本里的 `$`，`$@ $< $^ $* $? $( ${` 等 make 语法原样保留
+  （`makefile.ts`；新增 `makefile-dollar-test` 11 条断言）。
+- **静态调用分析的 caller 名不再携带 GCC 簿记后缀**：真实 GCC 的 RTL dump 函数头是
+  `;; Function main (main, funcid=1)`，解析器此前整段取用，caller 变成
+  `main (main, funcid=1)`，与 `.su` 报告和 UI 函数列表全部失配。现截断括号部分并容忍裸头；
+  测试夹具从合成裸头换成真实 GCC 头（`analysis.ts`）。
+- **单工程构建并发护栏**：F7 连按、行内按钮双击、或 Build All 进行中对同一工程再点 Build，
+  会启动两个 `make -jN` 写同一 `obj/` 与同一构建记录文件。现按工程根（小写）登记运行中的
+  任务执行——重复触发弹提示并可"结束编译"真实终止（单构建与批量成员双入口共用护栏），
+  任务结束/启动失败均正确释放（`tasks.ts`）。
+- **构建并下载的下载失败不再静默**：`.template` 地址非法（手填错值）时 `prepareFlash` 抛错，
+  Build And Download 链路裸 `await` 使其成为 unhandled rejection——编译成功后下载没发生且
+  无任何提示。现 `prepareFlash` 失败弹明确错误（`flashAddressInvalid`），调用点再兜一层
+  （`downloadThrew`），独立 Download 路径不会双重弹窗（`flash.ts` + `tasks.ts`）。
+- **Export As CMake 不再被旧 CMakeLists 覆盖**：导出先拷贝工程文件再生成便携版
+  CMakeLists.txt，而 copyTree 不跳过 `CMakeLists.txt`——凡原地生成过 CMakeLists 的工程，
+  导出产物被含本机绝对路径的旧文件静默覆盖。现调换顺序：先 copyTree 后生成
+  （`cmakeExport.ts`）。
+- **带命名 sourceEntry 的顶层文件夹 Exclude From Build 真实生效**（CH585 式工程）：CDT 联合
+  语义下根 entry 里与目录同名的 token 只是"防双扫标记"，扫描器经命名 entry 把文件夹重新
+  纳入——排除命令报告成功、构建照常编译。现排除 = 删除该命名 entry 并在根 entry 写入
+  token（entry 不在时 token 即真实排除），恢复 = 重建 entry（MRS2 手写形态
+  `flags="VALUE_WORKSPACE_PATH|RESOLVED"`）并清 token；扫描器三处 marker 判别统一改为
+  "仅当 entry 仍存在才当标记"（`cproject.ts` + `scan.ts`；`exclude-test` 新增顶层文件夹与
+  大小写变体两组用例）。entry 名与链接名大小写不一致的 EVT 文件也能正确命中（比较折叠）。
+- **`c_cpp_properties.json` 不再销毁用户注释**：原实现把整个文件以纯 JSON 重写——JSONC 注释
+  全丢；行尾注释更会触发"永久不可读"哨兵、此后配置不再更新。现用保偏移的 JSONC 剥离器 +
+  外科手术式编辑：纯 JSON 文件维持整文件重写（字节稳定），带注释文件只替换/插入 MRVC 那
+  一个 configuration 块，用户注释逐字保留（`vscode/intellisense.ts`；`intellisense-test`
+  新增 8 条断言）。
+- **Exclude/Include 不再用过期快照覆盖磁盘**：写路径改为先 fresh-load `.cproject` 再改再存
+  （与属性页/同步页同纪律），外部编辑器或 MRS2 刚保存的修改不再被内存缓存冲掉
+  （`vscode/exclude.ts`）。
+- **浮点编译旗标按 MRS2 生成器逐键对齐**：真实 `.cproject` 同时携带 `target.isa.fp`
+  （"Floating point"）与 `target.abi.fp`（"Floating point ABI"）两个独立选项，MRS2 构建器
+  （extensions/mrs-team.mrs-vscode 源码实证）用 **isa.fp** 拼 `-march` 的 F 后缀
+  （single→f、double→fd、quad→fdq）、用 **abi.fp** 拼 `-mabi` 后缀（single→f、double→d）。
+  此前 MRVC 只读 abi.fp 且同一后缀两处共用——两键取值不一致的工程会拼错旗标。现
+  `-march` 跟随 isa.fp（补 quad 分支）、`-mabi` 跟随 abi.fp（`flags.ts`；新增
+  `flags-fp-test` 10 条断言，含 CH32V307 FPU 例程实测 `-march=rv32imafc_xw -mabi=ilp32f`；
+  发售 EVT 树两键恒同值，makefile 字节不变）。
+
+### 新增
+
+- **多根工作区 IntelliSense**：此前只有第一个 workspace folder 拿到 `c_cpp_properties.json`，
+  `.code-workspace` 多文件夹时其余 folder 的文件走 cpptools 默认配置。现每个 folder 都写入
+  MRVC 配置项，次级 folder 用绝对路径指向主 folder 的 `.vscode/mrvc/cc` 编译数据库
+  （`vscode/intellisense.ts`；`intellisense-test` 新增多根用例）。
+
+### 变更
+
+- **webview CSP 收紧**：属性页与 Sync Setting 页的脚本改随机 nonce 门控（每次渲染新
+  nonce），`script-src` 移除 `'unsafe-inline'`——所有插值本已转义，此变更提供第二道防线
+  （`configView.ts` + `syncPage.ts`；`webview-test` 新增 nonce 断言）。
+- **`mrvc.solution` 设置正式声明**：打开 `.wvsln` 时写入生成的 `.code-workspace` 的该键此前
+  未在 package.json 声明，设置页显示"未知配置"警告；现声明为扩展托管项（说明勿手改）。
+- **文档勘误**：README 工程发现深度实为 6 层（原写 4）；排除说明改为"活动配置（首个
+  `cconfiguration`）"并写明顶层文件夹排除的新语义；`discover.ts` 注释与常量对齐。
+
 ## V0.1.5（2026-09-30）
 
 相对 V0.1.4。金标回归 29/29 全绿（2.x 配方完全对齐）；运行时 makefile 生成默认切换为

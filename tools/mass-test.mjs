@@ -26,7 +26,12 @@ const { parseSolution } = require(path.join(outCore, 'solution.js'));
 const { scanChipDb, chipDbRoot } = require(path.join(outCore, 'chipdb.js'));
 
 const TEST = 'E:/Projects/MRS_VSCODE/TEST';
-const TREES = ['CH585EVT', 'CH32H417EVT', 'CH32V20xEVT', 'CH32V307EVT', 'CH587EVT'].map((t) => path.join(TEST, t, 'EXAM')).filter((p) => fs.existsSync(p));
+const TREES = ['CH585EVT', 'CH32H417EVT', 'CH32V20xEVT', 'CH32V307EVT', 'CH587EVT']
+  .map((t) => path.join(TEST, t, 'EXAM'))
+  // local EVT checkouts (V<N>/EXAM layout, or the exam tree itself for
+  // CH32V307 V3_1) when the TEST copies are absent
+  .concat(['E:/WORK/CH585/V1_7/EXAM', 'E:/WORK/CH587/V1_1/EXAM', 'E:/WORK/CH32V307/V3_1'])
+  .filter((p) => fs.existsSync(p));
 
 const TC = {
   name: 'GCC12', dir: '', compilerC: 'riscv-wch-elf-gcc', compilerCpp: 'riscv-wch-elf-g++',
@@ -42,8 +47,14 @@ const warn = (msg) => { console.log('  WARN ' + msg); warnings++; };
 const scratch = path.join(DEVELOP_DIR, '.scratch', 'mass');
 
 // one chipdb scan for the whole run
-const MRS2 = 'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32';
-const chipDb = fs.existsSync(MRS2) ? scanChipDb(chipDbRoot(MRS2)) : { available: false, series: [] };
+const MRS2 =
+  process.env.MRS2_HOME ||
+  ['C:/MounRiver/MounRiver_Studio2', 'D:/MounRiver/MounRiver_Studio2'].find((r) =>
+    fs.existsSync(path.join(r, 'resources', 'app', 'resources', 'win32', 'components', 'WCH', 'manifest.json'))
+  ) ||
+  'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32';
+const MRS2_RES = MRS2.includes('resources') ? MRS2 : path.join(MRS2, 'resources', 'app', 'resources', 'win32');
+const chipDb = fs.existsSync(MRS2_RES) ? scanChipDb(chipDbRoot(MRS2_RES)) : { available: false, series: [] };
 
 let totalProjects = 0;
 let totalSources = 0;
