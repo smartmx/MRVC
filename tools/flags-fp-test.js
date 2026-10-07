@@ -99,6 +99,22 @@ if (FPU_PROJ) {
   console.log('SKIP  real CH32V307 FPU project (tree not present)');
 }
 
+// 5. macro resolution parity in the "other" fields: ${ProjName} must be
+//    resolved exactly like the C++ twin's field (it used to reach the
+//    makefile raw and make swallowed it as an undefined variable)
+{
+  const dir = path.join(scratch, 'macros');
+  fs.mkdirSync(dir, { recursive: true });
+  const injection = '<option superClass="' + OPT + 'c.compiler.otheroptimizations" value="${ProjName}" valueType="string"/>';
+  const xml = makeCproject(null, null).replace('</toolChain>', injection + '\n\t\t\t\t\t</toolChain>');
+  fs.writeFileSync(path.join(dir, '.cproject'), xml);
+  const cp = Cproject.load(dir);
+  const { cCompilerOptions } = require('../out/core/flags.js');
+  const opts = cCompilerOptions(cp);
+  check('c.otheroptimizations: ${ProjName} resolved, not raw', !opts.includes('${ProjName}') && opts.includes(cp.projectName));
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 fs.rmSync(scratch, { recursive: true, force: true });
 console.log(failures ? `\n${failures} FAILURES` : '\nall flags fp-split tests passed');
 process.exit(failures ? 1 : 0);

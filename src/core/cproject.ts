@@ -13,6 +13,15 @@ import { readProjectFile, linkedFolderMap } from './projectFile';
 
 const OPT_BASE = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.';
 
+/** Windows path/Name comparison folds case (NTFS is case-insensitive):
+ * EVT files sometimes spell exclusion tokens, sourceEntry names or link
+ * names with different case than the .project/.cproject counterpart —
+ * matching must fold, or "Restore include" silently no-ops and "Exclude"
+ * appends a duplicate token. Mirrors scan.ts's fold. */
+function foldName(s: string): string {
+  return process.platform === 'win32' ? s.toLowerCase() : s;
+}
+
 export interface SourceEntry {
   name: string; // "" = project root
   excluding: string[];
@@ -369,7 +378,7 @@ export class Cproject {
         named.parent?.removeChild(named);
         const root = this.rootEntryEl(true)!;
         const cur = splitExcluding(root);
-        if (!cur.includes(logicPath)) {
+        if (!cur.some((tk) => foldName(tk) === foldName(logicPath))) {
           cur.push(logicPath);
           setExcludingAttr(root, cur.join('|'));
         }
@@ -378,7 +387,7 @@ export class Cproject {
     }
     const { entry, token } = this.exclusionTarget(logicPath);
     const cur = splitExcluding(entry);
-    if (cur.includes(token)) return;
+    if (cur.some((tk) => foldName(tk) === foldName(token))) return;
     cur.push(token);
     setExcludingAttr(entry, cur.join('|'));
   }
@@ -395,14 +404,19 @@ export class Cproject {
   includeResource(logicPath: string): void {
     const top = logicPath.includes('/') ? logicPath.slice(0, logicPath.indexOf('/')) : '';
     const rel = logicPath.includes('/') ? logicPath.slice(logicPath.indexOf('/') + 1) : logicPath;
-    const variants = new Set([logicPath, logicPath + '/', rel, rel + '/']);
+    // folded compare (win32): the on-disk token may spell the path with a
+    // different case than the logic path (MRS2 hand-written files do) —
+    // literal matching left those tokens in place and "restore include"
+    // reported success while the file stayed excluded
+    const variants = new Set([logicPath, logicPath + '/', rel, rel + '/'].map(foldName));
+    const isVariant = (t: string): boolean => variants.has(foldName(t));
     const rootEl = this.rootEntryEl(false);
-    const wasTopExcluded = !top && !!rootEl && splitExcluding(rootEl).some((tk) => tk === logicPath || tk === logicPath + '/');
+    const wasTopExcluded = !top && !!rootEl && splitExcluding(rootEl).some((tk) => foldName(tk) === foldName(logicPath) || foldName(tk) === foldName(logicPath + '/'));
     const targets = [this.namedEntryEl(top), rootEl];
     for (const entry of targets) {
       if (!entry) continue;
       const cur = splitExcluding(entry);
-      const next = cur.filter((t) => !variants.has(t));
+      const next = cur.filter((t) => !isVariant(t));
       if (next.length !== cur.length) {
         setExcludingAttr(entry, next.join('|'));
       }
@@ -462,9 +476,8 @@ export class Cproject {
     // folded compare on Windows: EVT files sometimes spell a sourceEntry
     // name with different case than the .project link name — the scanner's
     // marker logic folds too, so exclude/include must find the same element
-    const fold = (s: string): string => (process.platform === 'win32' ? s.toLowerCase() : s);
     return this.config.findAll(
-      (e) => e.name === 'entry' && e.attr('kind') === 'sourcePath' && fold(e.attr('name') ?? '') === fold(name)
+      (e) => e.name === 'entry' && e.attr('kind') === 'sourcePath' && foldName(e.attr('name') ?? '') === foldName(name)
     )[0];
   }
 

@@ -53,11 +53,19 @@ async function executeFlashTask(task: vscode.Task): Promise<number | undefined> 
   const done = new Promise<number | undefined>((resolve) => {
     let settled = false;
     let exec: vscode.TaskExecution | undefined;
+    // end events arriving before executeTask() hands us the execution are
+    // buffered and matched on resolution — a same-type task ending in that
+    // window must not settle this waiter with its exit code
+    const early: Array<[vscode.TaskExecution, number | undefined]> = [];
     const d = vscode.tasks.onDidEndTaskProcess((e) => {
       if (settled || e.execution.task.definition.type !== 'mrvc-flash') return;
+      if (!exec) {
+        early.push([e.execution, e.exitCode]);
+        return;
+      }
       // match by execution identity: a still-running earlier flash must not
       // resolve this one with its exit code
-      if (exec && e.execution !== exec) return;
+      if (e.execution !== exec) return;
       settled = true;
       d.dispose();
       resolve(e.exitCode);
@@ -65,6 +73,12 @@ async function executeFlashTask(task: vscode.Task): Promise<number | undefined> 
     vscode.tasks.executeTask(task).then(
       (e) => {
         exec = e;
+        const hit = early.find(([x]) => x === e);
+        if (hit && !settled) {
+          settled = true;
+          d.dispose();
+          resolve(hit[1]);
+        }
       },
       () => {
         // task never started — release the listener, report failure

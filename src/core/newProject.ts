@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { renameProject } from './projectFile';
+import { Cproject } from './cproject';
 
 export interface TemplateChip {
   /** series folder, e.g. CH32V307 */
@@ -42,14 +43,35 @@ export function scanTemplates(resourcesWin32: string): SdkTemplates {
     const archDir = path.join(root, arch);
     if (!fs.existsSync(archDir)) continue;
     if (arch === 'ARM') out.arch = 'ARM';
-    for (const series of fs.readdirSync(archDir, { withFileTypes: true })) {
+    // each level tolerates an unreadable directory (corporate ACLs on the
+    // SDK tree are common) — the wizard skips it instead of crashing the
+    // whole scan with an unhandled rejection (same shape as chipdb.ts)
+    let seriesDirs: fs.Dirent[];
+    try {
+      seriesDirs = fs.readdirSync(archDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const series of seriesDirs) {
       if (!series.isDirectory()) continue;
       const seriesDir = path.join(archDir, series.name);
       const osMap = out.series.get(series.name) ?? new Map<string, TemplateChip[]>();
-      for (const os of fs.readdirSync(seriesDir, { withFileTypes: true })) {
+      let osDirs: fs.Dirent[];
+      try {
+        osDirs = fs.readdirSync(seriesDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const os of osDirs) {
         if (!os.isDirectory()) continue;
         const chips: TemplateChip[] = [];
-        for (const f of fs.readdirSync(path.join(seriesDir, os.name), { withFileTypes: true })) {
+        let files: fs.Dirent[];
+        try {
+          files = fs.readdirSync(path.join(seriesDir, os.name), { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const f of files) {
           if (!f.isFile() || !f.name.toLowerCase().endsWith('.zip')) continue;
           // -flash.json / -targetProcessor.json are metadata, not templates
           if (/-flash\.json$|-targetProcessor\.json$/i.test(f.name)) continue;
@@ -110,8 +132,10 @@ export function createProjectFromTemplate(template: TemplateChip, opts: CreatePr
   const name = opts.projectName.trim();
   // PowerShell metacharacters are rejected in addition to filesystem-illegal
   // ones: the name is interpolated into the Expand-Archive -Command string,
-  // where `$`, backtick and quotes would be evaluated or break quoting
-  if (!name || /[\\/:*?"<>|]/.test(name) || /[$`'"]/.test(name)) {
+  // where `$`, backtick and quotes would be evaluated or break quoting.
+  // Whitespace too — renameProject rejects it, and letting a spaced name
+  // through would fail creation halfway (half-renamed template state)
+  if (!name || /[\\/:*?"<>|\s]/.test(name) || /[$`'"]/.test(name)) {
     throw new Error(`Invalid project name "${opts.projectName}"`);
   }
   const parent = path.resolve(opts.parentDir);
@@ -124,29 +148,58 @@ export function createProjectFromTemplate(template: TemplateChip, opts: CreatePr
   if (fs.existsSync(projectRoot)) {
     throw new Error(`"${projectRoot}" already exists`);
   }
-  fs.mkdirSync(projectRoot, { recursive: true });
-
   // extract (PowerShell Expand-Archive ships with Windows; the template
   // zip layout is a plain project folder). Both paths go in as PowerShell
   // SINGLE-quoted literals ('' escapes an inner quote): inside double quotes
   // PowerShell would expand `$vars` and eat backticks in user-typed folder
   // names, silently extracting to a different location
   const zip = path.resolve(template.zipPath);
+  // validate the template BEFORE creating anything: a missing zip used to
+  // leave an empty project folder behind and every retry then hit
+  // "already exists"
   if (!fs.existsSync(zip)) throw new Error(`Template zip not found: ${zip}`);
+  fs.mkdirSync(projectRoot, { recursive: true });
   const psLit = (s: string) => `'${s.replace(/'/g, "''")}'`;
   try {
+    // -ErrorAction Stop + exit 1: Windows PowerShell 5.1 reports archive
+    // errors (broken zip, locked file) as NON-terminating and still exits 0
+    // — without this the extraction failure would be silently swallowed
+    // and creation would "succeed" with an empty project folder
     execFileSync(
       'powershell.exe',
-      ['-NoProfile', '-Command', `Expand-Archive -LiteralPath ${psLit(zip)} -DestinationPath ${psLit(projectRoot)} -Force`],
+      [
+        '-NoProfile',
+        '-Command',
+        `try { Expand-Archive -LiteralPath ${psLit(zip)} -DestinationPath ${psLit(projectRoot)} -Force -ErrorAction Stop } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`,
+      ],
       { stdio: 'pipe', timeout: 120000 }
     );
   } catch (e) {
+    // the half-extracted folder would block every retry ("already exists")
+    // and never shows up in the project tree — best-effort remove it
+    try {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    } catch {
+      // keep the partial dir rather than masking the extraction error
+    }
     throw new Error(`Template extraction failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // static-library projects keep the template's build setup; the wizard
-  // difference vs createProject is only the template family naming
-  void opts.artifactType;
+  // static-library creation (MRS2 createStaticLib semantics): flip the
+  // template's exe build identity to a static library — makefile.ts then
+  // emits the archive (ar) recipe and skips the hex/bin/lst/size post
+  // steps. Artifact extension flips to CDT's static-lib default "a".
+  // Non-fatal: the project is created and usable either way, and the
+  // properties page (Build Artifact) can switch the type later.
+  if (opts.artifactType === 'lib') {
+    try {
+      const cp = Cproject.load(projectRoot);
+      cp.setBuildIdentity({ artifactType: 'staticLib', artifactExtension: 'a' });
+      cp.save();
+    } catch {
+      // keep the template's exe build setup rather than failing creation
+    }
+  }
 
   // MRS2: an empty <name>.wvproj marks the project (content gets rebuilt
   // by the IDE on open)

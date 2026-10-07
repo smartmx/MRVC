@@ -246,6 +246,13 @@ export class ProjectStore implements vscode.Disposable {
     const dir = path.dirname(slnFile);
     const name = path.basename(slnFile, '.wvsln');
     const wsFile = path.join(dir, `${name}.code-workspace`);
+    // a hand-maintained .code-workspace (extra folders/settings the user
+    // added) must not be silently replaced by our 4-line companion — same
+    // overwrite gate as Generate Solution / Export As CMake
+    if (fs.existsSync(wsFile)) {
+      const pick = await vscode.window.showWarningMessage(t('overwriteConfirm', path.basename(wsFile)), { modal: true }, t('overwrite'));
+      if (pick !== t('overwrite')) return;
+    }
     const ws = {
       folders: [{ path: '.' }],
       settings: { 'mrvc.solution': slnFile },

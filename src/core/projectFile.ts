@@ -311,7 +311,7 @@ export function renameProject(projectRoot: string, newName: string, opts: { isSl
   if (!newName || !newName.trim() || /[\\/:*?"<>|\s]/.test(newName)) {
     throw new Error(`Invalid project name "${newName}" (no spaces or \\ / : * ? " < > |)`);
   }
-  // 1. .project display name
+  // 1. .project display name — read only, nothing written yet
   const p = readProjectFile(projectRoot);
   const nameEl = p.root.child('projectDescription')?.child('name');
   if (!nameEl) {
@@ -319,30 +319,33 @@ export function renameProject(projectRoot: string, newName: string, opts: { isSl
   }
   const oldName = nameEl.text;
   nameEl.text = newName;
-  saveProjectFile(projectRoot, p);
 
-  // 2. reset .wvproj state under the new name
-  for (const ent of fs.readdirSync(projectRoot)) {
-    if (ent.toLowerCase().endsWith('.wvproj')) {
-      fs.rmSync(path.join(projectRoot, ent), { force: true });
-    }
-  }
-  fs.writeFileSync(path.join(projectRoot, newName + '.wvproj'), '', 'utf-8');
-
-  // 3. debug launch configuration
+  // 2/3. .launch edits are prepared IN MEMORY before anything is written:
+  // a failure here (locked or broken .launch) must abort while the old
+  // name is still on disk — otherwise a retry sees oldName === newName
+  // and can never match/fix the .launch's MAPPED_RESOURCE_PATHS again
   const oldLaunch = fs.readdirSync(projectRoot).find((f) => f.toLowerCase().endsWith('.launch'));
+  let launchDom: XElement | undefined;
   if (oldLaunch) {
-    const dom = parseXml(fs.readFileSync(path.join(projectRoot, oldLaunch), 'utf-8'));
-    for (const attr of dom.findAll((e) => e.name === 'stringAttribute')) {
+    launchDom = parseXml(fs.readFileSync(path.join(projectRoot, oldLaunch), 'utf-8'));
+    for (const attr of launchDom.findAll((e) => e.name === 'stringAttribute')) {
       const key = attr.attr('key');
       if (key === 'org.eclipse.cdt.launch.PROGRAM_NAME') {
         const v = attr.attr('value');
-        if (v) attr.setAttr('value', v.replace(/^(.+[\\/]).+?(\.elf)$/, '$1' + newName + '$2'));
+        if (v) {
+          // swap the basename, keep the artifact's REAL extension — the
+          // old (\ .elf)$ anchor left .axf (and any non-elf artifact)
+          // projects pointing at the old executable forever
+          const sep = Math.max(v.lastIndexOf('\\'), v.lastIndexOf('/'));
+          const base = v.slice(sep + 1);
+          const dot = base.lastIndexOf('.');
+          if (dot > 0) attr.setAttr('value', (sep >= 0 ? v.slice(0, sep + 1) : '') + newName + base.slice(dot));
+        }
       } else if (key === 'org.eclipse.cdt.launch.PROJECT_ATTR') {
         attr.setAttr('value', newName);
       }
     }
-    for (const list of dom.findAll((e) => e.name === 'listAttribute')) {
+    for (const list of launchDom.findAll((e) => e.name === 'listAttribute')) {
       if (list.attr('key') !== 'org.eclipse.debug.core.MAPPED_RESOURCE_PATHS') continue;
       for (const le of list.findAll((e) => e.name === 'listEntry')) {
         const v = le.attr('value');
@@ -359,9 +362,29 @@ export function renameProject(projectRoot: string, newName: string, opts: { isSl
         }
       }
     }
-    fs.writeFileSync(path.join(projectRoot, oldLaunch), serializeXml(dom), 'utf-8');
+  }
+
+  // ---- all reads and in-memory edits done — now write ----
+  // .launch first: it is the write most likely to fail (AV lock on the old
+  // file), and while .project still carries the OLD name a failure here
+  // leaves the tree fully consistent — a retry re-reads oldName and heals
+  // everything. Writing .project first would flip the commit point: a
+  // failed .launch write then leaves MAPPED_RESOURCE_PATHS pointing at the
+  // old project forever (the retry can no longer match the old name).
+  if (oldLaunch && launchDom) {
+    fs.writeFileSync(path.join(projectRoot, oldLaunch), serializeXml(launchDom), 'utf-8');
     fs.renameSync(path.join(projectRoot, oldLaunch), path.join(projectRoot, newName + '.launch'));
   }
+
+  saveProjectFile(projectRoot, p);
+
+  // reset .wvproj state under the new name
+  for (const ent of fs.readdirSync(projectRoot)) {
+    if (ent.toLowerCase().endsWith('.wvproj')) {
+      fs.rmSync(path.join(projectRoot, ent), { force: true });
+    }
+  }
+  fs.writeFileSync(path.join(projectRoot, newName + '.wvproj'), '', 'utf-8');
 
   // 4. .template flash target
   if (!opts.isSlave) {

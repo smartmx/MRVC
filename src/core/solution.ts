@@ -81,12 +81,16 @@ export function writeSolution(file: string, projectRoots: string[], buildOrder?:
 export function appendSolutionMembers(file: string, projectRoots: string[], parse: (f: string) => ParsedSolution = parseSolution): string[] {
   const parsed = parse(file);
   const added: string[] = [];
-  let lines: string[];
+  let raw = '';
   try {
-    lines = fs.readFileSync(file, 'utf-8').split(/\r?\n/);
+    raw = fs.readFileSync(file, 'utf-8');
   } catch {
-    lines = [];
+    raw = '';
   }
+  // byte-fidelity: write back with the file's own line ending — an
+  // LF-edited .wvsln must not be silently normalized to CRLF
+  const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+  const lines = raw ? raw.split(/\r?\n/) : [];
   while (lines.length && lines[lines.length - 1] === '') lines.pop();
   for (const root of projectRoots) {
     let line = path.relative(file, root);
@@ -99,7 +103,7 @@ export function appendSolutionMembers(file: string, projectRoots: string[], pars
     parsed.entries.push({ raw: line, resolved, exists: true });
     added.push(root);
   }
-  if (added.length) fs.writeFileSync(file, lines.join('\r\n') + '\r\n', 'utf-8');
+  if (added.length) fs.writeFileSync(file, lines.join(eol) + eol, 'utf-8');
   return added;
 }
 
@@ -110,21 +114,29 @@ export function appendSolutionMembers(file: string, projectRoots: string[], pars
  * conventional toolchain-block position). `order` carries project names.
  */
 export function recordBuildOrder(file: string, order: string[]): void {
-  const lines = fs.readFileSync(file, 'utf-8').split(/\r?\n/);
+  const raw = fs.readFileSync(file, 'utf-8');
+  const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+  const lines = raw.split(/\r?\n/);
   const orderLine = `BuildOrder=${order.join(',')}`;
   // A file that already carries a BuildOrder line only gets that line
   // REWRITTEN. Blindly inserting on i === 0 as well would leave two lines
   // (the inserted one plus the old line replaced in place further down),
-  // and repeated calls would accumulate one more every time.
+  // and repeated calls would accumulate one more every time. Detection
+  // runs on the TRIMMED line: the parser (parseSolution) trims too, and a
+  // hand-indented " BuildOrder=A,B" used to slip past the write side while
+  // the read side still honored it — the new line was inserted and the
+  // old (later-in-file) indented one kept winning on every parse.
+  const hasOrder = lines.some((l) => l.trim().startsWith('BuildOrder='));
   const out: string[] = [];
-  const hasOrder = lines.some((l) => l.startsWith('BuildOrder='));
   let written = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (line.startsWith('BuildOrder=')) {
-      // rewrite the first BuildOrder line, drop any later duplicates
+    if (line.trim().startsWith('BuildOrder=')) {
+      // rewrite the first BuildOrder line (keeping its indent), drop any
+      // later duplicates
       if (written) continue;
-      out.push(orderLine);
+      const indent = line.slice(0, line.length - line.trimStart().length);
+      out.push(indent + orderLine);
       written = true;
       continue;
     }
@@ -136,7 +148,7 @@ export function recordBuildOrder(file: string, order: string[]): void {
     }
   }
   if (!written) out.push(orderLine);
-  fs.writeFileSync(file, out.join('\r\n'), 'utf-8');
+  fs.writeFileSync(file, out.join(eol), 'utf-8');
 }
 
 export function parseSolution(file: string): ParsedSolution {  const dir = path.dirname(file);

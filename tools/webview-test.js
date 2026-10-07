@@ -155,6 +155,13 @@ await view.show(store.active);
   check('newline-collapsing regex present (single-backslash form)', /\|\\s\*\\r\?\\n\\s\*\|/.test('') || scripts.some((s) => s.includes('/\\s*\\r?\\n\\s*/g') || s.includes('replace(/\\s*\\r?\\n\\s*/g')));
   check('chip picker present (CHIP_DB)', scripts.some((s) => s.includes('CHIP_DB')));
   check('download settings present (DL_CTX)', scripts.some((s) => s.includes('DL_CTX')));
+  // the Chip page address input and the Download page "Program Address"
+  // input write the SAME .template key — Apply posts saveDl then save, so
+  // without the lockstep wiring the second write rolls the first one back
+  check(
+    'apply: chip/dl address inputs locked in lockstep (no rollback)',
+    scripts.some((s) => s.includes("getElementById('dl-address')") && s.includes('[data-key="address"]') && s.includes("addEventListener('input'"))
+  );
 
   // ---- cross-page macro conflict detection ----
   const { macroConflicts } = require(path.join(__dirname, '..', 'out', 'vscode', 'configView.js'));
@@ -170,6 +177,22 @@ await view.show(store.active);
   check('macro: three-way conflict reported once per deviation', r.length === 2);
   r = macroConflicts({ defs: 'abc=1', cppdefs: 'ABC=2' });
   check('macro: names are case-sensitive', r.length === 0);
+
+  // ---- batch Clean All / Delete Output must respect the build guard ----
+  // (a running `make all` and `make clean` on the same obj/ collided before)
+  {
+    const { BuildManager } = require(path.join(__dirname, '..', 'out', 'vscode', 'tasks.js'));
+    const key = path.resolve('X:/proj').toLowerCase();
+    const fakeSelf = { building: new Map([[key, {}]]) };
+    const fakeProj = { root: 'X:/proj', projectName: 'P', buildDir: 'X:/proj/obj' };
+    const r1 = await BuildManager.prototype.cleanOne.call(fakeSelf, fakeProj, { makeBin: 'X:/make' });
+    check('batch clean: skipped while the project is building', r1.ok === true && r1.detail.length > 0);
+    const r2 = await BuildManager.prototype.deleteOutputOne.call(fakeSelf, fakeProj, false);
+    check('batch delete outputs: skipped while the project is building', r2.ok === true && r2.detail.length > 0);
+    const freeSelf = { building: new Map() };
+    const r3 = await BuildManager.prototype.cleanOne.call(freeSelf, fakeProj, { makeBin: 'X:/make' });
+    check('batch clean: proceeds (not just always skipping)', r3.ok === true && r3.detail !== r1.detail);
+  }
 
   // ---- Sync Setting Across Projects page ----
   const { SyncPage } = require(path.join(__dirname, '..', 'out', 'vscode', 'syncPage.js'));
@@ -205,14 +228,22 @@ await view.show(store.active);
   delete require.cache[path.join(__dirname, '..', 'out', 'vscode', 'syncPage.js')];
   const { SyncPage: SyncPage2 } = require(path.join(__dirname, '..', 'out', 'vscode', 'syncPage.js'));
 
-  // a second scratch project so the batch has 2 targets
+  // a second scratch project so the batch has 2 targets. The FIRST member
+  // is a scratch COPY of the real project too — the batch WRITES every
+  // member's .cproject, and pointing it at the real EVT tree polluted the
+  // reference tree permanently (and made these assertions trivially green
+  // after the first run)
+  const scratch1 = path.join(__dirname, '..', '.scratch', 'sync-first');
+  fs.rmSync(scratch1, { recursive: true, force: true });
+  fs.cpSync(PROJ, scratch1, { recursive: true });
   const scratch2 = path.join(__dirname, '..', '.scratch', 'sync-second');
   fs.rmSync(scratch2, { recursive: true, force: true });
   fs.cpSync(PROJ, scratch2, { recursive: true });
   const cp2 = Cproject.load(scratch2);
+  const member1 = { root: scratch1, projectName: 'LED1', cproject: Cproject.load(scratch1), toolchain: () => undefined, reload() {}, buildDir: path.join(scratch1, 'obj') };
   const store2 = {
-    active: store.active,
-    all: [store.active, { root: scratch2, projectName: 'LED2', cproject: cp2, toolchain: () => tc, reload() {}, buildDir: path.join(scratch2, 'obj') }],
+    active: member1,
+    all: [member1, { root: scratch2, projectName: 'LED2', cproject: cp2, toolchain: () => undefined, reload() {}, buildDir: path.join(scratch2, 'obj') }],
     reloadProject() {},
   };
   const sp = new SyncPage2(store2);
@@ -223,6 +254,10 @@ await view.show(store.active);
   check('sync page: value controls seeded', syncHtml.includes('data-val="nocommon"') && syncHtml.includes('data-val="optlevel"'));
   check('sync page: unique page keys + breadcrumb display', syncHtml.includes('data-page="opt"') && syncHtml.includes('data-page="warn"') && syncHtml.includes('Warnings') && !syncHtml.includes('data-page="Warnings"'));
   check('sync page: cpp-only rows annotated', syncHtml.includes('cpponly'));
+  // unset enums seed 'default' (same as the properties page) and the select
+  // must expose it as an explicit choice — seeding the first option used to
+  // display -Os for projects that never set the option
+  check('sync page: unset enums seed an explicit (default) choice', syncHtml.includes('(default)'));
   check('sync page: hostile string escaped', !syncHtml.includes('LED<x>"</script>') || syncHtml.includes('\\u003C'));
   // nonce policy on the sync page too (script-src gated, every tag tagged)
   {
@@ -243,12 +278,18 @@ await view.show(store.active);
   (async () => {
     for (const h of syncHandlers) h({ command: 'applySync', items });
     await new Promise((r) => setTimeout(r, 300));
-    const c1 = Cproject.load(PROJ);
+    const c1 = Cproject.load(scratch1);
     const c2 = Cproject.load(scratch2);
     check('sync batch: checked flag applied to both projects', c1.optionBool('optimization.nocommon') === true && c2.optionBool('optimization.nocommon') === true);
     check('sync batch: second flag applied to both', c1.optionBool('c.linker.gcsections') === false && c2.optionBool('c.linker.gcsections') === false);
     check('sync batch: untouched option unchanged', c1.optionBool('warnings.allwarn') === (store.active.cproject.optionBool('warnings.allwarn')));
     check('sync batch: done message posted', syncPosted.some((m) => m.command === 'syncDone' && m.text.includes('2/2 OK')));
+    // applying a 'default'-seeded enum must leave the option UNSET in every
+    // target (no explicit first-option value written)
+    for (const h of syncHandlers)
+      h({ command: 'applySync', items: [{ suffix: 'mrvc.test.absent.enum', type: 'enum', enumBase: 'mrvc.test.absent.enum.', value: 'default' }] });
+    await new Promise((r) => setTimeout(r, 300));
+    check('sync batch: default-valued enum leaves the option unset', !Cproject.load(scratch1).optionValue('mrvc.test.absent.enum'));
     fs.rmSync(scratch2, { recursive: true, force: true });
     console.log(failures ? `\n${failures} FAILURES` : '\nwebview render verification passed');
     process.exit(failures ? 1 : 0);

@@ -47,8 +47,8 @@ npm run package      # 生成 mrvc-<version>.vsix（@vscode/vsce，--no-dependen
 ```
 
 安装（三种任选）：
-- VSCode 图形界面：扩展视图 → 右上角 `···`（Views and More Actions）→ **Install from VSIX...** → 选择生成的 `mrvc-0.1.5.vsix`
-- 命令行：`code --install-extension mrvc-0.1.5.vsix`
+- VSCode 图形界面：扩展视图 → 右上角 `···`（Views and More Actions）→ **Install from VSIX...** → 选择生成的 `mrvc-0.1.6.vsix`
+- 命令行：`code --install-extension mrvc-0.1.6.vsix`
 - 直接把 `.vsix` 拖进扩展视图
 
 > `.vscodeignore` 已配置只打包 `out/extension.js`(+map)、`media/*.svg`、README、package.json；
@@ -80,7 +80,7 @@ npm run package      # @vscode/vsce 打包 .vsix（--no-dependencies）
 ```
 
 > **顺序陷阱**：`npx tsc` 与 `node esbuild.js` 都会写 `out/extension.js`——tsc 产出的是 10KB 的模块入口，
-> esbuild 产出的是 235KB 的完整 bundle（发布用）。**必须先 tsc 后 esbuild**；顺序颠倒会把 bundle 覆盖成
+> esbuild 产出的是 ~934KB 的完整 bundle（发布用）。**必须先 tsc 后 esbuild**；顺序颠倒会把 bundle 覆盖成
 > 小文件，打出的 vsix 缺失全部功能。打包前建议 `ls -la out/extension.js` 确认体积。
 
 测试脚本在 `tools/`，均为纯 Node 断言，直接 `node tools/<脚本>` 运行：

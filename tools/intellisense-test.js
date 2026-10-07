@@ -164,6 +164,134 @@ if (HAS_LED) {
     check('jsonc: exactly one MRVC entry after two updates', (after3.match(/"name": "MRVC"/g) || []).length === 1);
   }
 
+  // ---- JSONC preservation: TRAILING COMMA + insert — the raw file keeps
+  // the user's comma; adding our separator after it would produce ", ,"
+  // and an unparsable file that then trips the 'unreadable' sentinel ----
+  {
+    const propsFile = path.join(WS, '.vscode', 'c_cpp_properties.json');
+    // JSONC-semantics view for plain JSON.parse: strip BOM, comments and
+    // trailing commas — everything cpptools' JSONC reader accepts
+    const stripComments = (t) =>
+      t
+        .replace(/^\uFEFF/, '')
+        .replace(/\/\/.*$/gm, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/,(\s*[}\]])/g, '$1');
+    fs.writeFileSync(
+      propsFile,
+      [
+        '{',
+        '  "version": 4,',
+        '  "configurations": [',
+        '    { "name": "UserCustom", "defines": ["KEEP_ME"] }, // trailing comma',
+        '  ]',
+        '}',
+      ].join('\n'),
+      'utf-8'
+    );
+    const rT = ensureIntellisenseConfig(store);
+    check('jsonc trailing comma: update succeeds', !rT.error);
+    const afterT = fs.readFileSync(propsFile, 'utf-8');
+    let parsedT;
+    try { parsedT = JSON.parse(stripComments(afterT)); } catch { parsedT = undefined; }
+    check('jsonc trailing comma: result still parses (no ", ,")', parsedT !== undefined);
+    check('jsonc trailing comma: MRVC entry added', parsedT?.configurations?.some((c) => c.name === 'MRVC'));
+    check('jsonc trailing comma: user entry + comment survive', parsedT?.configurations?.some((c) => c.name === 'UserCustom') && afterT.includes('// trailing comma'));
+    // root-level trailing comma with NO configurations property
+    fs.writeFileSync(propsFile, '{\n  "env": { "X": "1" }, // env for cpptools\n}', 'utf-8');
+    const rT2 = ensureIntellisenseConfig(store);
+    check('jsonc root trailing comma: update succeeds', !rT2.error);
+    const afterT2 = fs.readFileSync(propsFile, 'utf-8');
+    let parsedT2;
+    try { parsedT2 = JSON.parse(stripComments(afterT2)); } catch { parsedT2 = undefined; }
+    check('jsonc root trailing comma: result still parses', parsedT2 !== undefined);
+    check('jsonc root trailing comma: configurations created with MRVC', parsedT2?.configurations?.some((c) => c.name === 'MRVC'));
+    check('jsonc root trailing comma: user env + comment survive', parsedT2?.env?.X === '1' && afterT2.includes('// env for cpptools'));
+    // REPLACE path with an array-level trailing comma + line-end comment
+    // behind the MRVC entry: the blanked comma must terminate the element's
+    // span, or the splice wipes the raw comma AND the comment with it
+    fs.writeFileSync(
+      propsFile,
+      [
+        '{',
+        '  "configurations": [',
+        '    { "name": "MRVC", "compileCommands": ["OLD"], "cppCompilerPath": "residue" }, // keep me',
+        '  ]',
+        '}',
+      ].join('\n'),
+      'utf-8'
+    );
+    const rT3 = ensureIntellisenseConfig(store);
+    check('jsonc trailing comma replace: update succeeds', !rT3.error);
+    const afterT3 = fs.readFileSync(propsFile, 'utf-8');
+    let parsedT3;
+    try { parsedT3 = JSON.parse(stripComments(afterT3)); } catch { parsedT3 = undefined; }
+    check('jsonc trailing comma replace: result parses', parsedT3 !== undefined);
+    check('jsonc trailing comma replace: entry refreshed', parsedT3?.configurations?.[0]?.compileCommands?.[0] !== 'OLD');
+    check('jsonc trailing comma replace: residue key removed', parsedT3?.configurations?.[0]?.cppCompilerPath === undefined);
+    check('jsonc trailing comma replace: line-end comment survives', afterT3.includes('// keep me'));
+  }
+
+  // ---- NESTED trailing commas must NOT act as the container's separator:
+  // the first fix keyed on "any comma inside the range" and broke exactly
+  // these files (a comma inside an element object is that object's own
+  // trailing comma — the array still needs ours between its entries) ----
+  {
+    const propsFile = path.join(WS, '.vscode', 'c_cpp_properties.json');
+    // JSONC validator: BOM- and trailing-comma-aware (the element's own
+    // trailing comma legitimately SURVIVES in the output — it is the
+    // array-level comma whose suppression/insertion matters)
+    const stripJsonc = (t) =>
+      t
+        .replace(/^\uFEFF/, '')
+        .replace(/\/\/.*$/gm, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/,(\s*[}\]])/g, '$1');
+    const attempt = (name, content) => {
+      fs.writeFileSync(propsFile, content, 'utf-8');
+      const r = ensureIntellisenseConfig(store);
+      const after = fs.readFileSync(propsFile, 'utf-8');
+      let parsed;
+      try { parsed = JSON.parse(stripJsonc(after)); } catch { parsed = undefined; }
+      check(`${name}: update succeeds`, !r.error && r !== 'unreadable');
+      check(`${name}: result still parses`, parsed !== undefined);
+      check(`${name}: MRVC entry added`, !!parsed?.configurations?.some((c) => c.name === 'MRVC'));
+    };
+    // trailing comma INSIDE the element object; the array itself has none
+    attempt(
+      'nested trailing comma (element object)',
+      ['{', '  "version": 4,', '  "configurations": [', '    {', '      "name": "UserCustom",', '      "compilerPath": "C:/tc/bin/gcc.exe",', '    }', '  ]', '}'].join('\n')
+    );
+    // root-append path: nested comma inside an env object, root has a property
+    attempt('nested trailing comma (root append)', ['{', '  "env": {', '    "X": "1",', '  }', '}'].join('\n'));
+  }
+
+  // ---- EMPTY root object with JSONC features: BOM/comments force the
+  // surgical path where an empty object must not receive a leading comma
+  // (`{,` — parse failure + permanent 'unreadable' sentinel) ----
+  {
+    const propsFile = path.join(WS, '.vscode', 'c_cpp_properties.json');
+    const stripJsonc = (t) =>
+      t
+        .replace(/^\uFEFF/, '')
+        .replace(/\/\/.*$/gm, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/,(\s*[}\]])/g, '$1');
+    const attempt = (name, content) => {
+      fs.writeFileSync(propsFile, content, 'utf-8');
+      const r = ensureIntellisenseConfig(store);
+      const after = fs.readFileSync(propsFile, 'utf-8');
+      let parsed;
+      try { parsed = JSON.parse(stripJsonc(after)); } catch { parsed = undefined; }
+      check(`${name}: update succeeds`, !r.error && r !== 'unreadable');
+      check(`${name}: result still parses`, parsed !== undefined);
+      check(`${name}: configurations created with MRVC`, !!parsed?.configurations?.some((c) => c.name === 'MRVC'));
+    };
+    attempt('comment-only empty root', '{ /* add configurations here */ }');
+    attempt('BOM-prefixed empty root', '﻿{}');
+    attempt('BOM + comment empty root', '﻿{ /* none yet */ }');
+  }
+
   // ---- multi-root: every workspace folder gets its own c_cpp_properties;
   // secondary folders point at the PRIMARY folder's databases absolutely ----
   {
@@ -180,6 +308,51 @@ if (HAS_LED) {
     );
     vscodeStub.workspace.workspaceFolders.pop();
     fs.rmSync(WS2, { recursive: true, force: true });
+  }
+
+  // ---- dangling include paths (EVT templates ship superset include lists:
+  // e.g. BackupUpgrade_IAP references HAL/LIB/Profile it never links) used
+  // to reach the compile args AND the includePath browse fallback — cpptools
+  // validates includePath and reported one "Cannot find" per dangling path
+  // (same criterion as the makefile pipeline's dropMissing) ----
+  {
+    const propsFile = path.join(WS, '.vscode', 'c_cpp_properties.json');
+    // plain-JSON fixture (the BOM scenarios above left a BOM+comment file)
+    fs.writeFileSync(propsFile, '{}', 'utf-8');
+    const origInc = cp.listOption('c.compiler.include.paths').values.slice();
+    cp.addToListOption('c.compiler.include.paths', 'Z:/mrvc-dangling/absent');
+    cp.addToListOption('c.compiler.include.paths', '${workspace_loc:/${ProjName}/ghost_dir}');
+    const rD = ensureIntellisenseConfig(store);
+    check('dangling includes: regeneration succeeds', !rD.error);
+    const sharedD = JSON.parse(fs.readFileSync(sharedDbFile(WS), 'utf-8'));
+    const activeD = JSON.parse(fs.readFileSync(activeCcFile(WS), 'utf-8'));
+    const argsD = [...sharedD, ...activeD].map((e) => e.arguments.join(' ')).join(' ');
+    check('dangling absolute include dropped from compile args', !argsD.includes('mrvc-dangling'));
+    check('dangling workspace_loc include dropped from compile args', !argsD.includes('ghost_dir'));
+    const propsD = JSON.parse(fs.readFileSync(propsFile, 'utf-8'));
+    const mineD = propsD.configurations.find((c) => c.name === 'MRVC');
+    check('dangling includes absent from includePath fallback', !(mineD.includePath || []).some((p) => p.includes('mrvc-dangling') || p.includes('ghost_dir')));
+    check('real includes still listed in includePath fallback', (mineD.includePath || []).some((p) => /[A-Za-z]:[\\/]/.test(p) && p.includes('SRC')));
+    // restore in-memory state so later sections see the untouched project
+    cp.setOptionList('c.compiler.include.paths', origInc);
+    ensureIntellisenseConfig(store);
+  }
+
+  // ---- cppCompilerPath is not a property in cpptools' c_cpp_properties
+  // schema ("Property cppCompilerPath is not allowed") ----
+  {
+    const propsFile = path.join(WS, '.vscode', 'c_cpp_properties.json');
+    // an entry written by an older version carries the retired key — the
+    // merge must retire it instead of preserving it forever
+    const stale = JSON.parse(fs.readFileSync(propsFile, 'utf-8'));
+    stale.configurations.find((c) => c.name === 'MRVC').cppCompilerPath = 'C:/tc/bin/old-g++.exe';
+    fs.writeFileSync(propsFile, JSON.stringify(stale, null, 2) + '\n', 'utf-8');
+    ensureIntellisenseConfig(store);
+    const propsP = JSON.parse(fs.readFileSync(propsFile, 'utf-8'));
+    const mineP = propsP.configurations.find((c) => c.name === 'MRVC');
+    check('cppCompilerPath not written (cpptools schema rejects it)', mineP.cppCompilerPath === undefined);
+    check('retired key removed from a pre-existing entry (merge cleanup)', !('cppCompilerPath' in mineP));
+    check('compilerPath still present', typeof mineP.compilerPath === 'string' && mineP.compilerPath.length > 0);
   }
 
   // stale _active.json whose file set no longer matches the context class

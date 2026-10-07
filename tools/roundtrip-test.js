@@ -165,5 +165,43 @@ genMakefiles2(cp, tcStub2);
 mk = fs.readFileSync(path.join(scratch, 'obj', 'makefile'), 'utf8');
 check('makefile switches to static-lib rule', mk.includes('out_LED.a: $(OBJS)'));
 
+// --- mixed content: text + element children (hand-written XML comment
+// inside a text element) must keep its text across a rewrite ---
+{
+  const { parseXml, serializeXml } = require('../out/core/xml.js');
+  const src = '<?xml version="1.0" encoding="UTF-8"?>\r\n<projectDescription>\r\n\t<name>My <!--note--> Proj</name>\r\n</projectDescription>';
+  const out = serializeXml(parseXml(src));
+  check('mixed content: text survives rewrite', out.includes('My') && out.includes('Proj') && out.includes('<!--note-->'));
+  const nameEl = parseXml(out).findAll((e) => e.name === 'name')[0];
+  check('mixed content: text intact after round trip', (nameEl.text || '').includes('My') && (nameEl.text || '').includes('Proj'));
+  // plain CDT documents (text-only or children-only elements) stay byte-stable
+  const plain = '<?xml version="1.0" encoding="UTF-8"?>\r\n<projectDescription>\r\n\t<name>LED</name>\r\n</projectDescription>';
+  check('plain document unchanged', serializeXml(parseXml(plain)) === plain);
+}
+
+// --- .template byte-fidelity: unchanged lines stay BYTE-identical (spacing,
+// value whitespace); a changed line keeps the original "key = value" style ---
+{
+  const { readTemplate, writeTemplate } = require('../out/core/templateFile.js');
+  const tplDir = path.join(scratch, '..', 'roundtrip-tpl');
+  fs.rmSync(tplDir, { recursive: true, force: true });
+  fs.mkdirSync(tplDir, { recursive: true });
+  const original = ['# header comment', '', 'Vendor = WCH', 'Address=0x00000000 ', 'MCU=CH582M', ''].join('\r\n');
+  fs.writeFileSync(path.join(tplDir, '.template'), original, 'utf-8');
+  const tpl = readTemplate(tplDir);
+  check('template: values read with spacing variants', tpl.values['Vendor'] === 'WCH' && tpl.values['Address'] === '0x00000000');
+  tpl.values['Address'] = '0x08000000';
+  writeTemplate(tplDir, tpl);
+  const after = fs.readFileSync(path.join(tplDir, '.template'), 'utf-8');
+  const lines = after.split('\r\n');
+  check('template: untouched line keeps "key = value" spacing byte-identical', lines.includes('Vendor = WCH'));
+  check('template: comment and blank lines preserved', lines[0] === '# header comment' && lines[1] === '');
+  check('template: changed line rewritten with its own spacing style', lines.includes('Address=0x08000000') && !lines.includes('Address=0x00000000 '));
+  check('template: trailing whitespace of a CHANGED line not resurrected', !after.includes('0x00000000'));
+  const reread = readTemplate(tplDir);
+  check('template: changed value reads back', reread.values['Address'] === '0x08000000' && reread.values['Vendor'] === 'WCH');
+  fs.rmSync(tplDir, { recursive: true, force: true });
+}
+
 console.log(failures ? `\n${failures} FAILURES` : '\nall round-trip checks passed');
 process.exit(failures ? 1 : 0);

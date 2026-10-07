@@ -1,14 +1,169 @@
 # MRVC 更新日志
 
-## V0.1.6（2026-10-04，未发布）
+## V0.1.6（2026-10-07）
 
-相对 V0.1.5。三轮代码审查（core 文件格式层 / core 工具进程层 / vscode 集成层）发现的 8 个
-缺陷全部修复；编译旗标按 MRS2 生成器源码逐键对齐（浮点双键拆分）；IntelliSense 配置改
-外科手术式写入并支持多根工作区。回归：17 个断言套件 + mass 全树比对（CH585/CH587/CH32V307
-三棵 EVT 树 400 工程、13341 源文件）全部通过，makefile 逐工程字节稳定。
+相对 V0.1.5。五轮代码审查（core 文件格式层 / core 工具进程层 / vscode 集成层 / 开发机复审 +
+10-07 第四轮全量复审）发现的缺陷全部修复；编译旗标按 MRS2 生成器源码逐键对齐（浮点双键拆分）；
+IntelliSense 配置改外科手术式写入并支持多根工作区。回归：18 个断言套件 + mass 全树比对
+（5 棵 EVT 树 972 工程、37094 源文件）全部通过。
 
 ### 修复
 
+- **重命名工程的写盘顺序以 `.launch` 为先**（开发机第六轮复审发现）：读入内存的原子化修复
+  消除了"读/解析失败"窗口，但写盘仍是 `.project` 先落盘、`.launch` 后写——若 `.launch`
+  写入失败（如杀软锁定），`.project` 已是新名而 `MAPPED_RESOURCE_PATHS` 仍旧名，重试按新名
+  匹配永远无法补正。现 `.launch` 先写（最可能失败的写），`.project` 作为提交点最后写：
+  前置失败整体未发生、可直接重试；后置失败重试自愈（`core/projectFile.ts`；rename-test
+  全绿回归）。
+- **第四轮复审遗留 P3 全量清零（18 条，逐条复核属实后修复）**：
+  - `.template` 写回兑现"未改动行字节不动"承诺：原实现对**每个**可识别行重写规范形
+    （`Vendor = WCH`→`Vendor=WCH`、值尾随空格丢失），"keep spacing style"的 pad 判断因正则
+    懒惰分组恒为空串（死代码）。现 KEY_RE 捕获等号前空白组，未变化行原样返回、变化行保留
+    原间距风格（`core/templateFile.ts`；roundtrip 新增 6 断言）。
+  - `.wvsln` 写回不再把 LF 文件归一为 CRLF：按文件自身行尾写回，与"byte-identical"注释一致
+    （`core/solution.ts`；solution-test 新增 2 断言）。
+  - 缩进的 `BuildOrder=` 行不再失效累积：写侧探测原用原始行前缀匹配而解析侧先 trim——手写
+    缩进行导致每次"设置编译顺序"都插入新行且顺序永不生效。现写侧按 trim 探测、原位重写并
+    保留原缩进（`core/solution.ts`；solution-test 新增 4 断言）。
+  - 重命名工程原子化 + PROGRAM_NAME 扩展名自适应：`.project` 此前先落盘，`.launch` 读取/
+    解析失败后重试时旧名已被覆盖，MAPPED_RESOURCE_PATHS 永久指旧工程；PROGRAM_NAME 替换
+    硬编码 `(\.elf)$`，axf 等非 elf 产物工程改名后调试配置指向旧可执行文件。现全部读入内存
+    完成编辑后再统一写盘（失败即整体未发生），扩展名按实际产物保留（`core/projectFile.ts`；
+    rename-test 新增 5 断言，含损坏 .launch 的回滚路径）。
+  - `c.compiler.otheroptimizations` 与 `assembler.otherwarnings` 补宏解析：与 C/C++ 孪生字段
+    对齐，`${ProjName}` 等宏不再原样进 makefile 被 make 吞掉（`core/flags.ts`；flags-fp-test
+    新增 1 断言）。
+  - 真实文件夹命名 entry 大小写错拼不再双扫：step 1.5 此前用 **entry 的拼写**当逻辑前缀，
+    与根遍历的磁盘拼写差一个大小写就把同一份源文件加两遍（重复 .o → 链接期符号重定义）；现
+    按磁盘真实拼写解析前缀（`core/scan.ts`；exclude-test 新增 3 断言）。
+  - makefile 逻辑目录内外部判定改按"目录内任一文件"：链接名与真实目录同名的混合目录此前按
+    首文件二选一，模式规则对外部成员报 No rule to make target；现含任一外部文件即走逐文件
+    规则（`core/makefile.ts`）。
+  - pre/post-build 回显使用 Build Steps 页填写的 Description（pre/postannouncebuildStep），
+    未填时保持 CDT 默认文案（`core/makefile.ts`）。
+  - `macros.ts` 的链接名查找折叠大小写：选项值首段与 .project 链接名大小写不一致时 `-I`/`-T`
+    不再被静默丢弃（`core/macros.ts`）。
+  - `selectToolchain` 按名匹配兑现注释宣称的大小写不敏感（设置键入 `gcc12` 可命中 `GCC12`），
+    与自定义工具链合并去重的折叠规则一致（`core/toolchain.ts`）。
+  - i18n 清理 19 个无引用死键（脚本全代码引用扫描核实，无动态键名构造）（`core/i18n.ts`）。
+  - 任务结束监听竞态加固（5 处）：executeTask 兑现前到达的同类型结束事件此前会错配退出码/
+    提前释放构建护栏——现缓冲该窗口内的事件，身份就绪后精确匹配（`vscode/tasks.ts` +
+    `vscode/flash.ts`）。
+  - Rebuild 的 clean 阶段可真实终止：护栏条目此阶段无执行句柄，"结束编译"静默无效——现
+    executeAndWait 支持把执行句柄回写护栏条目（`vscode/tasks.ts`）。
+  - 静态分析报告收集对"扫描与读取之间文件被 Clean 删除"容错，不再裸 ENOENT
+    （`vscode/analysisReport.ts`）。
+  - 删除确认"工程外"提示按折叠路径比较：盘符/大小写拼写差异不再误报/漏报提示行
+    （`vscode/fileOps.ts`）。
+  - Sync Setting 页未设置枚举改种 `(default)` 显式选项：与属性页 readEnum 及 0.1.3 变更记录
+    宣称一致，Apply 选择 default 即保持未设置而非写入首选项值（`vscode/syncPage.ts`；
+    webview-test 新增 2 断言）。
+  - `isSafeLinkName` 拒绝尾点/尾空格（Windows 落盘剥离导致目录合并）与 DOS 保留设备名
+    （CON/NUL/COM1 等，mkdir 失败会中止整个导出）（`vscode/cmakeExport.ts`；cmake-test
+    新增 3 断言）。
+  - removedresources-test 树过滤段异常不再静默按通过退出：树段正是该套件守护对象，异常计入
+    失败并以非零退出（`tools/removedresources-test.js`）。
+
+- **JSONC 尾逗号后的行尾注释不再被替换路径吞掉**（开发机第五轮复审发现）：数组级尾逗号被
+  `stripJsonc` 抹成空格保偏移后，`arrayElements` 在剥离视图上看不到它——最后一个元素的
+  span 一路吞到闭合括号，替换 MRVC 条目时把原文尾逗号与其后的行尾注释一并抹掉（JSONC
+  仍可解析，但用户注释丢失）。现 `arrayElements` 把被记录的尾逗号位置同样视作元素边界，
+  元素 span 精确终止于其自身容器的逗号（`vscode/intellisense.ts`；`intellisense-test`
+  新增 5 断言；既有 JSONC 断言的校验器升级为完整 JSONC 口径——剥 BOM/注释/尾逗号后比对，
+  与 cpptools 消费语义一致）。
+- **c_cpp_properties.json 的 includePath 不再携带悬空 include 路径**（用户实测反馈）：EVT 模板
+  工程自带"超集"include 列表——.cproject 引用了工程既没有链接也没有目录的路径（如
+  BackupUpgrade_IAP 引用 HAL/LIB/Profile、BLE_UART 引用 APP/2g4，全树皆然）。IntelliSense
+  链路的 `intellisenseArgs` 与 makefile 链路不同，没有 dropMissing 过滤，这些悬空路径进入
+  compile commands 后被收进 MRVC 条目的 includePath 兜底数组，而 cpptools 会逐条校验
+  includePath 并在问题面板报一条 "Cannot find"——打开 CH585EVT/EXAM 这类多工程工作区时
+  报几十条。现三处 resolveList（include.paths/systempaths/include.files）与 makefile 链路
+  一样补上 dropMissing 过滤，真实链接目标路径不受影响（`core/flags.ts`；`intellisense-test`
+  新增 4 断言）。
+- **不再写入 cpptools 架构不认识的 `cppCompilerPath` 属性**（用户实测反馈，同源问题面板噪音）：
+  MRVC 条目此前附带该键，cpptools 的 c_cpp_properties schema 无此属性，逐次报
+  "Property cppCompilerPath is not allowed"。现不再写入；已生成文件中的残留键在合并时显式
+  清除（合并语义是保留旧键，不删除则旧值永久残留）——普通 JSON 与 JSONC 外科两条写路径
+  同步处理（`vscode/intellisense.ts`；`intellisense-test` 新增 3 断言，含旧条目残留键清理）。
+  已生成的 c_cpp_properties.json 在下次触发 IntelliSense 时自动重写自愈（EXAM 工作区实测：
+  206 条绝对 includePath 全部存在、残留键清零）。
+
+- **c_cpp_properties.json 嵌套尾逗号误判为数组分隔符**（第四轮审查 P1，编译产物直调复现）：
+  上一轮尾逗号保护用"区间内出现过被抹除的逗号"判定，但元素对象内部的尾逗号（比数组级尾逗号
+  更常见的手写形态）也会命中——向 configurations 插入 MRVC 条目时不再加分隔符，两个对象之间
+  无逗号，文件当场损坏并永久触发 'unreadable' 哨兵。现 stripJsonc 记录每个尾逗号**自身容器的
+  闭合括号偏移**，仅当闭合位置与目标容器一致时才省略分隔符（`intellisense.ts`；新增 6 断言，
+  含数组插入/根级追加两路径）。
+- **空根对象写入前导逗号**（第四轮审查 P1，复现）：`{ /* 注释 */ }` 或带 BOM 的 `{}`（BOM 被替换
+  为空格后走 JSONC 外科路径）在追加 configurations 时输出 `{,`——文件不可解析且此后永不再更新。
+  现根对象无属性时不加分隔符（`intellisense.ts`；新增 3 断言：纯注释/BOM/注释+BOM）。
+- **属性页 Apply 不再回滚下载地址**（第四轮审查 P2）：Chip 页与 Download Settings 页的地址输入框
+  写同一个 .template "Address" 键，Apply 先发 saveDl 后发 save——save 收集到的 Chip 页输入框仍是
+  打开时的旧值，把刚写入的新地址静默回滚且提示"已保存"。现两个输入框 input 事件双向镜像，
+  无论编辑哪一侧，两次写盘值一致（`configView.ts`）。
+- **CMake 导出：链接目录目标自嵌套**（第四轮审查 P2，上轮修复的盲区）：导出目录选在链接目录
+  目标内部时，链接目标的 copyTree 未跳过导出目录，递归自拷贝直到路径超长失败、在共享目录留下
+  嵌套垃圾。现提取 copyLinkedFolders 助手并同样传入 skipDir（`cmakeExport.ts`；新增 3 断言）。
+- **Exclude/Include From Build 写路径大小写折叠**（第四轮审查 P2）：查询/扫描侧已折叠比较，写回
+  却是字面比较——token 与磁盘拼写大小写不一致的工程（CH587 USBPD 式）"恢复编译"静默无效、重复
+  "排除"追加大小写变体重复 token。现 excludeResource/includeResource 按 win32 折叠匹配
+  （`cproject.ts`；`exclude-test` 新增 7.5 组 5 断言）。
+- **扫描器对链接目录命名 entry 的令牌查找折叠大小写**（第四轮审查 P2）：.cproject 命名 entry 名与
+  .project 链接名大小写错拼时，dirTokens.get 原样键查找落空，excluding 令牌被静默丢弃（排除报告
+  成功、构建照常编译——顶层文件夹修复的残余路径）。现按折叠匹配收集令牌（`scan.ts`）。
+- **XML 混合内容保文本**（第四轮审查 P2）：解析把元素内文本挂到 el.text，序列化在有子元素时从不
+  输出文本——`<name>My <!--note--> Proj</name>` 这类手写混合内容在任意写回后名字被清空。现有
+  子元素时先输出文本（`xml.ts`；`roundtrip-test` 新增 3 断言，含纯文本文档字节不变校验）。
+- **makefile 的 common 选项串过 `$` 转义**（第四轮审查 P2）：target/optimization/warnings/debugging
+  四个 "other" 用户文本经 commonOptions 直通配方，而 per-tool 串已转义——同一 `$` 输入两种命运，
+  make 把它当变量展开后旗标静默变错。现 common 同样过 escapeMakeDollars（`makefile.ts`；
+  `makefile-dollar-test` 新增管线级 2 断言）。
+- **CMake 导出补齐 include 三形态 + 静态库目标**（第四轮审查 P2）：①提取正则只认裸 `-I`，
+  `-isystem`（系统路径）与 `-include`（强制包含文件）被静默丢弃（skipIncludes 已把它们从旗标串
+  移除）、汇编器 include 更是从未收集——CMake 构建缺头文件路径；现三形态全收割，-I/-isystem 进
+  include_directories，-include 按语言保留在 CMAKE_*_FLAGS。②isExecutable 硬编码 true，静态库
+  工程走 add_executable + 链接脚本 + hex/bin 后处理，链接期必报 undefined reference to 'main'；
+  现按 cp.artifactType 分支：库工程 add_library + CMAKE_AR 归档配方，跳过链接与后处理
+  （`cmake.ts`；`cmake-test` 新增 10 断言）。
+- **新建工程名拒绝空白字符**（第四轮审查 P2）：core 校验与 renameProject 的 `\s` 拒绝规则脱节，
+  含空格名走完解压/建目录才在改名一步抛错，落成双 .wvproj 半改名态。现 core 与前端向导校验
+  同步补 `\s`，第一步即拒（`core/newProject.ts` + `vscode/newProject.ts`；新增 2 断言）。
+- **模板解压失败不再留下半成品目录**（第四轮审查 P2）：缺 zip 原本在建目录后才报错、坏 zip/超时/
+  杀软锁定后残留半提取目录，同名重试永久 "already exists"。现 zip 校验前置到建目录之前，解压
+  失败尽力清理 projectRoot 再抛错。附带修复：Windows PowerShell 5.1 对坏 zip 报**非终止错误且退出
+  码为 0**，解压失败被整体吞掉、"成功"创建空工程——现 PS 命令包 try/catch + `-ErrorAction Stop`，
+  失败显式 exit 1（`core/newProject.ts`；新增 4 断言）。
+- **批量 Clean All / Delete Output Files 尊重构建护栏**（第四轮审查 P2）：两项批量操作不查
+  building 表，make all 进行中可对同一工程并发 make clean / 删 obj/，编译期产物被抽走。现与
+  run()/buildOne 共用护栏，命中跳过并在汇总中注明（`tasks.ts`；新增 i18n 键 buildBusySkip；
+  `webview-test` 新增 3 断言）。
+- **webview-test 不再改写真实 EVT 工程**（第四轮审查 P2，测试基建）：批量同步断言的成员列表
+  原以真实 LED 工程为首成员且结束不还原——参考树 .cproject 被永久改写（本机 TEST 树 LED 的
+  gcsections 被写成 false，全树 105 工程中唯一孤例，已按树内标准值还原），断言也在首跑后退化为
+  恒真。现两个成员均为 .scratch 副本（`tools/webview-test.js`）。
+
+- **打开 `.wvsln` 不再静默覆盖同名 `.code-workspace`**（复审 P2）：重复打开解决方案时，
+  手工维护过的多根工作区文件（自加的文件夹/设置）此前被 4 行生成内容直接替换、不可恢复。
+  现存在即弹模态确认（与 Generate Solution 同款 overwriteConfirm），取消即不动（`projects.ts`）。
+- **CMake 导出三处加固**（复审 P3）：①导出目标选在工程根内时，copyTree 会把刚生成的导出树
+  递归拷进自身形成嵌套垃圾副本——现跳过导出目录自身；②`.project` 链接名未校验即作导出内
+  路径段，恶意工程可以 `..\` 逃逸导出目录——现按向导同款规则拒绝分隔符/Windows 非法字符/
+  纯点名字；③exportAsCMakeCmd 全程无错误处理，`.cproject` 损坏时静默失败——现与 Generate
+  路径同款 try/catch + 明确报错（`cmakeExport.ts`；`cmake-test` 新增 6 断言）。
+- **New MounRiver Static Library 落实静态库身份**（复审 P3）：向导此前把 `artifactType='lib'`
+  丢弃，产物仍是 exe 工程（链接 ELF + hex/bin 后处理）。现创建时写 `buildArtefactType=
+  staticLibrary`（standalone 属性与 buildProperties 双写，MRS2 读取序兼容）并把产物扩展名
+  翻转为 CDT 静态库默认 `a`——makefile 随之走 ar 归档配方、跳过 hex/bin/lst/size；翻转失败
+  不阻塞创建（`core/newProject.ts`；`newproject-test` 新增 5 断言，真实 SDK 模板端到端）。
+- **新建向导模板扫描容错**（复审 P3）：`scanTemplates` 三层 readdirSync 均未捕获，SDK 子目录
+  ACL 拒读时整条向导链路 unhandled rejection——现逐层跳过不可读目录（与 chipdb 同款写法）。
+- **新建工程名前后端校验对齐**（复审 P3）：向导输入框此前放行 `$`、反引号、引号，用户走完
+  全部步骤才被 core 拒绝——现前端即拒（`vscode/newProject.ts`）。
+- **`c_cpp_properties.json` 尾逗号兼容**（开发机复审发现）：用户的 configurations 数组
+  （或根对象末属性）带尾逗号时，首次插入 MRVC 条目会在原文上追加多余分隔符产生 `", ,"`、
+  文件此后无法解析并触发"永久不可读"哨兵——正是注释保护改造要消灭的故障模式。现
+  `stripJsonc` 记录被抹除的尾逗号位置，外科拼接遇其存在则不再追加分隔符（`vscode/intellisense.ts`；
+  `intellisense-test` 新增 8 条断言，含数组/根级、纯尾逗号与"尾逗号+注释"变体）。
 - **BuildOrder 行不再累积重复**（Set Build Order）：`recordBuildOrder` 原实现无条件在首行后
   插入新行、循环到旧行又替换一次——对已有 `BuildOrder=` 的 solution 调用一次产生 2 行，
   每点一次"设置编译顺序"再多 1 行。现先探测已有行、原位重写并收敛历史重复行，缺失时仍按
@@ -67,6 +222,11 @@
 
 ### 变更
 
+- **构建输出（products）节点不再提供"重命名"**（复审 P3）：obj 目录名由 `.cproject` 决定，
+  改名会与构建配置、目录监视、`.template` Target Path 全面脱钩——右键菜单移除该项
+  （`package.json`）。
+- **链接目录内资源的删除确认补充位置提示**（复审 P3）：链接文件夹目标位于工程之外，
+  删除会真实移除外部磁盘文件——确认弹窗 detail 追加一行明确提示（双语，`fileOps.ts`）。
 - **webview CSP 收紧**：属性页与 Sync Setting 页的脚本改随机 nonce 门控（每次渲染新
   nonce），`script-src` 移除 `'unsafe-inline'`——所有插值本已转义，此变更提供第二道防线
   （`configView.ts` + `syncPage.ts`；`webview-test` 新增 nonce 断言）。
@@ -74,6 +234,18 @@
   未在 package.json 声明，设置页显示"未知配置"警告；现声明为扩展托管项（说明勿手改）。
 - **文档勘误**：README 工程发现深度实为 6 层（原写 4）；排除说明改为"活动配置（首个
   `cconfiguration`）"并写明顶层文件夹排除的新语义；`discover.ts` 注释与常量对齐。
+
+### 测试
+
+- 开发机终态（10-07 第四轮后复跑）：18 个断言套件全绿（第四轮新增 46 断言：嵌套尾逗号/空根
+  对象 15 + 大小写写路径 5 + XML 混合内容 3 + common 转义管线 2 + CMake includes/静态库/自嵌套
+  11 + 向导校验/解压清理 6 + 地址双向同步与清理护栏 4）+ mass 全树 972 工程 / 37094 源文件
+  0 错误、逐工程字节稳定。
+- **金标比对缺口记录在案**：真 MRS2 金标树 `.goldens/` 未随仓库/机器迁移，本机 EVT 树中
+  的 `obj/makefile` 均为早期原型产物（头部 `# Generated by mrs2-vscode`），无比对裁决力。
+  本轮 `$` 转义改动（`escapeMakeDollars`，新增 common 串覆盖）的字节稳定性由
+  `makefile-dollar-test` 13 断言（金标路径不含 `$`、转义为 no-op）+ mass 全树逐工程字节稳定
+  覆盖；待金标树恢复后 `npm run golden` 可直接复验。
 
 ## V0.1.5（2026-09-30）
 

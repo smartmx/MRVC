@@ -202,6 +202,15 @@ export async function deleteNode(node: TreeNode): Promise<void> {
   if (!node.fsPath) return;
   const name = path.basename(node.fsPath);
   const isDir = fs.existsSync(node.fsPath) && fs.statSync(node.fsPath).isDirectory();
+  // linked-folder targets live OUTSIDE the project folder: Delete removes
+  // the real external files, so the dialog says so explicitly
+  const project = (node as unknown as { project?: { root?: string } }).project;
+  // folded compare (ProjectStore.key): a .project link target may spell the
+  // drive or path segments with different case than the workspace — a raw
+  // startsWith misreports this hint line in both directions
+  const outside =
+    !!project?.root &&
+    !ProjectStore.key(path.resolve(node.fsPath)).startsWith(ProjectStore.key(path.resolve(project.root)) + path.sep);
   // MRS2 Remove command semantics: [Remove] hides the resource from the
   // tree and the build (filteredResources, restorable via Restore Removed
   // Resources), [Delete] really removes the files — one dialog, two buttons.
@@ -209,19 +218,21 @@ export async function deleteNode(node: TreeNode): Promise<void> {
     t('removeOrDeletePrompt', name),
     {
       modal: true,
-      detail: isDir ? t('removeOrDeleteDirDetail') : t('removeOrDeleteFileDetail'),
+      detail:
+        (isDir ? t('removeOrDeleteDirDetail') : t('removeOrDeleteFileDetail')) +
+        (outside ? '\n' + t('removeOrDeleteOutsideHint') : ''),
     },
     t('remove'),
     t('delete')
   );
   if (confirm === t('remove')) {
-    const project = (node as unknown as { project?: { root?: string; logicPathOf?: (f: string) => string | undefined } }).project;
     if (!project?.root) {
       vscode.window.showErrorMessage(t('noActiveProject'));
       return;
     }
     try {
-      const logic = project.logicPathOf?.(node.fsPath);
+      const withLogic = project as { logicPathOf?: (f: string) => string | undefined; root: string };
+      const logic = withLogic.logicPathOf?.(node.fsPath);
       const parentLogicRaw = logic ? path.posix.dirname(toPosix(logic)) : '';
       appendRemovedResource(project.root, parentLogicRaw === '.' ? '' : parentLogicRaw, name, isDir);
       refresh();

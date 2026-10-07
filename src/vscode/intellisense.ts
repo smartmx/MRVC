@@ -27,7 +27,7 @@ const CONFIG_NAME = 'MRVC';
  * line-end comments (which the old whole-file rewriter destroyed or choked
  * on) parse like any other.
  */
-function stripJsonc(raw: string): string {
+function stripJsonc(raw: string, trailingCommas?: Map<number, number>): string {
   const out: string[] = [];
   let i = 0;
   let inStr = false;
@@ -93,6 +93,14 @@ function stripJsonc(raw: string): string {
         break;
       }
       if (raw[j] === '}' || raw[j] === ']') {
+        // record where a trailing comma was blanked: the surgical splice
+        // must NOT add a separator after it (the raw text still carries
+        // the comma — adding ours would produce ", ," and a file that no
+        // longer parses, permanently bricking the 'unreadable' sentinel).
+        // The value is the comma's OWN container closer: a nested element's
+        // trailing comma closes long before the array/object we splice into
+        // and must never suppress that container's separator.
+        if (trailingCommas) trailingCommas.set(i, j);
         out.push(' ');
         i++;
         continue;
@@ -203,8 +211,13 @@ function objectProps(s: string): Array<{ key: string; value: ValueSpan }> | null
   return props;
 }
 
-/** spans of an array's elements (between the brackets, split at depth-1 commas) */
-function arrayElements(s: string, open: number): ValueSpan[] | null {
+/** spans of an array's elements (between the brackets, split at depth-1
+ * commas). A blanked TRAILING comma (recorded in trailingCommas) must also
+ * terminate the last element's span: on the stripped view it is whitespace,
+ * so without this the final element's span swallows everything up to the
+ * closing bracket — replacing that span would silently erase the user's
+ * raw trailing comma and any line-end comment sitting behind it. */
+function arrayElements(s: string, open: number, trailingCommas?: Map<number, number>): ValueSpan[] | null {
   if (s[open] !== '[') return null;
   const close = matchBracket(s, open);
   if (close < 0) return null;
@@ -222,7 +235,7 @@ function arrayElements(s: string, open: number): ValueSpan[] | null {
       }
       if (c === '{' || c === '[') depth++;
       else if (c === '}' || c === ']') depth--;
-      else if (c === ',' && depth === 0) break;
+      else if (depth === 0 && (c === ',' || trailingCommas?.has(i))) break;
       i++;
     }
     const end = i < close ? i : close;
@@ -259,7 +272,8 @@ function writePropsFile(propsFile: string, mine: Record<string, unknown>): Props
   } catch {
     raw = ''; // absent — a fresh plain-JSON file is created below
   }
-  const stripped = stripJsonc(raw);
+  const trailingCommas = new Map<number, number>();
+  const stripped = stripJsonc(raw, trailingCommas);
   let parsed: Record<string, unknown> | undefined;
   if (raw !== '') {
     try {
@@ -273,8 +287,12 @@ function writePropsFile(propsFile: string, mine: Record<string, unknown>): Props
     const props = (parsed ?? {}) as { configurations?: Array<Record<string, unknown>>; [k: string]: unknown };
     if (!Array.isArray(props.configurations)) props.configurations = [];
     const idx = props.configurations.findIndex((c) => c && c.name === CONFIG_NAME);
-    if (idx >= 0) props.configurations[idx] = { ...props.configurations[idx], ...mine };
-    else props.configurations.push(mine);
+    if (idx >= 0) {
+      props.configurations[idx] = { ...props.configurations[idx], ...mine };
+      // keys we retired must not survive the merge in already-written files
+      // (cppCompilerPath: cpptools' schema rejects it)
+      delete props.configurations[idx].cppCompilerPath;
+    } else props.configurations.push(mine);
     // declare the schema version only when the user's file doesn't carry one
     if (props.version === undefined) props.version = 4;
     return writeIfChanged(propsFile, JSON.stringify(props, null, 2) + '\n') ? 'written' : 'unchanged';
@@ -286,11 +304,15 @@ function writePropsFile(propsFile: string, mine: Record<string, unknown>): Props
   const rootOpen = skipWs(stripped, 0);
   const rootClose = matchBracket(stripped, rootOpen);
   if (rootClose < 0) return 'unreadable';
-  /** last significant (non-ws) char before pos — trailing-comma detection */
-  const sigBefore = (pos: number): string => {
-    let j = pos - 1;
-    while (j >= 0 && /\s/.test(stripped[j])) j--;
-    return j >= 0 ? stripped[j] : '';
+  /** raw text carries a trailing comma whose OWN container closes at
+   * `closer` — the raw file still HAS that comma, so adding our own
+   * separator there would produce ", ," and an unparsable file. Matching
+   * by closer (not by offset range) keeps a NESTED element's trailing
+   * comma from suppressing the container's separator: `{"a": {"x": 1,}}`
+   * needs a comma between its properties, only `{"a": {...},}` doesn't. */
+  const hadTrailingComma = (closer: number): boolean => {
+    for (const end of trailingCommas.values()) if (end === closer) return true;
+    return false;
   };
   const rootIndent = indentOf(stripped, rootOpen) + '  ';
   const entryJson = JSON.stringify(mine, null, 2);
@@ -303,7 +325,7 @@ function writePropsFile(propsFile: string, mine: Record<string, unknown>): Props
   if (cfg) {
     const cfgOpen = cfg.value.start;
     const cfgClose = matchBracket(stripped, cfgOpen);
-    const spans = cfgClose >= 0 ? arrayElements(stripped, cfgOpen) : null;
+    const spans = cfgClose >= 0 ? arrayElements(stripped, cfgOpen, trailingCommas) : null;
     if (!spans || cfgClose < 0) return 'unreadable';
     let replaced = false;
     for (const sp of spans) {
@@ -315,6 +337,9 @@ function writePropsFile(propsFile: string, mine: Record<string, unknown>): Props
       }
       if (!frag || frag.name !== CONFIG_NAME) continue;
       const merged = { ...frag, ...mine };
+      // retired keys must not survive the merge in already-written entries
+      // (cppCompilerPath: cpptools' schema rejects it)
+      delete merged.cppCompilerPath;
       edits.push({
         start: sp.start,
         end: sp.end,
@@ -332,15 +357,19 @@ function writePropsFile(propsFile: string, mine: Record<string, unknown>): Props
         edits.push({ start: cfgOpen + 1, end: cfgClose, text: fill });
       } else {
         // insert before ']': a trailing comma already in the file separates
-        const sep = sigBefore(cfgClose) === ',' ? '' : ',';
+        const sep = hadTrailingComma(cfgClose) ? '' : ',';
         edits.push({ start: cfgClose, end: cfgClose, text: `${sep}\n${ind}${entryText}` });
       }
     }
     if (!hasVersion) edits.push({ start: rootOpen + 1, end: rootOpen + 1, text: `\n${rootIndent}"version": 4,` });
   } else {
     // no configurations property — append one (folding in version when also
-    // missing, so both edits land as one insert and cannot collide)
-    const sep = sigBefore(rootClose) === ',' ? '' : ',';
+    // missing, so both edits land as one insert and cannot collide). An
+    // EMPTY root object (possibly comment-only or BOM-prefixed) has no
+    // property to separate from: the leading comma would be the first
+    // token and parse as `{,` — only add a separator after an existing
+    // property, and only when the raw text doesn't already carry one.
+    const sep = props.length === 0 ? '' : hadTrailingComma(rootClose) ? '' : ',';
     const verLine = hasVersion ? '' : `\n${rootIndent}"version": 4,`;
     const entryText = reindent(entryJson, rootIndent + '  ');
     const text = `${sep}${verLine}\n${rootIndent}"configurations": [\n${rootIndent}  ${entryText}\n${rootIndent}]`;
@@ -614,7 +643,9 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
       };
       if (firstTc) {
         mine.compilerPath = firstTc.compilerC;
-        mine.cppCompilerPath = firstTc.compilerCpp;
+        // no cppCompilerPath: cpptools' c_cpp_properties schema rejects that
+        // property and flags it in the Problems panel — compilerPath serves
+        // both C and C++
       }
       if (firstCp) {
         // cpptools accepts c99/c11/c17/c23 and gnu* variants; exotic CDT

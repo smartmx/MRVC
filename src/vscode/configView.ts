@@ -1018,6 +1018,19 @@ function showPage(key) {
 }
 document.querySelectorAll('.nav-item').forEach((n) => n.addEventListener('click', () => showPage(n.dataset.page)));
 showPage('target');
+// The Chip page address field and the Download Settings "Program Address"
+// field both write the SAME .template "Address" key, and Apply posts both
+// messages (saveDl first, then save). Without this lockstep the twin input
+// still holds the value from render time — the second write rolls the
+// first one back while the page reports "Saved".
+(function () {
+  const chipAddr = document.querySelector('[data-key="address"]');
+  const dlAddr = document.getElementById('dl-address');
+  if (!chipAddr || !dlAddr) return;
+  const mirror = (from, to) => from.addEventListener('input', () => { to.value = from.value; });
+  mirror(chipAddr, dlAddr);
+  mirror(dlAddr, chipAddr);
+})();
 document.getElementById('apply').addEventListener('click', () => {
   const values = {};
   document.querySelectorAll('[data-key]').forEach((el) => {

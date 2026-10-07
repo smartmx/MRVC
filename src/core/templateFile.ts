@@ -19,7 +19,10 @@ export interface TemplateData {
   lines: string[];
 }
 
-const KEY_RE = /^([^=\r\n]+?)\s*=(.*)$/;
+/** key / spacing-before-equals / value — the spacing group is what keeps
+ * "Vendor = WCH" spelled that way on rewrite (the old lazy key + \s* form
+ * ate the spacing into the key match, making the pad below dead code) */
+const KEY_RE = /^([^=\r\n]+?)(\s*)=(.*)$/;
 
 export function readTemplate(projectRoot: string): TemplateData {
   const file = path.join(projectRoot, '.template');
@@ -34,7 +37,7 @@ export function readTemplate(projectRoot: string): TemplateData {
     if (!m) continue;
     const key = m[1].trim();
     if (!(key in data.values)) data.order.push(key);
-    data.values[key] = m[2].trim();
+    data.values[key] = m[3].trim();
   }
   return data;
 }
@@ -47,9 +50,12 @@ export function writeTemplate(projectRoot: string, data: TemplateData): void {
     const key = m[1].trim();
     if (!(key in data.values)) return line; // key deleted from values: keep raw
     written.add(key);
-    // keep the original "key =" spacing style around the equals sign
-    const pad = m[1].endsWith(' ') ? ' ' : '';
-    return `${m[1]}${pad}=${data.values[key]}`;
+    const value = data.values[key];
+    // unchanged lines stay BYTE-identical (spacing, value whitespace and
+    // all) — only a real value change rewrites the line, keeping the
+    // original "key =" spacing style via the captured separator group
+    if (m[3].trim() === value) return line;
+    return `${m[1]}${m[2]}=${value}`;
   });
   for (const key of data.order) {
     if (written.has(key) || !(key in data.values)) continue;

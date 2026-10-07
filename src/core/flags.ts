@@ -419,8 +419,10 @@ export function cCompilerOptions(cp: Cproject, skipIncludes = false, style: '1x'
     }
   }
   t += languageStdFlag(cp);
+  // macros resolved like the C++ twin below — ${ProjName} etc. must not
+  // reach the makefile raw
   const cOtherOpt = cp.optionValue('c.compiler.otheroptimizations');
-  if (cOtherOpt) t += ` ${cOtherOpt}`;
+  if (cOtherOpt) t += ` ${resolveOutputMacros(cp, cOtherOpt)}`;
   if (cp.optionBool('c.compiler.warning.missingprototypes')) t += ' -Wmissing-prototypes';
   if (cp.optionBool('c.compiler.warning.strictprototypes')) t += ' -Wstrict-prototypes';
   if (cp.optionBool('c.compiler.warning.badfunctioncast')) t += ' -Wbad-function-cast';
@@ -523,13 +525,18 @@ export function intellisenseArgs(cp: Cproject, kind: 'c' | 'cpp' | 'asm'): strin
     if (u) args.push(`-U${u}`);
   }
   if (cp.optionBool(`${pre}.nostdinc`)) args.push('-nostdinc');
-  for (const i of resolveList(cp, `${pre}.include.paths`, (v) => v, { dropUnresolved: true })) {
+  // dropMissing aligns IntelliSense with the makefile pipeline: EVT template
+  // projects ship superset include lists referencing directories they don't
+  // have (BackupUpgrade_IAP references HAL/LIB/Profile it never links) —
+  // kept, they reach the c_cpp_properties includePath fallback and cpptools
+  // reports one "Cannot find" per dangling path in the Problems panel
+  for (const i of resolveList(cp, `${pre}.include.paths`, (v) => v, { dropUnresolved: true, dropMissing: true })) {
     args.push(`-I${i}`);
   }
-  for (const i of resolveList(cp, `${pre}.include.systempaths`, (v) => v, { dropUnresolved: true })) {
+  for (const i of resolveList(cp, `${pre}.include.systempaths`, (v) => v, { dropUnresolved: true, dropMissing: true })) {
     args.push(`-isystem${i}`);
   }
-  for (const i of resolveList(cp, `${pre}.include.files`, (v) => v, { dropUnresolved: true })) {
+  for (const i of resolveList(cp, `${pre}.include.files`, (v) => v, { dropUnresolved: true, dropMissing: true })) {
     args.push(`-include${i}`);
   }
   if (kind === 'c') {
@@ -568,7 +575,7 @@ export function assemblerOptions(cp: Cproject, skipIncludes = false, style: '1x'
     }
   }
   const otherWarn = cp.optionValue('assembler.otherwarnings');
-  if (otherWarn) t += ` ${otherWarn}`;
+  if (otherWarn) t += ` ${resolveOutputMacros(cp, otherWarn)}`;
   for (const f of cp.listOption('assembler.flags').values) {
     if (f) t += ` -Xassembler${f}`;
   }

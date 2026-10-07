@@ -86,8 +86,6 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   makefileGenFailed: { en: 'Makefile generation failed: {0}', 'zh-cn': 'Makefile 生成失败：{0}' },
   neverBuilt: { en: 'MRVC: "{0}" has never been built — nothing to clean.', 'zh-cn': 'MRVC：" {0} " 尚未编译过——没有可清理的内容。' },
   rebuildCleanFailed: { en: 'MRVC: rebuild aborted — clean failed (exit {0}).', 'zh-cn': 'MRVC：重建中止——清理失败（退出码 {0}）。' },
-  buildFailedTask: { en: 'MRVC: build failed for "{0}" ({1})', 'zh-cn': 'MRVC：" {0} " 编译失败（{1}）' },
-  taskFailedToStart: { en: 'task failed to start', 'zh-cn': '任务未能启动' },
   nothingToClean: { en: 'nothing to clean', 'zh-cn': '无可清理内容' },
   noOutputDir: { en: 'no output directory', 'zh-cn': '无输出目录' },
   outputDirRemoved: { en: 'output directory removed', 'zh-cn': '输出目录已删除' },
@@ -97,15 +95,8 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   noMrsProjectNode: { en: 'No MRS project', 'zh-cn': '无 MRS 工程' },
   workspaceFiles: { en: 'Workspace Files', 'zh-cn': '工作区文件' },
   solution: { en: 'solution', 'zh-cn': '解决方案' },
-  excludedTooltip: { en: 'Excluded from build', 'zh-cn': '已从编译中排除' },
-  kernelLine: { en: 'kernel {0} (master) · mate {1}', 'zh-cn': '内核 {0}（主核）· 伴核 {1}' },
 
   // open project / folder
-  openMrsProject: { en: 'Open MRS Project', 'zh-cn': '打开 MRS 工程' },
-  openMrsFolder: { en: 'Open MRS Folder', 'zh-cn': '打开 MRS 文件夹' },
-  allFiles: { en: 'All Files', 'zh-cn': '所有文件' },
-  mrsProjectFiles: { en: 'MRS Project', 'zh-cn': 'MRS 工程' },
-  mrsSolutionFiles: { en: 'MRS Solution', 'zh-cn': 'MRS 解决方案' },
 
   // solution lifecycle
   needSolution: { en: 'To add a project, open a solution first!', 'zh-cn': '请先打开解决方案，然后才能添加工程！' },
@@ -135,10 +126,6 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
 
   // linked folders
   linkedAdded: { en: 'MRVC: linked folder "{0}" added ({1})', 'zh-cn': 'MRVC：链接文件夹" {0} "已添加（{1}）' },
-  linkedCprojWarn: {
-    en: 'MRVC: linked folder added to .project, but .cproject update failed: {0}',
-    'zh-cn': 'MRVC：链接文件夹已写入 .project，但 .cproject 更新失败：{0}',
-  },
   linkedSelectRemove: { en: 'Select linked folder to remove', 'zh-cn': '选择要移除的链接文件夹' },
   linkedSelectChange: { en: 'Select linked folder to change', 'zh-cn': '选择要修改的链接文件夹' },
   linkedNone: { en: 'This project has no linked folders.', 'zh-cn': '该工程没有链接文件夹。' },
@@ -163,17 +150,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   newFile: { en: 'New File', 'zh-cn': '新建文件' },
   newFolder: { en: 'New Folder', 'zh-cn': '新建文件夹' },
   enterName: { en: 'Enter a name', 'zh-cn': '请输入名称' },
-  deleteConfirm: { en: 'Are you sure you want to delete "{0}"?', 'zh-cn': '确定要删除" {0} "吗？' },
-  renameTitle: { en: 'Rename', 'zh-cn': '重命名' },
-  pasteNoClipboard: { en: 'MRVC clipboard is empty — copy something first.', 'zh-cn': 'MRVC 剪贴板为空——请先复制内容。' },
 
   // exclude
-  excludedMsg: { en: 'Excluded from build: {0}', 'zh-cn': '已从编译中排除：{0}' },
-  includedMsg: { en: 'Included in build: {0}', 'zh-cn': '已恢复编译：{0}' },
 
   // rename project
-  renameProjectPrompt: { en: 'New project display name (folder is not moved)', 'zh-cn': '新的工程显示名（不会移动文件夹）' },
-  syncProjectDone: { en: 'MRVC: project renamed to "{0}".', 'zh-cn': 'MRVC：工程已重命名为" {0} "。' },
   syncFolderSpaces: {
     en: 'The folder name contains spaces — rename the folder first (spaces break make targets).',
     'zh-cn': '文件夹名称包含空格——请先重命名文件夹（空格会破坏 make 目标）。',
@@ -181,7 +161,6 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   syncAlreadySame: { en: 'MRVC: project name already matches the folder name.', 'zh-cn': 'MRVC：工程名已与文件夹名一致。' },
 
   // flash
-  flashFailed: { en: 'MRVC: download failed for "{0}" (exit code {1}) — see the task output.', 'zh-cn': 'MRVC：" {0} " 下载失败（退出码 {1}）——请查看任务输出。' },
   firmwareNotFound: { en: 'Firmware file not found: {0}', 'zh-cn': '未找到固件文件：{0}' },
   selectFirmware: { en: 'Select firmware to download ({0})', 'zh-cn': '选择要下载的固件（{0}）' },
   openocdNotFound: { en: 'openocd.exe not found: {0}', 'zh-cn': '未找到 openocd.exe：{0}' },
@@ -216,7 +195,6 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     'zh-cn': 'MRVC：{0} 已完成——{1}/{2} 成功，{3} 失败（{4}）。请查看问题面板和"MRVC Build All"输出。',
   },
   batchFinishedAll: { en: 'MRVC: {0} finished — all {1} projects OK ({2}s).', 'zh-cn': 'MRVC：{0} 已完成——全部 {1} 个工程成功（{2} 秒）。' },
-  buildFailedSingle: { en: 'MRVC: build failed for "{0}" ({1})', 'zh-cn': 'MRVC：" {0} "编译失败（{1}）' },
   noProjectsLoaded: {
     en: 'No MRS project loaded. Use "MRVC: Open MRS Project" first.',
     'zh-cn': '尚未加载任何 MRS 工程。请先使用"MRVC: Open MRS Project"。',
@@ -228,6 +206,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   buildAlreadyRunning: {
     en: 'MRVC: "{0}" is already building — wait for it to finish or terminate the running task.',
     'zh-cn': 'MRVC：" {0} " 正在编译中——请等待完成，或结束正在运行的任务。',
+  },
+  buildBusySkip: {
+    en: 'skipped — the project is building right now',
+    'zh-cn': '已跳过——该工程正在编译中',
   },
   terminateBuild: { en: 'Terminate Build', 'zh-cn': '结束编译' },
   downloadThrew: {
@@ -366,6 +348,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   removeOrDeleteFileDetail: {
     en: 'Remove hides it from the project (the file stays on disk, restorable). Delete removes the file from disk.',
     'zh-cn': '移除会将其从工程中隐藏（文件保留在磁盘上，可恢复）；删除会从磁盘上移除该文件。',
+  },
+  removeOrDeleteOutsideHint: {
+    en: 'Note: this item lives OUTSIDE the project folder (linked-folder target) — Delete removes the real files on disk.',
+    'zh-cn': '注意：该项位于工程文件夹之外（链接文件夹目标）——删除将真实移除磁盘上的文件。',
   },
   overwriteConfirm: { en: '"{0}" already exists. Overwrite?', 'zh-cn': '" {0} "已存在。是否覆盖？' },
 

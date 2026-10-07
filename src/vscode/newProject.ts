@@ -96,7 +96,11 @@ async function runWizard(store: ProjectStore, artifactType: 'exe' | 'lib'): Prom
       if (!template) return;
       const name = await vscode.window.showInputBox({
         prompt: t('newProjectNamePrompt', template.chip),
-        validateInput: (v) => (v && !/[\\/:*?"<>|]/.test(v.trim()) ? undefined : t('invalidProjectName')),
+        // same rule as core/createProjectFromTemplate (incl. whitespace —
+        // renameProject rejects it): reject at the FIRST step instead of
+        // after the user has walked the whole wizard
+        validateInput: (v) =>
+          v && v.trim() && !/[\\/:*?"<>|\s]/.test(v.trim()) && !/[$`'"]/.test(v.trim()) ? undefined : t('invalidProjectName'),
       });
       if (!name) return;
       const parentDir = await pickLocation(store.getLastCreateDir());

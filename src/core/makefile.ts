@@ -146,7 +146,10 @@ export function generateMakefiles(
   const analysisAll = opts.analysis ? analysisFlags() : [];
   const dumpFlag = analysisAll.find((f) => f.startsWith('-fdump')) ?? '';
   const tailFlags = analysisAll.filter((f) => !f.startsWith('-fdump') || style === '1x');
-  let common = commonOptions(cp, tc.name, style);
+  // commonOptions carries the user's target/optimization/warnings/debugging
+  // "other" free text — same `$`-escaping contract as the per-tool option
+  // strings below (a bare `$` would be eaten by make as a variable)
+  let common = escMakeDollars(commonOptions(cp, tc.name, style));
   if (dumpFlag && style === '2x') {
     common = common.replace(' -fmax-errors=20', ` -fmax-errors=20 ${dumpFlag}`);
   }
@@ -214,9 +217,15 @@ export function generateMakefiles(
     const files = map.get(dir)!;
     sourceCount += files.length;
 
-    const firstRealDir = path.posix.dirname(files[0].fullpath);
     const projPosix = toPosix(cp.projectRoot);
-    const isExternal = !(firstRealDir + '/').startsWith(projPosix + '/');
+    // a logic dir can MIX real and linked-out files (a hand-written .project
+    // may link a target under the same name as a real folder — the CDT UI
+    // refuses, the XML doesn't): judging by the first file only put the dir
+    // on the pattern rule `dir/%.o: ../dir/%.ext`, which then targeted a
+    // nonexistent ../dir for the external members (or vice versa). ANY
+    // external member forces the per-file rules, which are correct for
+    // every file regardless of where it lives.
+    const isExternal = files.some((f) => !(path.posix.dirname(f.fullpath) + '/').startsWith(projPosix + '/'));
 
     let body =
       HEADER(headerTool) +
@@ -460,8 +469,10 @@ export function generateMakefiles(
       // MRS 1.x generation: `all` hangs directly off the elf
       t += `\n# All Target\nall: ${elfTarget}${hasSecondaries ? ' secondary-outputs' : ''}\n`;
     }
-    if (pre) t += `\t-@echo Executing pre-build steps\n\t-${pre}\n`;
-    if (post) t += `\t-@echo Executing post-build steps\n\t-${post}\n`;
+    // echo the announce the user typed on the Build Steps page (MRS2 emits
+    // the same property); the CDT default applies when it's unset
+    if (pre) t += `\t-@echo ${cp.prebuildAnnounce || 'Executing pre-build steps'}\n\t-${pre}\n`;
+    if (post) t += `\t-@echo ${cp.postbuildAnnounce || 'Executing post-build steps'}\n\t-${post}\n`;
     t += `\n# Tool invocations\n`;
 
     if (isExe) {

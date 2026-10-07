@@ -39,7 +39,15 @@ function collectFiles(buildDir: string, test: (name: string) => boolean): string
     for (const e of entries) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) walk(p);
-      else if (test(e.name)) out.push(fs.readFileSync(p, 'utf-8'));
+      else if (test(e.name)) {
+        // the file can vanish between readdir and read (a Clean running in
+        // parallel) — skip it instead of surfacing a raw ENOENT
+        try {
+          out.push(fs.readFileSync(p, 'utf-8'));
+        } catch {
+          /* vanished mid-walk */
+        }
+      }
     }
   };
   walk(buildDir);

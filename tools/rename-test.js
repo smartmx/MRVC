@@ -125,6 +125,42 @@ renameProject(proj, 'NewName');
   check('.project display name unchanged by builds', readProjectFile(spaced).name === 'I2C');
 }
 
+// --- PROGRAM_NAME keeps the artifact's REAL extension (an .axf project's
+// launch used to stay on OldName.elf forever — the rewrite anchored on \.elf) ---
+{
+  const axf = path.join(scratch, 'axf');
+  buildFixture(axf);
+  const launchPath = path.join(axf, 'OldName.launch');
+  fs.writeFileSync(launchPath, fs.readFileSync(launchPath, 'utf-8').replace('OldName.elf', 'OldName.axf'));
+  renameProject(axf, 'NewName');
+  const launch = fs.readFileSync(path.join(axf, 'NewName.launch'), 'utf-8');
+  check('axf artifact: PROGRAM_NAME follows the rename with .axf', launch.includes('NewName.axf') && !launch.includes('OldName'));
+  fs.rmSync(axf, { recursive: true, force: true });
+}
+
+// --- a failing .launch must abort BEFORE anything is written: the retry
+// needs the old name on disk or MAPPED_RESOURCE_PATHS can never be fixed ---
+{
+  const atomic = path.join(scratch, 'atomic');
+  buildFixture(atomic);
+  // a DIRECTORY named *.launch makes the launch read throw (EISDIR) —
+  // parseXml is too lenient to fail on garbage text
+  fs.rmSync(path.join(atomic, 'OldName.launch'), { force: true });
+  fs.mkdirSync(path.join(atomic, 'OldName.launch'));
+  let threw = '';
+  try {
+    renameProject(atomic, 'NewName');
+  } catch (e) {
+    threw = String(e.message || e);
+  }
+  check('broken launch: rename throws', threw.length > 0);
+  const pf = readProjectFile(atomic);
+  check('broken launch: .project still carries the OLD name', pf.name === 'OldName');
+  check('broken launch: .wvproj untouched', fs.existsSync(path.join(atomic, 'OldName.wvproj')) && !fs.existsSync(path.join(atomic, 'NewName.wvproj')));
+  check('broken launch: .launch file itself untouched', fs.existsSync(path.join(atomic, 'OldName.launch')));
+  fs.rmSync(atomic, { recursive: true, force: true });
+}
+
 console.log(failures ? `\n${failures} FAILURES` : '\nall rename tests passed');
 process.exit(failures ? 1 : 0);
 

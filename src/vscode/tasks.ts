@@ -256,6 +256,11 @@ export class BuildManager {
   /** Delete output entries (keepImages: spare 工程名.hex/.bin); never throws. */
   private async deleteOutputOne(p: MrsProject, keepImages: boolean): Promise<BuildAllResult> {
     const ok = (detail: string): BuildAllResult => ({ project: p.projectName, ok: true, detail });
+    // shared guard with run()/buildOne: deleting obj/ under a running make
+    // would pull .o/.d files out from under the compiler/linker
+    if (this.building.has(path.resolve(p.root).toLowerCase())) {
+      return ok(t('buildBusySkip'));
+    }
     try {
       p.reload();
       if (!fs.existsSync(p.buildDir)) {
@@ -274,19 +279,36 @@ export class BuildManager {
 
   /** Clean one project; never throws. */
   private cleanOne(p: MrsProject, install: NonNullable<ReturnType<typeof getInstall>>): Promise<BuildAllResult> {
+    // shared guard with run()/buildOne: `make clean` against a running
+    // build of the same project would delete .o/.d files mid-compile
+    if (this.building.has(path.resolve(p.root).toLowerCase())) {
+      return Promise.resolve({ project: p.projectName, ok: true, detail: t('buildBusySkip') });
+    }
     if (!fs.existsSync(path.join(p.buildDir, 'makefile'))) {
       return Promise.resolve({ project: p.projectName, ok: true, detail: t('nothingToClean') });
     }
     return new Promise<BuildAllResult>((resolve) => {
       let settled = false;
       let exec: vscode.TaskExecution | undefined;
-      const sub = vscode.tasks.onDidEndTaskProcess((e) => {
-        if (settled || e.execution.task.definition.type !== 'mrvc-clean-all') return;
-        if (exec && e.execution !== exec) return;
+      // end events arriving before executeTask() hands us the execution
+      // cannot be attributed yet — buffer them and match on resolution
+      // (otherwise ANY same-type task ending in that window settles this
+      // waiter with a foreign exit code)
+      const early: Array<[vscode.TaskExecution, number | undefined]> = [];
+      const finish = (code: number | undefined): void => {
         settled = true;
         sub.dispose();
-        const code = e.exitCode ?? -1;
-        resolve({ project: p.projectName, ok: code === 0, detail: code === 0 ? '' : `make exit ${code}` });
+        const c = code ?? -1;
+        resolve({ project: p.projectName, ok: c === 0, detail: c === 0 ? '' : `make exit ${c}` });
+      };
+      const sub = vscode.tasks.onDidEndTaskProcess((e) => {
+        if (settled || e.execution.task.definition.type !== 'mrvc-clean-all') return;
+        if (!exec) {
+          early.push([e.execution, e.exitCode]);
+          return;
+        }
+        if (e.execution !== exec) return;
+        finish(e.exitCode);
       });
       const task = new vscode.Task(
         { type: 'mrvc-clean-all' },
@@ -303,6 +325,8 @@ export class BuildManager {
       vscode.tasks.executeTask(task).then(
         (e) => {
           exec = e;
+          const hit = early.find(([x]) => x === e);
+          if (hit && !settled) finish(hit[1]);
         },
         () => {
           if (settled) return;
@@ -338,14 +362,24 @@ export class BuildManager {
     return new Promise<BuildAllResult>((resolve) => {
       let settled = false;
       let exec: vscode.TaskExecution | undefined;
-      const sub = vscode.tasks.onDidEndTaskProcess((e) => {
-        if (settled || e.execution.task.definition.type !== 'mrvc-build-all') return;
-        if (exec && e.execution !== exec) return;
+      // pre-resolution end events are buffered and matched on resolution
+      // (same cross-fire hazard as cleanOne above)
+      const early: Array<[vscode.TaskExecution, number | undefined]> = [];
+      const finish = (code: number | undefined): void => {
         settled = true;
         sub.dispose();
-        const code = e.exitCode ?? -1;
         this.building.delete(key);
-        resolve({ project: p.projectName, ok: code === 0, detail: code === 0 ? '' : `make exit ${code}` });
+        const c = code ?? -1;
+        resolve({ project: p.projectName, ok: c === 0, detail: c === 0 ? '' : `make exit ${c}` });
+      };
+      const sub = vscode.tasks.onDidEndTaskProcess((e) => {
+        if (settled || e.execution.task.definition.type !== 'mrvc-build-all') return;
+        if (!exec) {
+          early.push([e.execution, e.exitCode]);
+          return;
+        }
+        if (e.execution !== exec) return;
+        finish(e.exitCode);
       });
       const wrapper = this.writeBuildWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe'), ['-j' + jobs, 'all'], buildRecordFile(p.root));
       const task = new vscode.Task(
@@ -362,6 +396,8 @@ export class BuildManager {
         (e) => {
           exec = e;
           entry.exec = e;
+          const hit = early.find(([x]) => x === e);
+          if (hit && !settled) finish(hit[1]);
         },
         () => {
           if (settled) return;
@@ -469,7 +505,7 @@ export class BuildManager {
         []
       );
       cleanTask.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
-      const cleanCode = await this.executeAndWait(cleanTask, 'mrvc-clean');
+      const cleanCode = await this.executeAndWait(cleanTask, 'mrvc-clean', this.building.get(buildKey));
       if (cleanCode !== 0 && cleanCode !== undefined) {
         vscode.window.showErrorMessage(t('rebuildCleanFailed', cleanCode));
         return;
@@ -513,13 +549,20 @@ export class BuildManager {
 
   /** Execute a task and resolve when ITS process ends (matched by execution
    * identity, so concurrent tasks of the same type cannot cross-fire). */
-  private executeAndWait(task: vscode.Task, defType: string): Promise<number | undefined> {
+  private executeAndWait(task: vscode.Task, defType: string, entry?: { exec?: vscode.TaskExecution }): Promise<number | undefined> {
     return new Promise<number | undefined>((resolve) => {
       let settled = false;
       let exec: vscode.TaskExecution | undefined;
+      // pre-resolution end events are buffered and matched on resolution
+      // (same cross-fire hazard as the other task waiters)
+      const early: Array<[vscode.TaskExecution, number | undefined]> = [];
       const sub = vscode.tasks.onDidEndTaskProcess((e) => {
         if (settled || e.execution.task.definition.type !== defType) return;
-        if (exec && e.execution !== exec) return;
+        if (!exec) {
+          early.push([e.execution, e.exitCode]);
+          return;
+        }
+        if (e.execution !== exec) return;
         settled = true;
         sub.dispose();
         resolve(e.exitCode);
@@ -527,6 +570,16 @@ export class BuildManager {
       vscode.tasks.executeTask(task).then(
         (e) => {
           exec = e;
+          // write the execution into the caller's guard entry as soon as it
+          // exists — during a rebuild's clean phase the entry would
+          // otherwise hold no exec and "Terminate Build" silently no-ops
+          if (entry) entry.exec = e;
+          const hit = early.find(([x]) => x === e);
+          if (hit && !settled) {
+            settled = true;
+            sub.dispose();
+            resolve(hit[1]);
+          }
         },
         () => {
           if (settled) return;
@@ -551,9 +604,16 @@ export class BuildManager {
     return new Promise<number | undefined>((resolve) => {
       let settled = false;
       let exec: vscode.TaskExecution | undefined;
+      // pre-resolution end events are buffered and matched on resolution
+      // (same cross-fire hazard as the other task waiters)
+      const early: Array<[vscode.TaskExecution, number | undefined]> = [];
       const sub = vscode.tasks.onDidEndTaskProcess((e) => {
         if (settled || e.execution.task.definition.type !== 'mrvc-build') return;
-        if (exec && e.execution !== exec) return;
+        if (!exec) {
+          early.push([e.execution, e.exitCode]);
+          return;
+        }
+        if (e.execution !== exec) return;
         settled = true;
         sub.dispose();
         this.building.delete(key);
@@ -563,6 +623,13 @@ export class BuildManager {
         (e) => {
           exec = e;
           if (entry) entry.exec = e;
+          const hit = early.find(([x]) => x === e);
+          if (hit && !settled) {
+            settled = true;
+            sub.dispose();
+            this.building.delete(key);
+            resolve(hit[1]);
+          }
         },
         () => {
           if (settled) return;

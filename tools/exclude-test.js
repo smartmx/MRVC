@@ -193,6 +193,70 @@ check('new root entry written with excluding as first attribute', /<entry exclud
   check('marker restored: include rebuilds entry + clears token', isLogicExcluded(cp, 'StdPeriphDriver/keep.c') === false && (scanSources(cp).get('StdPeriphDriver') ?? []).some((f) => f.logicName === 'StdPeriphDriver/keep.c'));
 }
 
+// ---------- 7.5 write path with case-MISMATCHED tokens (win32 fs) ----------
+// the entry token spells the file differently from the disk/logic path
+// (USBPD-style). Literal matching left the old token in place on include
+// (restore silently no-oped) and let exclude append a duplicate variant.
+{
+  const expectFold = process.platform === 'win32';
+  const base = path.join(DEVELOP_DIR, '.scratch', 'excl-case');
+  const proj = path.join(base, 'proj');
+  const libs = path.join(base, 'libs', 'StdPeriphDriver');
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.mkdirSync(proj, { recursive: true });
+  fs.mkdirSync(libs, { recursive: true });
+  fs.writeFileSync(path.join(libs, 'Keep.c'), 'int keep(void){return 1;}\n');
+  fs.writeFileSync(
+    path.join(proj, '.project'),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<projectDescription>\n<name>case</name>\n<linkedResources>\n<link>\n<name>StdPeriphDriver</name>\n<type>2</type>\n<location>${libs}</location>\n</link>\n</linkedResources>\n</projectDescription>`
+  );
+  // named entry spelled LOWERCASE with a lowercase token; disk file is Keep.c
+  fs.writeFileSync(
+    path.join(proj, '.cproject'),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry excluding="keep.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="stdperiphdriver"/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>`
+  );
+  const cp = Cproject.load(proj);
+  check('7.5 mismatched token excluded (query folds)', isLogicExcluded(cp, 'StdPeriphDriver/Keep.c') === expectFold);
+
+  cp.includeResource('StdPeriphDriver/Keep.c');
+  const entry = cp.sourceEntries.find((e) => e.name === 'stdperiphdriver');
+  check('7.5 include removes mismatched-case token', entry.excluding.length === 0 || !expectFold);
+  cp.save();
+  const cpReload = Cproject.load(proj);
+  check('7.5 restore persists (file scannable again)', expectFold === false || (scanSources(cpReload).get('StdPeriphDriver') ?? []).some((f) => f.logicName === 'StdPeriphDriver/Keep.c'));
+
+  cpReload.excludeResource('StdPeriphDriver/Keep.c');
+  cpReload.excludeResource('StdPeriphDriver/keep.c');
+  const entry2 = cpReload.sourceEntries.find((e) => e.name === 'stdperiphdriver');
+  check('7.5 exclude does not duplicate case variants', entry2.excluding.length === 1 || !expectFold);
+  check('7.5 first spelling wins', entry2.excluding[0] === 'Keep.c' || !expectFold);
+}
+
+// ---------- 7.6 real folder + case-MISMATCHED named entry: no double scan.
+// The root walk spells files with the disk case, the entry walk with the
+// entry's case — exact-match dedupe kept BOTH, doubling every .o (duplicate
+// symbols at link time). Needs no root marker token (hand-written files).
+{
+  const base = path.join(DEVELOP_DIR, '.scratch', 'excl-dupcase');
+  const proj = path.join(base, 'proj');
+  const appDir = path.join(proj, 'APP');
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.mkdirSync(path.join(appDir, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(appDir, 'main.c'), 'int a;\n');
+  fs.writeFileSync(path.join(appDir, 'sub', 'x.c'), 'int b;\n');
+  fs.writeFileSync(path.join(proj, '.project'), '<?xml version="1.0" encoding="UTF-8"?>\n<projectDescription>\n<name>dupcase</name>\n</projectDescription>');
+  fs.writeFileSync(
+    path.join(proj, '.cproject'),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name="app"/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>`
+  );
+  const cpDup = Cproject.load(proj);
+  const dupAll = [...scanSources(cpDup).values()].flat().map((f) => f.logicName);
+  check('dup-case: no case-variant duplicates', dupAll.length === new Set(dupAll.map((n) => n.toLowerCase())).size);
+  check('dup-case: each file present exactly once', dupAll.filter((n) => n.toLowerCase() === 'app/main.c').length === 1 && dupAll.filter((n) => n.toLowerCase() === 'app/sub/x.c').length === 1);
+  check('dup-case: disk spelling wins (root walk first)', dupAll.every((n) => !n.startsWith('app/')));
+  fs.rmSync(base, { recursive: true, force: true });
+}
+
 // ---------- 8. bare-name root tokens resolve into linked folders (CH585) ----------
 {
   const host = CH585_EXAM && findProjectWith(CH585_EXAM, 'CH58x_usbhostClass.c');

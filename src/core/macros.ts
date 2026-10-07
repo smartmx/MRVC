@@ -12,6 +12,26 @@ export function toNative(p: string): string {
   return path.sep === '\\' ? p.split('/').join('\\') : p;
 }
 
+/** Windows path/name comparison folds case (NTFS is case-insensitive):
+ * .cproject option values sometimes spell a link name with different case
+ * than the .project link — matching must fold, or the -I/-T value resolves
+ * to a nonexistent project-root literal path and gets silently dropped.
+ * Mirrors scan.ts's fold and cproject.ts's foldName. */
+function foldName(s: string): string {
+  return process.platform === 'win32' ? s.toLowerCase() : s;
+}
+
+/** folded first-segment lookup: exact hit wins, else the first key that
+ * folds equal (two links folding equal cannot coexist on win32) */
+function linkedFor(linkedFolders: Map<string, string>, name: string): string | undefined {
+  const direct = linkedFolders.get(name);
+  if (direct) return direct;
+  for (const [k, v] of linkedFolders) {
+    if (foldName(k) === foldName(name)) return v;
+  }
+  return undefined;
+}
+
 /**
  * Resolve a linked-resource locationURI such as
  *   PARENT-1-PROJECT_LOC/SRC/Ld
@@ -116,7 +136,7 @@ export function convertLogicToFullPath(
     return path.normalize(norm);
   }
   const segs = norm.split('/');
-  const linked = linkedFolders.get(segs[0]);
+  const linked = linkedFor(linkedFolders, segs[0]);
   if (linked) {
     return path.normalize(path.join(linked, segs.slice(1).join('/')));
   }
@@ -130,7 +150,7 @@ function resolveSegs(
   linkedFolders: Map<string, string>
 ): string {
   const segs = toPosix(relPosix).split('/').filter((s) => s.length && s !== '.');
-  const linked = linkedFolders.get(segs[0]);
+  const linked = linkedFor(linkedFolders, segs[0]);
   if (linked) {
     return path.normalize(path.join(linked, segs.slice(1).join('/')));
   }

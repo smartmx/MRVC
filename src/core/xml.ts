@@ -283,6 +283,12 @@ export function serializeXml(el: XElement, depth = 0): string {
     return `<${el.name}${attrs}>${encodeText(el.text)}</${el.name}>`;
   }
   let out = `<${el.name}${attrs}>`;
+  // mixed content (text + element children, e.g. a hand-written comment
+  // inside <name>My <!--note--> Proj</name>): the parse keeps the text on
+  // el.text — dropping it here would silently erase it on rewrite
+  if (el.text !== '') {
+    out += encodeText(el.text);
+  }
   for (let idx = 0; idx < el.children.length; idx++) {
     const ws = el.ws[idx];
     if (ws !== undefined) {

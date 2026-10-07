@@ -282,5 +282,33 @@ const memberDir = (name) => {
   fs.rmSync(file, { force: true });
 }
 
+// ---------- byte-fidelity: LF files stay LF; hand-indented BuildOrder is
+// detected on the write side (the parser trims) and rewritten in place ----------
+{
+  const dir = path.join(here, '..', '.scratch', 'solution-eol');
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+
+  const lfFile = path.join(dir, 'lf.wvsln');
+  fs.writeFileSync(lfFile, 'Toolchain=GCC12\nProj1\nProj2\n', 'utf-8');
+  recordBuildOrder(lfFile, ['Proj2', 'Proj1']);
+  const afterLf = fs.readFileSync(lfFile, 'utf-8');
+  check('BuildOrder: LF file stays LF (no CRLF normalization)', !afterLf.includes('\r'));
+  check('BuildOrder: LF file rewritten in place after first line', afterLf.startsWith('Toolchain=GCC12\nBuildOrder=Proj2,Proj1\n'));
+
+  const indFile = path.join(dir, 'indented.wvsln');
+  fs.writeFileSync(indFile, 'Toolchain=GCC12\r\n  BuildOrder=Proj2,Proj1\r\nProj1\r\nProj2\r\n', 'utf-8');
+  recordBuildOrder(indFile, ['Proj1', 'Proj2']);
+  const rawInd = fs.readFileSync(indFile, 'utf-8');
+  check('BuildOrder: indented line detected (no duplicate inserted)', (rawInd.match(/BuildOrder=/g) || []).length === 1);
+  check('BuildOrder: indented line rewritten in place, indent kept', rawInd.includes('\r\n  BuildOrder=Proj1,Proj2\r\n'));
+  check('BuildOrder: indented order now effective on parse', parseSolution(indFile).buildOrder?.join(',') === 'Proj1,Proj2');
+  // repeat: still exactly one line (idempotent on the indented form too)
+  recordBuildOrder(indFile, ['Proj2', 'Proj1']);
+  check('BuildOrder: indented rewrite idempotent', (fs.readFileSync(indFile, 'utf-8').match(/BuildOrder=/g) || []).length === 1);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 console.log(failures ? `\n${failures} FAILURES` : '\nall solution tests passed');
 process.exit(failures ? 1 : 0);

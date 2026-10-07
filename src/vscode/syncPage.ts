@@ -37,7 +37,11 @@ function syncableRows(base: MrsProject | undefined): SyncFieldRow[] {
     let value: string;
     if (f.type === 'enum') {
       const raw = base?.cproject.optionValue(f.suffix) ?? '';
-      value = f.enumBase && raw.startsWith(f.enumBase) ? raw.slice(f.enumBase.length) : raw || f.options?.[0]?.[0] || 'default';
+      // unset enums seed 'default' — same as the properties page's readEnum
+      // (seeding the first option made the Sync page display -Os etc. for
+      // projects that never set the option, and Apply then wrote that
+      // explicit value into all of them)
+      value = f.enumBase && raw.startsWith(f.enumBase) ? raw.slice(f.enumBase.length) : raw || 'default';
     } else {
       value = base?.cproject.optionBool(f.suffix) ? '1' : '0';
     }
@@ -208,12 +212,19 @@ export class SyncPage {
       .map(([key, e]) => {
         const rowsHtml = e.rows
           .map((r) => {
-            const control =
-              r.field.type === 'enum'
-                ? `<select class="valbox" data-val="${esc(r.field.key)}">${(r.field.options ?? [])
-                    .map(([v, l]) => `<option value="${esc(v)}"${v === r.value ? ' selected' : ''}>${esc(l)}</option>`)
-                    .join('')}</select>`
-                : `<input type="checkbox" class="valbox" data-val="${esc(r.field.key)}"${r.value === '1' ? ' checked' : ''}>`;
+            let control: string;
+            if (r.field.type === 'enum') {
+              // expose the unset state as an explicit choice: selecting it
+              // makes Apply leave the option unset (write path maps
+              // 'default' to no value) instead of writing the first option
+              const opts: Array<[string, string]> = [...(r.field.options ?? [])];
+              if (r.value === 'default' && !opts.some(([v]) => v === 'default')) opts.unshift(['default', '(default)']);
+              control = `<select class="valbox" data-val="${esc(r.field.key)}">${opts
+                .map(([v, l]) => `<option value="${esc(v)}"${v === r.value ? ' selected' : ''}>${esc(l)}</option>`)
+                .join('')}</select>`;
+            } else {
+              control = `<input type="checkbox" class="valbox" data-val="${esc(r.field.key)}"${r.value === '1' ? ' checked' : ''}>`;
+            }
             return `<div class="syncrow${r.cppOnly ? ' cpponly' : ''}"><input type="checkbox" class="syncbox" data-sync="${esc(r.field.key)}"><span class="slabel">${esc(r.field.label)}</span>${control}</div>`;
           })
           .join('');

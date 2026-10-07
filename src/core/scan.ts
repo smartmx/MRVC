@@ -59,7 +59,11 @@ export function scanSources(cp: Cproject): LogicDirMap {
     const key = dir === '.' ? '' : dir;
     if (!result.has(key)) result.set(key, []);
     const arr = result.get(key)!;
-    if (arr.some((f) => f.logicName === l)) return; // dedupe (named entry under root)
+    // dedupe folded (win32): a hand-written .cproject may spell a real
+    // folder's named entry with different case than the disk — the root
+    // walk and the entry walk then produce both spellings of the same
+    // file, which compiled twice and broke the link with duplicate symbols
+    if (arr.some((f) => fold(f.logicName) === fold(l))) return;
     arr.push({
       logicName: l,
       fullpath: toPosix(fullpath),
@@ -87,7 +91,23 @@ export function scanSources(cp: Cproject): LogicDirMap {
     if (entry.name === '' || cp.linkedFolders.has(entry.name)) continue;
     const dir = path.join(cp.projectRoot, entry.name);
     if (!fs.existsSync(dir)) continue; // linked/implicit handled in step 2
-    walk(dir, dir, entry.name, entry.excluding, configNames, exts, addFile, []);
+    // spell the logic base with the DISK's casing: the root walk (step 1)
+    // already added this subtree under the on-disk spelling, so walking
+    // under the entry's own spelling filed the same sources AGAIN under a
+    // case-variant path (a hand-written 'app' entry over a disk 'APP/'
+    // folder) — different strings slip past any dedupe and every file
+    // compiled twice (duplicate symbols at link time)
+    const segs = entry.name.split('/');
+    let base = entry.name;
+    try {
+      const hit = fs
+        .readdirSync(cp.projectRoot, { withFileTypes: true })
+        .find((d) => d.isDirectory() && fold(d.name) === fold(segs[0]));
+      if (hit) base = [hit.name, ...segs.slice(1)].join('/');
+    } catch {
+      /* unreadable root — keep the entry's own spelling */
+    }
+    walk(dir, dir, base, entry.excluding, configNames, exts, addFile, []);
   }
 
   // 2. linked folders, always scanned (MRS scans basic.linkedFolders)
@@ -101,7 +121,20 @@ export function scanSources(cp: Cproject): LogicDirMap {
     // entry still re-includes the folder (folded compare: some projects
     // spell the marker with mismatched case); Exclude From Build removes
     // the entry, and the leftover token then really excludes the whole link
-    const tokens = [...rootTokens.filter((t) => !(fold(t) === fold(name) && named.has(fold(name)))), ...(dirTokens.get(name) ?? [])];
+    // dir tokens: folded lookup too — the .cproject entry name is sometimes
+    // spelled with a different case than the .project link name, and a raw
+    // Map.get silently dropped every token (exclude reported success, the
+    // build compiled the file anyway)
+    let linkedTokens: string[] = [];
+    const direct = dirTokens.get(name);
+    if (direct) {
+      linkedTokens = [...direct];
+    } else {
+      for (const [k, v] of dirTokens) {
+        if (fold(k) === fold(name)) linkedTokens.push(...v);
+      }
+    }
+    const tokens = [...rootTokens.filter((t) => !(fold(t) === fold(name) && named.has(fold(name)))), ...linkedTokens];
     walk(target, target, name, tokens, configNames, exts, addFile, []);
   }
 

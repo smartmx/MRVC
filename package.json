@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "mrvc",
   "private": true,
   "license": "MIT",
@@ -821,11 +821,6 @@
           "command": "mrs2.file.copyName",
           "when": "view == mrs2.projectExplorer && viewItem == products",
           "group": "products@7"
-        },
-        {
-          "command": "mrs2.file.rename",
-          "when": "view == mrs2.projectExplorer && viewItem == products",
-          "group": "products@8"
         },
         {
           "command": "mrs2.file.delete",

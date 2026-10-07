@@ -198,17 +198,20 @@ export function selectToolchain(
   storedPrefix?: string
 ): ToolchainInfo | null {
   if (!install || !install.toolchains.length) return null;
-  const byName = new Map(install.toolchains.map((t) => [t.name, t]));
+  // names fold: the settings value may spell 'gcc12' for an installed
+  // 'GCC12', and the custom/installed merge dedup is already
+  // case-insensitive — matching must agree (the doc comment says so too)
+  const byName = new Map(install.toolchains.map((t) => [t.name.toLowerCase(), t]));
   const firstInstalled = () => install.toolchains.find((t) => fs.existsSync(path.join(t.dir, 'bin'))) ?? install.toolchains[0];
 
-  if (request && request !== 'auto' && byName.has(request)) {
-    return byName.get(request)!;
+  if (request && request !== 'auto' && byName.has(request.toLowerCase())) {
+    return byName.get(request.toLowerCase())!;
   }
-  if (rvGccVersion === '12') return byName.get('GCC12') ?? firstInstalled();
-  if (rvGccVersion === '15') return byName.get('GCC15') ?? firstInstalled();
-  if (rvGccVersion === '8') return byName.get('GCC8') ?? firstInstalled();
-  if (storedPrefix === 'riscv-none-embed-') return byName.get('GCC8') ?? firstInstalled();
-  if (storedPrefix === 'riscv-wch-elf-') return byName.get('GCC12') ?? firstInstalled();
-  if (storedPrefix === 'riscv32-wch-elf-') return byName.get('GCC15') ?? firstInstalled();
+  if (rvGccVersion === '12') return byName.get('gcc12') ?? firstInstalled();
+  if (rvGccVersion === '15') return byName.get('gcc15') ?? firstInstalled();
+  if (rvGccVersion === '8') return byName.get('gcc8') ?? firstInstalled();
+  if (storedPrefix === 'riscv-none-embed-') return byName.get('gcc8') ?? firstInstalled();
+  if (storedPrefix === 'riscv-wch-elf-') return byName.get('gcc12') ?? firstInstalled();
+  if (storedPrefix === 'riscv32-wch-elf-') return byName.get('gcc15') ?? firstInstalled();
   return firstInstalled();
 }

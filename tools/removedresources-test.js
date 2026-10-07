@@ -26,7 +26,14 @@ const WS = path.join(__dirname, '..', '.scratch', 'removed-ws');
 const PROJ = path.join(WS, 'LED');
 fs.rmSync(WS, { recursive: true, force: true });
 fs.mkdirSync(WS, { recursive: true });
-fs.cpSync('F:/CH585/EVT/V1_2/EXAM/LED', PROJ, { recursive: true });
+const LED_SRC = ['F:/CH585/EVT/V1_2/EXAM/LED', 'E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED', 'E:/WORK/CH585/V1_7/EXAM/LED'].find(
+  (r) => fs.existsSync(r)
+);
+if (!LED_SRC) {
+  console.error('removedresources-test: no CH585 EVT LED project found (TEST/ or F:/ or E:/WORK/)');
+  process.exit(2);
+}
+fs.cpSync(LED_SRC, PROJ, { recursive: true });
 
 const pf = require('../out/core/projectFile.js');
 const { Cproject } = require('../out/core/cproject.js');
@@ -116,9 +123,12 @@ check('append: idempotent', pf.listRemovedResources(PROJ).length === 3);
     console.log(failures ? `\n${failures} FAILURES` : '\nall removedresources tests passed');
     process.exit(failures ? 1 : 0);
   }).catch((e) => {
-    console.log('tree section skipped:', e.message);
+    // the tree section IS what this suite guards — an exception here is a
+    // regression, not a skippable environment problem: count it, exit red
+    failures++;
+    console.log(`FAIL  tree section threw: ${e.message}`);
     fs.rmSync(WS, { recursive: true, force: true });
-    console.log(failures ? `\n${failures} FAILURES` : '\nall removedresources tests passed (tree section skipped)');
-    process.exit(failures ? 1 : 0);
+    console.log(`\n${failures} FAILURES`);
+    process.exit(1);
   });
 }

@@ -96,11 +96,52 @@ try {
   threw = String(e.message || e);
 }
 check("create: single quote refused (O'Brien)", threw.includes('Invalid project name'));
+threw = '';
+try {
+  createProjectFromTemplate(rct, { projectName: 'My App', parentDir: WS, artifactType: 'exe' });
+} catch (e) {
+  threw = String(e.message || e);
+}
+check('create: whitespace in name refused (renameProject would)', threw.includes('Invalid project name'));
+check('create: whitespace name wrote nothing', !fs.existsSync(path.join(WS, 'My App')));
+threw = '';
+// missing template zip: refused BEFORE any directory is created (a stale
+// empty folder used to make every retry hit "already exists")
+try {
+  createProjectFromTemplate({ series: 'CH32V307', os: 'NoneOS', chip: 'GHOST', zipPath: path.join(WS, 'ghost.zip') }, { projectName: 'Ghost', parentDir: WS, artifactType: 'exe' });
+} catch (e) {
+  threw = String(e.message || e);
+}
+check('create: missing zip refused', threw.includes('Template zip not found'));
+check('create: missing zip left no folder', !fs.existsSync(path.join(WS, 'Ghost')));
+threw = '';
+// corrupt zip (real file, not an archive): extraction fails and the
+// half-created folder is cleaned up so a retry starts fresh
+fs.writeFileSync(path.join(WS, 'broken.zip'), 'this is not a zip archive', 'utf-8');
+try {
+  createProjectFromTemplate({ series: 'CH32V307', os: 'NoneOS', chip: 'BROKEN', zipPath: path.join(WS, 'broken.zip') }, { projectName: 'Broken', parentDir: WS, artifactType: 'exe' });
+} catch (e) {
+  threw = String(e.message || e);
+}
+check('create: broken zip reports extraction failure', threw.includes('Template extraction failed'));
+check('create: broken zip cleaned its folder', !fs.existsSync(path.join(WS, 'Broken')));
 
-// 5. static-lib flag runs the same pipeline (wizard difference is template family)
+// 5. static-lib creation flips the build identity (MRS2 createStaticLib):
+// .cproject carries buildArtefactType=staticLibrary (+ buildProperties entry)
+// and CDT's static-lib extension "a" — makefile.ts then emits the ar recipe
+// and skips hex/bin/lst/size
 const lib = createProjectFromTemplate(rct, { projectName: 'MyLib', parentDir: WS, artifactType: 'lib' });
 check('create: lib artifact project created', fs.existsSync(path.join(WS, 'MyLib', 'MyLib.wvproj')));
 void lib;
+{
+  const lcp = Cproject.load(path.join(WS, 'MyLib'));
+  check('staticLib: buildArtefactType=staticLibrary', /buildArtefactType=org\.eclipse\.cdt\.build\.core\.buildArtefactType\.staticLibrary/.test(lcp.buildConfigEl.attr('buildProperties') ?? ''));
+  check('staticLib: standalone buildArtefactType attr', (lcp.buildConfigEl.attr('buildArtefactType') ?? '').endsWith('.staticLibrary'));
+  check('staticLib: artifactExtension flipped to a', lcp.buildConfigEl.attr('artifactExtension') === 'a');
+  check('staticLib: cp.artifactType reads back staticLib', lcp.artifactType === 'staticLib');
+  const ecp = Cproject.load(path.join(WS, 'MyApp'));
+  check('exe twin untouched: MyApp stays exe', ecp.artifactType === 'exe');
+}
 
 // 6. typed parent-folder normalization (the wizard location box) - a bare
 // or slashed drive letter must become a ROOT, never resolve to that drive's

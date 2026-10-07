@@ -117,7 +117,7 @@ export interface CmakeOptions {
  */
 export function buildCMakeContent(cp: Cproject, tc: ToolchainInfo, file: string, opts: CmakeOptions = {}): CmakeBuild {
   const forExport = opts.forExport === true;
-  const isExecutable = true; // MRS static-library projects have no EVT equivalent in this flow
+  const isExecutable = cp.artifactType !== 'staticLib';
   const prefix = tc.prefix;
 
   // --- sources: every scanned file, relative to the project root; linked
@@ -141,28 +141,38 @@ export function buildCMakeContent(cp: Cproject, tc: ToolchainInfo, file: string,
   }
   sources.sort((a, b) => a.localeCompare(b));
 
-  // --- includes: same in-place/export convention ---
+  // --- includes: same in-place/export convention. -I/-isystem are search
+  // paths and become include_directories entries; -include FILES are forced
+  // includes, NOT search paths — they must stay in the per-language flags
+  // (MRS2 keeps them there too). Assembler includes are harvested as well:
+  // they were previously dropped entirely, so a CMake build missed every
+  // assembler include path. ---
+  const toCmakeInc = (incPath: string): string => {
+    const rel = path.relative(cp.projectRoot, incPath);
+    if (!rel.startsWith('..')) return toPosix(rel);
+    const link = linkOf(cp, incPath);
+    if (forExport) return link ? (link[1] ? toPosix(path.join(link[0], link[1])) : link[0]) : toPosix(incPath);
+    return toPosix(rel);
+  };
   const includes: string[] = [];
-  const collectIncludes = (opts: string): void => {
-    const re = /-I ?"([^"]+)"|-I ?(\S+)/g;
+  const forced: Record<'c' | 'cpp' | 'asm', string[]> = { c: [], cpp: [], asm: [] };
+  const collectIncludes = (opts: string, lang?: 'c' | 'cpp' | 'asm'): void => {
+    const re = /-I ?"([^"]+)"|-isystem ?"([^"]+)"|-include ?"([^"]+)"|-I ?(\S+)/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(opts))) {
-      const incPath = m[1] ?? m[2];
-      const rel = path.relative(cp.projectRoot, incPath);
-      if (!rel.startsWith('..')) {
-        includes.push('"' + toPosix(rel) + '"');
+      const incPath = m[1] ?? m[2] ?? m[3] ?? m[4];
+      if (incPath === undefined) continue;
+      if (m[3] !== undefined) {
+        // forced include file — stays in the flags of its own language
+        if (lang) forced[lang].push(`-include"${toCmakeInc(incPath)}"`);
         continue;
       }
-      const link = linkOf(cp, incPath);
-      if (forExport) {
-        includes.push('"' + (link ? (link[1] ? toPosix(path.join(link[0], link[1])) : link[0]) : toPosix(incPath)) + '"');
-      } else {
-        includes.push('"' + toPosix(rel) + '"');
-      }
+      includes.push('"' + toCmakeInc(incPath) + '"');
     }
   };
-  collectIncludes(cCompilerOptions(cp));
-  collectIncludes(cppCompilerOptions(cp));
+  collectIncludes(cCompilerOptions(cp), 'c');
+  collectIncludes(cppCompilerOptions(cp), 'cpp');
+  collectIncludes(assemblerOptions(cp), 'asm');
   const uniqIncludes = [...new Set(includes)];
 
   const esc = (s: string): string => s.replace(/\\/g, '/').replace(/"/g, '\\"');
@@ -208,11 +218,13 @@ export function buildCMakeContent(cp: Cproject, tc: ToolchainInfo, file: string,
   body += `set(SRC_FILES \r\n${sources.join('\r\n')}\r\n)\r\n\r\n`;
 
   // flags: common (march/abi/opt/warn/debug) + per-language (skips includes,
-  // which went to include_directories) — backslashes/quotes escaped
+  // which went to include_directories) — backslashes/quotes escaped. The
+  // harvested forced-include files return here per language.
+  const forcedFlags = (arr: string[]): string => (arr.length ? ' ' + arr.join(' ') : '');
   const common = commonOptions(cp, tc.name);
-  body += setLine('CMAKE_C_FLAGS', `"${esc(common + ' ' + cCompilerOptions(cp, true))}"`);
-  body += setLine('CMAKE_CXX_FLAGS', `"${esc(common + ' ' + cppCompilerOptions(cp, true))}"`);
-  body += setLine('CMAKE_ASM_FLAGS', `"${esc(common + ' ' + assemblerOptions(cp, true))}"`);
+  body += setLine('CMAKE_C_FLAGS', `"${esc(common + ' ' + cCompilerOptions(cp, true) + forcedFlags(forced.c))}"`);
+  body += setLine('CMAKE_CXX_FLAGS', `"${esc(common + ' ' + cppCompilerOptions(cp, true) + forcedFlags(forced.cpp))}"`);
+  body += setLine('CMAKE_ASM_FLAGS', `"${esc(common + ' ' + assemblerOptions(cp, true) + forcedFlags(forced.asm))}"`);
   body += '\r\n';
 
   if (isExecutable) {
@@ -248,6 +260,18 @@ export function buildCMakeContent(cp: Cproject, tc: ToolchainInfo, file: string,
       );
       body += `add_custom_command(TARGET "\${TARGET_ARTIFACT}" \r\nPOST_BUILD \r\n${quoted.join('\r\n')}\r\n)\r\n`;
     }
+  } else {
+    // static library (MRS2 createStaticLib): archive via CMAKE_AR — no link
+    // stage, no hex/bin/lst/size post-build (mirrors the makefile
+    // generator's ar recipe; without this the lib's sources hit the
+    // executable link path and fail on undefined `main`)
+    body += 'add_library("${TARGET_ARTIFACT}" ${SRC_FILES})\r\n\r\n';
+    for (const lang of ['C', 'CXX', 'ASM']) {
+      body += setLine(`CMAKE_${lang}_ARCHIVE_CREATE`, '"<CMAKE_AR> crs <TARGET> <LINK_FLAGS> <OBJECTS>"');
+      body += setLine(`CMAKE_${lang}_ARCHIVE_FINISH`, '""');
+    }
+    body += setLine('CMAKE_STATIC_LIBRARY_PREFIX', '""');
+    body += setLine('CMAKE_STATIC_LIBRARY_SUFFIX', '".a"');
   }
 
   fs.writeFileSync(file, body, 'utf-8');
