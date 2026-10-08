@@ -3,7 +3,7 @@
 一个 VSCode 扩展（插件名 **MRVC**），直接打开/配置/编译/**下载烧录** WCH（南京沁恒）MRS / MounRiver 工程，
 无需 MRS2 IDE 本体（仅复用其安装目录中的工具链与工具组件）。
 **当前仅支持 Windows**（Linux/macOS 暂不支持）。
-活动栏视图名为 "Project Explorer"；命令 ID 仍使用 `mrs2.*` 历史前缀（不影响使用），设置键为 `mrvc.*`。
+活动栏视图名为 "Project Explorer"；命令 ID 与设置键统一为 `mrvc.*`（V0.1.7 起，原 `mrs2.*` 历史前缀已退役——自定义快捷键需同步更新）。
 
 ## 功能
 
@@ -47,8 +47,8 @@ npm run package      # 生成 mrvc-<version>.vsix（@vscode/vsce，--no-dependen
 ```
 
 安装（三种任选）：
-- VSCode 图形界面：扩展视图 → 右上角 `···`（Views and More Actions）→ **Install from VSIX...** → 选择生成的 `mrvc-0.1.6.vsix`
-- 命令行：`code --install-extension mrvc-0.1.6.vsix`
+- VSCode 图形界面：扩展视图 → 右上角 `···`（Views and More Actions）→ **Install from VSIX...** → 选择生成的 `mrvc-<version>.vsix`（文件名跟随 package.json 的 version）
+- 命令行：`code --install-extension mrvc-X.Y.Z.vsix`（X.Y.Z 换成实际版本号；不要写 `<version>`，尖括号在 cmd 里是重定向符）
 - 直接把 `.vsix` 拖进扩展视图
 
 > `.vscodeignore` 已配置只打包 `out/extension.js`(+map)、`media/*.svg`、README、package.json；

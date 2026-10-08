@@ -535,7 +535,7 @@ export class ConfigView {
     if (this.panel) {
       this.panel.reveal();
     } else {
-      this.panel = vscode.window.createWebviewPanel('mrs2.config', `Properties - ${project.projectName}`, vscode.ViewColumn.Active, {
+      this.panel = vscode.window.createWebviewPanel('mrvc.config', `Properties - ${project.projectName}`, vscode.ViewColumn.Active, {
         enableScripts: true,
         retainContextWhenHidden: true,
       });

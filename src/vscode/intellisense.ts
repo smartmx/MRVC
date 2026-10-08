@@ -14,7 +14,7 @@ import * as path from 'path';
 import { ProjectStore, getInstall, MrsProject } from './projects';
 import { Cproject } from '../core/cproject';
 import { ToolchainInfo } from '../core/toolchain';
-import { buildCompileEntries, partitionByReference, contextDatabases, CompileCommandEntry } from '../core/intellisense';
+import { buildCompileEntries, partitionByReference, contextDatabases, versionAtLeast, CompileCommandEntry } from '../core/intellisense';
 import { t } from '../core/i18n';
 
 const CONFIG_NAME = 'MRVC';
@@ -469,17 +469,8 @@ export function resolveProjectForFile(
 }
 
 const CPPTOLS_ID = 'ms-vscode.cpptools';
-const CLANGD_ID = 'llvm-vscode-extensions.vscode-clangd';
+const CLANGD_ID = 'llvm-vs-code-extensions.vscode-clangd';
 const CPPTOLS_MIN = [1, 23, 5]; // multi-database compileCommands needs >= 1.23.5
-
-function versionAtLeast(v: string, min: number[]): boolean {
-  const parts = v.split('.').map((n) => parseInt(n, 10) || 0);
-  for (let i = 0; i < min.length; i++) {
-    const a = parts[i] ?? 0;
-    if (a !== min[i]) return a > min[i];
-  }
-  return true;
-}
 
 /**
  * One-shot guidance after projects load: code navigation (Go to Definition)
@@ -491,7 +482,7 @@ function versionAtLeast(v: string, min: number[]): boolean {
  */
 export function maybePromptCppTools(context: vscode.ExtensionContext, store: ProjectStore): void {
   if (!store.all.length) return;
-  if (context.globalState.get<boolean>('mrs2.cpptoolsDontAsk')) return;
+  if (context.globalState.get<boolean>('mrvc.cpptoolsDontAsk')) return;
   if (vscode.extensions.getExtension(CLANGD_ID)) return; // clangd route — not our business
 
   const ext = vscode.extensions.getExtension(CPPTOLS_ID);
@@ -506,9 +497,13 @@ export function maybePromptCppTools(context: vscode.ExtensionContext, store: Pro
 
   void vscode.window.showInformationMessage(message, t('installCpptools'), t('cpptoolsDontAsk')).then((pick) => {
     if (pick === t('installCpptools')) {
-      void vscode.commands.executeCommand('extension.open', CPPTOLS_ID);
+      // offline machines may not have a marketplace link — surface a clear
+      // fallback instead of failing silently
+      vscode.commands
+        .executeCommand('extension.open', CPPTOLS_ID)
+        .then(undefined, () => vscode.window.showErrorMessage(t('cpptoolsOpenFailed')));
     } else if (pick === t('cpptoolsDontAsk')) {
-      void context.globalState.update('mrs2.cpptoolsDontAsk', true);
+      void context.globalState.update('mrvc.cpptoolsDontAsk', true);
     }
   });
 }

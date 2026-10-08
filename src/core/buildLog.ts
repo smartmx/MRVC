@@ -20,7 +20,7 @@ export function buildWorkDir(projectRoot: string): string {
 }
 
 /**
- * Location of the generated build wrapper (mrs2-build.cmd). It must NOT live
+ * Location of the generated build wrapper. It must NOT live
  * in the build directory: the project path is user-controlled and may contain
  * cmd metacharacters (`EVT-IPV4&6` is a common EVT folder name) — VSCode hands
  * the command line to the terminal shell unquoted, and cmd splits the command

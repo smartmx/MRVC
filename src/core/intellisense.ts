@@ -131,3 +131,18 @@ export function contextDatabases(contextEntries: CompileCommandEntry[][], roots:
     return out;
   });
 }
+
+
+/**
+ * Numeric semver compare for the cpptools guidance gate (string compare
+ * would rank 1.9.0 above 1.23.5). Pure — lives here so tests can reach it
+ * without the vscode stub.
+ */
+export function versionAtLeast(v: string, min: number[]): boolean {
+  const parts = v.split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < min.length; i++) {
+    const a = parts[i] ?? 0;
+    if (a !== min[i]) return a > min[i];
+  }
+  return true;
+}

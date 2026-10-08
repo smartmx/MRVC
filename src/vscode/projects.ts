@@ -389,8 +389,8 @@ export class ProjectStore implements vscode.Disposable {
 
   private saveState(): void {
     const roots = this.all.map((p) => p.root);
-    this.context.workspaceState.update('mrs2.projects', roots);
-    this.context.workspaceState.update('mrs2.active', this._active?.root ?? undefined);
+    this.context.workspaceState.update('mrvc.projects', roots);
+    this.context.workspaceState.update('mrvc.active', this._active?.root ?? undefined);
     // solutions are deliberately NOT persisted: they only exist because the
     // user explicitly opened a .wvsln in this session
   }
@@ -401,16 +401,16 @@ export class ProjectStore implements vscode.Disposable {
    * globalState on purpose — MRS2's history is machine-wide, not per workspace.
    */
   getLastCreateDir(): string | undefined {
-    const dir = this.context.globalState.get<string>('mrs2.lastCreateDir');
+    const dir = this.context.globalState.get<string>('mrvc.lastCreateDir');
     return dir && fs.existsSync(dir) ? dir : undefined;
   }
 
   setLastCreateDir(dir: string): void {
-    void this.context.globalState.update('mrs2.lastCreateDir', dir);
+    void this.context.globalState.update('mrvc.lastCreateDir', dir);
   }
 
   restoreState(): void {
-    const roots = this.context.workspaceState.get<string[]>('mrs2.projects') ?? [];
+    const roots = this.context.workspaceState.get<string[]>('mrvc.projects') ?? [];
     for (const r of roots) {
       if (fs.existsSync(path.join(r, '.project'))) {
         try {
@@ -421,7 +421,7 @@ export class ProjectStore implements vscode.Disposable {
         }
       }
     }
-    const activeRoot = this.context.workspaceState.get<string>('mrs2.active');
+    const activeRoot = this.context.workspaceState.get<string>('mrvc.active');
     this._active = activeRoot ? (this.get(activeRoot) ?? null) : null;
   }
 

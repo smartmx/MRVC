@@ -57,7 +57,7 @@ export function activate(context: vscode.ExtensionContext): void {
   store.restoreState();
 
   const tree = new ProjectTreeProvider(store, context.extensionUri);
-  const treeView = vscode.window.createTreeView('mrs2.projectExplorer', { treeDataProvider: tree, dragAndDropController: undefined });
+  const treeView = vscode.window.createTreeView('mrvc.projectExplorer', { treeDataProvider: tree, dragAndDropController: undefined });
   context.subscriptions.push(treeView);
 
   // IntelliSense context switch: selecting a (different) project in the tree
@@ -122,8 +122,8 @@ export function activate(context: vscode.ExtensionContext): void {
   // ---- global UI context keys (menu/keybinding gating) ----
   // no status bar items: the tree stays the single MRVC surface
   const refreshContext = () => {
-    vscode.commands.executeCommand('setContext', 'mrs2.hasActiveProject', !!store.active);
-    vscode.commands.executeCommand('setContext', 'mrs2.hasProjects', store.all.length > 0);
+    vscode.commands.executeCommand('setContext', 'mrvc.hasActiveProject', !!store.active);
+    vscode.commands.executeCommand('setContext', 'mrvc.hasProjects', store.all.length > 0);
   };
   store.onDidChange(refreshContext);
   refreshContext();
@@ -165,37 +165,37 @@ export function activate(context: vscode.ExtensionContext): void {
   const reg = (id: string, fn: (...a: never[]) => unknown) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, fn as (...a: unknown[]) => unknown));
 
-  reg('mrs2.openProject', () => store.openProject());
-  reg('mrs2.openFolder', () => store.openFolder());
-  reg('mrs2.build', (item?: { project?: unknown }) => build.run('build', (item as { project?: MrsProject })?.project));
-  reg('mrs2.buildAndDownload', (item?: { project?: unknown }) =>
+  reg('mrvc.openProject', () => store.openProject());
+  reg('mrvc.openFolder', () => store.openFolder());
+  reg('mrvc.build', (item?: { project?: unknown }) => build.run('build', (item as { project?: MrsProject })?.project));
+  reg('mrvc.buildAndDownload', (item?: { project?: unknown }) =>
     build.buildAndDownload((item as { project?: MrsProject })?.project)
   );
-  reg('mrs2.buildAll', () => build.buildAll());
-  reg('mrs2.rebuildAll', () => build.rebuildAll());
-  reg('mrs2.deleteOutputKeepImages', () => build.deleteOutputFiles());
-  reg('mrs2.deleteOutputDirs', () => build.deleteOutputDirs());
-  reg('mrs2.buildSolution', (item?: { solution?: unknown }) => {
+  reg('mrvc.buildAll', () => build.buildAll());
+  reg('mrvc.rebuildAll', () => build.rebuildAll());
+  reg('mrvc.deleteOutputKeepImages', () => build.deleteOutputFiles());
+  reg('mrvc.deleteOutputDirs', () => build.deleteOutputDirs());
+  reg('mrvc.buildSolution', (item?: { solution?: unknown }) => {
     const sol = (item as { solution?: MrsSolution })?.solution;
     if (sol) void build.buildSolution(sol);
   });
-  reg('mrs2.cleanSolution', (item?: { solution?: unknown }) => {
+  reg('mrvc.cleanSolution', (item?: { solution?: unknown }) => {
     const sol = (item as { solution?: MrsSolution })?.solution;
     if (sol) void build.cleanSolution(sol);
   });
-  reg('mrs2.addProjectToSolution', (item?: unknown) => addProjectToSolutionCmd(store, item));
-  reg('mrs2.addProjectsByBatch', (item?: unknown) => addProjectsByBatchCmd(store, item));
-  reg('mrs2.setBuildOrder', (item?: unknown) => setBuildOrderCmd(store, item));
-  reg('mrs2.closeSolution', (item?: unknown) => closeSolutionCmd(store, item));
-  reg('mrs2.generateCMakeList', (item?: { project?: unknown }) => generateCMakeListCmd(store, item));
-  reg('mrs2.exportAsCMake', (item?: { project?: unknown }) => exportAsCMakeCmd(store, item));
+  reg('mrvc.addProjectToSolution', (item?: unknown) => addProjectToSolutionCmd(store, item));
+  reg('mrvc.addProjectsByBatch', (item?: unknown) => addProjectsByBatchCmd(store, item));
+  reg('mrvc.setBuildOrder', (item?: unknown) => setBuildOrderCmd(store, item));
+  reg('mrvc.closeSolution', (item?: unknown) => closeSolutionCmd(store, item));
+  reg('mrvc.generateCMakeList', (item?: { project?: unknown }) => generateCMakeListCmd(store, item));
+  reg('mrvc.exportAsCMake', (item?: { project?: unknown }) => exportAsCMakeCmd(store, item));
   // MRS2 showFullBuildOutput: open the recorded full make output of the
   // active project (written by the build task's Tee-Object)
-  reg('mrs2.createProject', () => createProjectCmd(store));
-  reg('mrs2.createStaticLib', () => createStaticLibCmd(store));
-  reg('mrs2.showStackUsage', (item?: unknown) => showStackUsageCmd(store, item));
-  reg('mrs2.showCallAnalysis', (item?: unknown) => showCallAnalysisCmd(store, item));
-  reg('mrs2.showFullBuildOutput', async (item?: { project?: unknown }) => {
+  reg('mrvc.createProject', () => createProjectCmd(store));
+  reg('mrvc.createStaticLib', () => createStaticLibCmd(store));
+  reg('mrvc.showStackUsage', (item?: unknown) => showStackUsageCmd(store, item));
+  reg('mrvc.showCallAnalysis', (item?: unknown) => showCallAnalysisCmd(store, item));
+  reg('mrvc.showFullBuildOutput', async (item?: { project?: unknown }) => {
     const project = (item as { project?: MrsProject } | undefined)?.project ?? store.active;
     if (!project) {
       vscode.window.showErrorMessage(t('noActiveProject'));
@@ -208,22 +208,22 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     await vscode.window.showTextDocument(vscode.Uri.file(record), { preview: true });
   });
-  reg('mrs2.cleanAll', () => build.cleanAll());
+  reg('mrvc.cleanAll', () => build.cleanAll());
   // collapse every project/folder row via the tree view's built-in command
-  reg('mrs2.collapseAll', () =>
-    vscode.commands.executeCommand('workbench.actions.treeView.mrs2.projectExplorer.collapseAll')
+  reg('mrvc.collapseAll', () =>
+    vscode.commands.executeCommand('workbench.actions.treeView.mrvc.projectExplorer.collapseAll')
   );
-  reg('mrs2.rebuild', (item?: { project?: unknown }) => build.run('rebuild', (item as { project?: MrsProject })?.project));
-  reg('mrs2.clean', (item?: { project?: unknown }) => build.run('clean', (item as { project?: MrsProject })?.project));
-  reg('mrs2.flashUtility', () => openLinkUtility());
-  reg('mrs2.flash', (item?: { project?: unknown }) => flashProject(store, (item as { project?: MrsProject })?.project));
-  reg('mrs2.configure', (item?: { project?: unknown }) => configView.show((item as { project?: MrsProject })?.project));
-  reg('mrs2.addLinkedFolder', (item?: { project?: unknown }) => addLinkedFolderCmd(store, (item as { project?: MrsProject })?.project));
-  reg('mrs2.removeLinkedFolder', (item?: unknown) => removeLinkedFolderCmd(store, item as { linkedName?: string; project?: MrsProject } | undefined));
-  reg('mrs2.changeLinkedFolder', (item?: unknown) => changeLinkedFolderPathCmd(store, item as { linkedName?: string; project?: MrsProject } | undefined));
-  reg('mrs2.openMrsTerminal', () => openMrsTerminal(store));
-  reg('mrs2.revealProducts', () => revealProducts(store));
-  reg('mrs2.updateIntellisense', () => {
+  reg('mrvc.rebuild', (item?: { project?: unknown }) => build.run('rebuild', (item as { project?: MrsProject })?.project));
+  reg('mrvc.clean', (item?: { project?: unknown }) => build.run('clean', (item as { project?: MrsProject })?.project));
+  reg('mrvc.flashUtility', () => openLinkUtility());
+  reg('mrvc.flash', (item?: { project?: unknown }) => flashProject(store, (item as { project?: MrsProject })?.project));
+  reg('mrvc.configure', (item?: { project?: unknown }) => configView.show((item as { project?: MrsProject })?.project));
+  reg('mrvc.addLinkedFolder', (item?: { project?: unknown }) => addLinkedFolderCmd(store, (item as { project?: MrsProject })?.project));
+  reg('mrvc.removeLinkedFolder', (item?: unknown) => removeLinkedFolderCmd(store, item as { linkedName?: string; project?: MrsProject } | undefined));
+  reg('mrvc.changeLinkedFolder', (item?: unknown) => changeLinkedFolderPathCmd(store, item as { linkedName?: string; project?: MrsProject } | undefined));
+  reg('mrvc.openMrsTerminal', () => openMrsTerminal(store));
+  reg('mrvc.revealProducts', () => revealProducts(store));
+  reg('mrvc.updateIntellisense', () => {
     const r = ensureIntellisenseConfig(store);
     if (r.error) {
       vscode.window.showErrorMessage(t('intellisenseFail', r.error ?? ''));
@@ -231,7 +231,13 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showInformationMessage(t('intellisenseOk', r.entries, r.projects));
     }
   });
-  reg('mrs2.refreshTree', async () => {
+  reg('mrvc.resetInstallGuidance', () => {
+    context.globalState.update('mrvc.cpptoolsDontAsk', false);
+    vscode.window.showInformationMessage(t('guidanceReset'));
+    // re-evaluate right away — "re-enabled" should feel like it did something
+    maybePromptCppTools(context, store);
+  });
+  reg('mrvc.refreshTree', async () => {
     // refresh = full re-scan of the workspace folders: projects renamed or
     // deleted outside MRVC are dropped, new/renamed ones are discovered
     await store.refreshWorkspace();
@@ -240,13 +246,13 @@ export function activate(context: vscode.ExtensionContext): void {
   // generate a .wvsln grouping every discovered project (writes next to the
   // workspace root; members stay in BuildOrder-less file order)
   const syncPage = new SyncPage(store);
-  reg('mrs2.syncSettings', () => syncPage.open());
-  reg('mrs2.ispTool', () => ispToolCmd());
-  reg('mrs2.touchkeyTool', () => touchkeyToolCmd());
-  reg('mrs2.uiDesigner', () => uiDesignerCmd());
-  reg('mrs2.hexBinTool', () => hexBinToolCmd());
-  reg('mrs2.comTransmit', () => comTransmitCmd());
-  reg('mrs2.generateSolution', async () => {    const all = store.all;
+  reg('mrvc.syncSettings', () => syncPage.open());
+  reg('mrvc.ispTool', () => ispToolCmd());
+  reg('mrvc.touchkeyTool', () => touchkeyToolCmd());
+  reg('mrvc.uiDesigner', () => uiDesignerCmd());
+  reg('mrvc.hexBinTool', () => hexBinToolCmd());
+  reg('mrvc.comTransmit', () => comTransmitCmd());
+  reg('mrvc.generateSolution', async () => {    const all = store.all;
     if (!all.length) {
       vscode.window.showErrorMessage(t('noProjectsLoaded'));
       return;
@@ -282,23 +288,23 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   // file management (tree context menu)
-  reg('mrs2.file.copy', (item?: unknown) => copyNode(item as never));
-  reg('mrs2.file.paste', (item?: unknown) => pasteNode(store, item as never));
-  reg('mrs2.file.newFile', (item?: unknown) => newFile(item as never));
-  reg('mrs2.file.newFolder', (item?: unknown) => newFolder(item as never));
-  reg('mrs2.file.copyPath', (item?: unknown) => copyAbsolutePath(item as never));
-  reg('mrs2.file.copyRelPath', (item?: unknown) => copyProjectRelativePath(item as never));
-  reg('mrs2.file.copyName', (item?: unknown) => copyFileName(item as never));
-  reg('mrs2.file.reveal', (item?: unknown) => revealInExplorer(item as never));
-  reg('mrs2.file.rename', (item?: unknown) => renameNode(item as never));
-  reg('mrs2.file.delete', (item?: unknown) => deleteNode(item as never));
-  reg('mrs2.restoreRemoved', (item?: unknown) => restoreRemovedCmd(store, item));
-  reg('mrs2.renameProject', (item?: unknown) => renameProjectCmd(store, item as never));
-  reg('mrs2.syncProjectName', (item?: unknown) => syncProjectNameFromFolder(store, item as never));
+  reg('mrvc.file.copy', (item?: unknown) => copyNode(item as never));
+  reg('mrvc.file.paste', (item?: unknown) => pasteNode(store, item as never));
+  reg('mrvc.file.newFile', (item?: unknown) => newFile(item as never));
+  reg('mrvc.file.newFolder', (item?: unknown) => newFolder(item as never));
+  reg('mrvc.file.copyPath', (item?: unknown) => copyAbsolutePath(item as never));
+  reg('mrvc.file.copyRelPath', (item?: unknown) => copyProjectRelativePath(item as never));
+  reg('mrvc.file.copyName', (item?: unknown) => copyFileName(item as never));
+  reg('mrvc.file.reveal', (item?: unknown) => revealInExplorer(item as never));
+  reg('mrvc.file.rename', (item?: unknown) => renameNode(item as never));
+  reg('mrvc.file.delete', (item?: unknown) => deleteNode(item as never));
+  reg('mrvc.restoreRemoved', (item?: unknown) => restoreRemovedCmd(store, item));
+  reg('mrvc.renameProject', (item?: unknown) => renameProjectCmd(store, item as never));
+  reg('mrvc.syncProjectName', (item?: unknown) => syncProjectNameFromFolder(store, item as never));
   // C/C++ toggle = the CDT cxx nature in .project: it drives which property
   // pages show (C++ compiler/linker), which source extensions the scanner
   // picks and how makefiles treat .cpp — same key MRS2/CDT use
-  reg('mrs2.switchProjectType', (item?: { project?: unknown }) => {
+  reg('mrvc.switchProjectType', (item?: { project?: unknown }) => {
     const project = (item as { project?: MrsProject })?.project ?? store.active;
     if (!project) {
       vscode.window.showErrorMessage(t('noActiveProject'));
@@ -314,8 +320,8 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   // exclude/include from build (CDT sourceEntries excluding)
-  reg('mrs2.excludeFromBuild', (item?: unknown) => excludeFromBuild(store, item as never));
-  reg('mrs2.includeFromBuild', (item?: unknown) => includeFromBuild(store, item as never));
+  reg('mrvc.excludeFromBuild', (item?: unknown) => excludeFromBuild(store, item as never));
+  reg('mrvc.includeFromBuild', (item?: unknown) => includeFromBuild(store, item as never));
 
   // discover projects already inside the workspace (debounced once at start)
   setTimeout(() => {

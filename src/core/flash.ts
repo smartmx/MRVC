@@ -157,7 +157,9 @@ export function prepareFlash(opts: FlashOptions): FlashPlan {
     steps.push(prog.join(' '));
   }
 
-  const scriptPath = path.join(opts.buildDir, 'mrs2_flash.cfg');
+  const scriptPath = path.join(opts.buildDir, 'mrvc_flash.cfg');
+  // 0.1.6 及更早版本写的是 mrs2_flash.cfg —— 顺手清掉旧名残留
+  fs.rmSync(path.join(opts.buildDir, 'mrs2_flash.cfg'), { force: true });
   fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
   // same ANSI-codepage reasoning as the makefiles (makefile.ts): OpenOCD's
   // Jim Tcl reads these bytes on the system code page — a UTF-8 firmware

@@ -98,7 +98,7 @@ export class SyncPage {
       this.panel.webview.html = this.render();
       return;
     }
-    this.panel = vscode.window.createWebviewPanel('mrs2.sync', 'Sync Setting Across Projects', vscode.ViewColumn.Active, {
+    this.panel = vscode.window.createWebviewPanel('mrvc.sync', 'Sync Setting Across Projects', vscode.ViewColumn.Active, {
       enableScripts: true,
       retainContextWhenHidden: true,
     });

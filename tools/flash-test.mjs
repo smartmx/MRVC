@@ -25,7 +25,7 @@ const check = (name, cond) => {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
   if (!cond) failures++;
 };
-const readCfg = (dir) => fs.readFileSync(path.join(dir, 'mrs2_flash.cfg'), 'utf-8');
+const readCfg = (dir) => fs.readFileSync(path.join(dir, 'mrvc_flash.cfg'), 'utf-8');
 
 fs.rmSync(scratch, { recursive: true, force: true });
 fs.mkdirSync(scratch, { recursive: true });
@@ -91,7 +91,13 @@ const bsBase = { ...base, firmware: 'E:' + String.raw`\prj\obj with space\LED.he
     }
     check(`invalid address rejected: "${bad}"`, threw);
   }
-  check('no script written for invalid address', !fs.existsSync(path.join(scratch, 'mrs2_flash.cfg')));
+  check('no script written for invalid address', !fs.existsSync(path.join(scratch, 'mrvc_flash.cfg')));
+  // an earlier section's rmSync may have removed it
+  fs.mkdirSync(scratch, { recursive: true });
+  // legacy filename from before the mrvc rename is cleaned up on every write
+  fs.writeFileSync(path.join(scratch, 'mrs2_flash.cfg'), 'legacy');
+  prepareFlash(base);
+  check('legacy mrs2_flash.cfg cleaned up', !fs.existsSync(path.join(scratch, 'mrs2_flash.cfg')));
 }
 
 // 5. address regex shape (single guard shared with the properties page)

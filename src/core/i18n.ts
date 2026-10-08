@@ -29,10 +29,6 @@ export function vscodeLanguageIsChinese(envLanguage: string | undefined): boolea
 
 const strings: Record<string, { en: string; 'zh-cn': string }> = {
   // generic
-  ok: { en: 'OK', 'zh-cn': '确定' },
-  cancel: { en: 'Cancel', 'zh-cn': '取消' },
-  yes: { en: 'Yes', 'zh-cn': '是' },
-  no: { en: 'No', 'zh-cn': '否' },
   overwrite: { en: 'Overwrite', 'zh-cn': '覆盖' },
   relPathNoProject: {
     en: 'MRVC: "{0}" is outside the project and not under any linked folder — no project-relative path exists.',
@@ -68,19 +64,13 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   invalidFileName: { en: 'Invalid file name', 'zh-cn': '文件名无效' },
   remove: { en: 'Remove', 'zh-cn': '移除' },
   delete: { en: 'Delete', 'zh-cn': '删除' },
-  continue: { en: 'Continue', 'zh-cn': '继续' },
 
   // projects / store
-  noProjects: { en: 'No MRS project loaded.', 'zh-cn': '尚未加载任何 MRS 工程。' },
   noActiveProject: { en: 'No active MRS project.', 'zh-cn': '没有活动 MRS 工程。' },
   pickProject: { en: 'Select project', 'zh-cn': '选择工程' },
   installNotFound: {
     en: 'MRS2 (MounRiver Studio 2) installation not found — set "mrvc.mrs2InstallPath" to your MRS2 install folder.',
     'zh-cn': '未找到 MRS2（MounRiver Studio 2）安装目录——请在设置 "mrvc.mrs2InstallPath" 中指定 MRS2 安装文件夹。',
-  },
-  noToolchain: {
-    en: 'No RISC-V toolchain found. Check the "mrvc.mrs2InstallPath" setting — it must point to your MRS2 (MounRiver Studio 2) installation folder.',
-    'zh-cn': '未找到 RISC-V 工具链。请检查设置 "mrvc.mrs2InstallPath"——它必须指向 MRS2（MounRiver Studio 2）的安装文件夹。',
   },
   makeNotFound: { en: 'make.exe not found under the MounRiver installation ({0})', 'zh-cn': '在 MounRiver 安装目录下未找到 make.exe（{0}）' },
   makefileGenFailed: { en: 'Makefile generation failed: {0}', 'zh-cn': 'Makefile 生成失败：{0}' },
@@ -94,7 +84,6 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   // tree
   noMrsProjectNode: { en: 'No MRS project', 'zh-cn': '无 MRS 工程' },
   workspaceFiles: { en: 'Workspace Files', 'zh-cn': '工作区文件' },
-  solution: { en: 'solution', 'zh-cn': '解决方案' },
 
   // open project / folder
 
@@ -147,8 +136,6 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
 
   // file ops
   nameExists: { en: '"{0}" already exists.', 'zh-cn': '" {0} " 已存在。' },
-  newFile: { en: 'New File', 'zh-cn': '新建文件' },
-  newFolder: { en: 'New Folder', 'zh-cn': '新建文件夹' },
   enterName: { en: 'Enter a name', 'zh-cn': '请输入名称' },
 
   // exclude
@@ -186,6 +173,11 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   },
   installCpptools: { en: 'Open "C/C++"', 'zh-cn': '打开 "C/C++"' },
   cpptoolsDontAsk: { en: "Don't ask again", 'zh-cn': '不再提示' },
+  cpptoolsOpenFailed: {
+    en: 'MRVC: could not open the extension page — install "ms-vscode.cpptools" (win-x64 VSIX) manually from the Extensions view.',
+    'zh-cn': 'MRVC：无法打开扩展页面——请在扩展面板手动安装 "ms-vscode.cpptools"（win-x64 VSIX）。',
+  },
+  guidanceReset: { en: 'MRVC: install guidance prompt re-enabled.', 'zh-cn': 'MRVC：安装引导提示已重新启用。' },
   // build / batch
   solutionNoMembers: { en: 'MRVC: solution "{0}" has no loadable projects.', 'zh-cn': 'MRVC：解决方案" {0} "没有可加载的工程。' },
   batchRunning: { en: 'MRVC: another batch operation is already running.', 'zh-cn': 'MRVC：已有批量操作在执行中。' },
@@ -233,7 +225,6 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   nothingRemoved: { en: 'MRVC: "{0}" has no removed resources.', 'zh-cn': 'MRVC：" {0} " 没有已移除的资源。' },
   restorePick: { en: 'Select removed resources of "{0}" to restore (multi-select)', 'zh-cn': '选择要恢复的" {0} "已移除资源（可多选）' },
   restoredCount: { en: 'MRVC: {0} resource(s) restored.', 'zh-cn': 'MRVC：已恢复 {0} 个资源。' },
-  restoreRemoved: { en: 'Restore Removed Resources', 'zh-cn': '恢复已移除的资源' },
   renameKeyRestore: { en: 'Rename "{0}"', 'zh-cn': '重命名" {0} "' },
 
   // file ops

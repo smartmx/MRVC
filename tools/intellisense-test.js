@@ -41,7 +41,7 @@ const { Cproject } = require(path.join(__dirname, '..', 'out', 'core', 'cproject
 const { scanSources } = require(path.join(__dirname, '..', 'out', 'core', 'scan.js'));
 const { buildCompileEntries } = require(path.join(__dirname, '..', 'out', 'core', 'intellisense.js'));
 
-const { partitionByReference, contextDatabases } = require('../out/core/intellisense.js');
+const { partitionByReference, contextDatabases, versionAtLeast } = require('../out/core/intellisense.js');
 const { readProjectFile, addLinkedFolder, removeLinkedFolder } = require('../out/core/projectFile.js');
 
 // pure classification checks (synthetic data, no project needed)
@@ -494,6 +494,17 @@ if (HAS_LED) {
   void sharedSrc;
 } else {
   console.log('SKIP  intellisense (LED project not present)');
+}
+
+// ---- cpptools guidance gate: numeric semver compare (1.9.0 sorts ABOVE
+// 1.23.5 as a string). Pure function, no fixtures — unconditional, outside
+// the HAS_LED block (the guidance must be verified on every machine).
+{
+  check('versionAtLeast: 1.24.5 >= 1.23.5', versionAtLeast('1.24.5', [1, 23, 5]));
+  check('versionAtLeast: numeric compare (1.9.0 < 1.23.5)', !versionAtLeast('1.9.0', [1, 23, 5]));
+  check('versionAtLeast: equal passes', versionAtLeast('1.23.5', [1, 23, 5]));
+  check('versionAtLeast: missing patch tolerated', versionAtLeast('1.24', [1, 23, 5]));
+  check('versionAtLeast: older rejected', !versionAtLeast('1.22.9', [1, 23, 5]));
 }
 
 fs.rmSync(WS, { recursive: true, force: true });

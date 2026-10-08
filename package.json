@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "mrvc",
   "private": true,
   "license": "MIT",
@@ -30,7 +30,7 @@
   "activationEvents": [
     "workspaceContains:**/.project",
     "workspaceContains:**/*.wvproj",
-    "onCommand:mrs2.openProject"
+    "onCommand:mrvc.openProject"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -174,16 +174,16 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "mrs2-explorer",
+          "id": "mrvc-explorer",
           "title": "MRVC",
           "icon": "media/chip.svg"
         }
       ]
     },
     "views": {
-      "mrs2-explorer": [
+      "mrvc-explorer": [
         {
-          "id": "mrs2.projectExplorer",
+          "id": "mrvc.projectExplorer",
           "name": "Project Explorer",
           "when": "true"
         }
@@ -191,938 +191,947 @@
     },
     "viewsWelcome": [
       {
-        "view": "mrs2.projectExplorer",
-        "contents": "No MRS project loaded.\n[Open MRS Project](command:mrs2.openProject)\n\nOpen a folder that contains an MRS/MounRiver project (a `.project` / `.cproject` pair or a `.wvproj` file)."
+        "view": "mrvc.projectExplorer",
+        "contents": "No MRS project loaded.\n[Open MRS Project](command:mrvc.openProject)\n\nOpen a folder that contains an MRS/MounRiver project (a `.project` / `.cproject` pair or a `.wvproj` file)."
       }
     ],
     "commands": [
       {
-        "command": "mrs2.openFolder",
-        "title": "%command.mrs2.openFolder.title%",
+        "command": "mrvc.openFolder",
+        "title": "%command.mrvc.openFolder.title%",
         "category": "MRVC",
         "icon": "$(folder)"
       },
       {
-        "command": "mrs2.openProject",
-        "title": "%command.mrs2.openProject.title%",
+        "command": "mrvc.openProject",
+        "title": "%command.mrvc.openProject.title%",
         "category": "MRVC",
         "icon": "$(folder-opened)"
       },
       {
-        "command": "mrs2.build",
-        "title": "%command.mrs2.build.title%",
+        "command": "mrvc.build",
+        "title": "%command.mrvc.build.title%",
         "category": "MRVC",
         "icon": "media/build_project.svg"
       },
       {
-        "command": "mrs2.buildAndDownload",
-        "title": "%command.mrs2.buildAndDownload.title%",
+        "command": "mrvc.buildAndDownload",
+        "title": "%command.mrvc.buildAndDownload.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.buildAll",
-        "title": "%command.mrs2.buildAll.title%",
+        "command": "mrvc.resetInstallGuidance",
+        "title": "%command.mrvc.resetInstallGuidance.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.buildAll",
+        "title": "%command.mrvc.buildAll.title%",
         "category": "MRVC",
         "icon": "media/build_all_project.svg"
       },
       {
-        "command": "mrs2.cleanAll",
-        "title": "%command.mrs2.cleanAll.title%",
+        "command": "mrvc.cleanAll",
+        "title": "%command.mrvc.cleanAll.title%",
         "category": "MRVC",
         "icon": "$(clear-all)"
       },
       {
-        "command": "mrs2.generateSolution",
-        "title": "%command.mrs2.generateSolution.title%",
+        "command": "mrvc.generateSolution",
+        "title": "%command.mrvc.generateSolution.title%",
         "category": "MRVC",
         "icon": "$(layers)"
       },
       {
-        "command": "mrs2.rebuildAll",
-        "title": "%command.mrs2.rebuildAll.title%",
+        "command": "mrvc.rebuildAll",
+        "title": "%command.mrvc.rebuildAll.title%",
         "category": "MRVC",
         "icon": "media/rebuild_project.svg"
       },
       {
-        "command": "mrs2.deleteOutputKeepImages",
-        "title": "%command.mrs2.deleteOutputKeepImages.title%",
+        "command": "mrvc.deleteOutputKeepImages",
+        "title": "%command.mrvc.deleteOutputKeepImages.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.deleteOutputDirs",
-        "title": "%command.mrs2.deleteOutputDirs.title%",
+        "command": "mrvc.deleteOutputDirs",
+        "title": "%command.mrvc.deleteOutputDirs.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.buildSolution",
-        "title": "%command.mrs2.buildSolution.title%",
+        "command": "mrvc.buildSolution",
+        "title": "%command.mrvc.buildSolution.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.cleanSolution",
-        "title": "%command.mrs2.cleanSolution.title%",
+        "command": "mrvc.cleanSolution",
+        "title": "%command.mrvc.cleanSolution.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.addProjectToSolution",
-        "title": "%command.mrs2.addProjectToSolution.title%",
+        "command": "mrvc.addProjectToSolution",
+        "title": "%command.mrvc.addProjectToSolution.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.addProjectsByBatch",
-        "title": "%command.mrs2.addProjectsByBatch.title%",
+        "command": "mrvc.addProjectsByBatch",
+        "title": "%command.mrvc.addProjectsByBatch.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.setBuildOrder",
-        "title": "%command.mrs2.setBuildOrder.title%",
+        "command": "mrvc.setBuildOrder",
+        "title": "%command.mrvc.setBuildOrder.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.closeSolution",
-        "title": "%command.mrs2.closeSolution.title%",
+        "command": "mrvc.closeSolution",
+        "title": "%command.mrvc.closeSolution.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.collapseAll",
-        "title": "%command.mrs2.collapseAll.title%",
+        "command": "mrvc.collapseAll",
+        "title": "%command.mrvc.collapseAll.title%",
         "category": "MRVC",
         "icon": "$(collapse-all)"
       },
       {
-        "command": "mrs2.rebuild",
-        "title": "%command.mrs2.rebuild.title%",
+        "command": "mrvc.rebuild",
+        "title": "%command.mrvc.rebuild.title%",
         "category": "MRVC",
         "icon": "media/rebuild_project.svg"
       },
       {
-        "command": "mrs2.flash",
-        "title": "%command.mrs2.flash.title%",
+        "command": "mrvc.flash",
+        "title": "%command.mrvc.flash.title%",
         "category": "MRVC",
         "icon": "media/flash.svg"
       },
       {
-        "command": "mrs2.clean",
-        "title": "%command.mrs2.clean.title%",
+        "command": "mrvc.clean",
+        "title": "%command.mrvc.clean.title%",
         "category": "MRVC",
         "icon": "$(trash)"
       },
       {
-        "command": "mrs2.flashUtility",
-        "title": "%command.mrs2.flashUtility.title%",
+        "command": "mrvc.flashUtility",
+        "title": "%command.mrvc.flashUtility.title%",
         "category": "MRVC",
         "icon": "$(tools)"
       },
       {
-        "command": "mrs2.configure",
-        "title": "%command.mrs2.configure.title%",
+        "command": "mrvc.configure",
+        "title": "%command.mrvc.configure.title%",
         "category": "MRVC",
         "icon": "$(settings-gear)"
       },
       {
-        "command": "mrs2.renameProject",
-        "title": "%command.mrs2.renameProject.title%",
+        "command": "mrvc.renameProject",
+        "title": "%command.mrvc.renameProject.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.syncProjectName",
-        "title": "%command.mrs2.syncProjectName.title%",
+        "command": "mrvc.syncProjectName",
+        "title": "%command.mrvc.syncProjectName.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.syncSettings",
-        "title": "%command.mrs2.syncSettings.title%",
+        "command": "mrvc.syncSettings",
+        "title": "%command.mrvc.syncSettings.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.ispTool",
-        "title": "%command.mrs2.ispTool.title%",
+        "command": "mrvc.ispTool",
+        "title": "%command.mrvc.ispTool.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.touchkeyTool",
-        "title": "%command.mrs2.touchkeyTool.title%",
+        "command": "mrvc.touchkeyTool",
+        "title": "%command.mrvc.touchkeyTool.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.uiDesigner",
-        "title": "%command.mrs2.uiDesigner.title%",
+        "command": "mrvc.uiDesigner",
+        "title": "%command.mrvc.uiDesigner.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.hexBinTool",
-        "title": "%command.mrs2.hexBinTool.title%",
+        "command": "mrvc.hexBinTool",
+        "title": "%command.mrvc.hexBinTool.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.comTransmit",
-        "title": "%command.mrs2.comTransmit.title%",
+        "command": "mrvc.comTransmit",
+        "title": "%command.mrvc.comTransmit.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.updateIntellisense",
-        "title": "%command.mrs2.updateIntellisense.title%",
+        "command": "mrvc.updateIntellisense",
+        "title": "%command.mrvc.updateIntellisense.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.switchProjectType",
-        "title": "%command.mrs2.switchProjectType.title%",
+        "command": "mrvc.switchProjectType",
+        "title": "%command.mrvc.switchProjectType.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.generateCMakeList",
-        "title": "%command.mrs2.generateCMakeList.title%",
+        "command": "mrvc.generateCMakeList",
+        "title": "%command.mrvc.generateCMakeList.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.exportAsCMake",
-        "title": "%command.mrs2.exportAsCMake.title%",
+        "command": "mrvc.exportAsCMake",
+        "title": "%command.mrvc.exportAsCMake.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.showFullBuildOutput",
-        "title": "%command.mrs2.showFullBuildOutput.title%",
+        "command": "mrvc.showFullBuildOutput",
+        "title": "%command.mrvc.showFullBuildOutput.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.createProject",
-        "title": "%command.mrs2.createProject.title%",
+        "command": "mrvc.createProject",
+        "title": "%command.mrvc.createProject.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.createStaticLib",
-        "title": "%command.mrs2.createStaticLib.title%",
+        "command": "mrvc.createStaticLib",
+        "title": "%command.mrvc.createStaticLib.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.restoreRemoved",
-        "title": "%command.mrs2.restoreRemoved.title%",
+        "command": "mrvc.restoreRemoved",
+        "title": "%command.mrvc.restoreRemoved.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.showStackUsage",
-        "title": "%command.mrs2.showStackUsage.title%",
+        "command": "mrvc.showStackUsage",
+        "title": "%command.mrvc.showStackUsage.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.showCallAnalysis",
-        "title": "%command.mrs2.showCallAnalysis.title%",
+        "command": "mrvc.showCallAnalysis",
+        "title": "%command.mrvc.showCallAnalysis.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.addLinkedFolder",
-        "title": "%command.mrs2.addLinkedFolder.title%",
+        "command": "mrvc.addLinkedFolder",
+        "title": "%command.mrvc.addLinkedFolder.title%",
         "category": "MRVC",
         "icon": "$(new-folder)"
       },
       {
-        "command": "mrs2.removeLinkedFolder",
-        "title": "%command.mrs2.removeLinkedFolder.title%",
+        "command": "mrvc.removeLinkedFolder",
+        "title": "%command.mrvc.removeLinkedFolder.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.changeLinkedFolder",
-        "title": "%command.mrs2.changeLinkedFolder.title%",
+        "command": "mrvc.changeLinkedFolder",
+        "title": "%command.mrvc.changeLinkedFolder.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.openMrsTerminal",
-        "title": "%command.mrs2.openMrsTerminal.title%",
+        "command": "mrvc.openMrsTerminal",
+        "title": "%command.mrvc.openMrsTerminal.title%",
         "category": "MRVC",
         "icon": "$(terminal)"
       },
       {
-        "command": "mrs2.revealProducts",
-        "title": "%command.mrs2.revealProducts.title%",
+        "command": "mrvc.revealProducts",
+        "title": "%command.mrvc.revealProducts.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.refreshTree",
-        "title": "%command.mrs2.refreshTree.title%",
+        "command": "mrvc.refreshTree",
+        "title": "%command.mrvc.refreshTree.title%",
         "category": "MRVC",
         "icon": "$(refresh)"
       },
       {
-        "command": "mrs2.file.newFile",
-        "title": "%command.mrs2.file.newFile.title%",
+        "command": "mrvc.file.newFile",
+        "title": "%command.mrvc.file.newFile.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.file.newFolder",
-        "title": "%command.mrs2.file.newFolder.title%",
+        "command": "mrvc.file.newFolder",
+        "title": "%command.mrvc.file.newFolder.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.file.copy",
-        "title": "%command.mrs2.file.copy.title%",
+        "command": "mrvc.file.copy",
+        "title": "%command.mrvc.file.copy.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.file.paste",
-        "title": "%command.mrs2.file.paste.title%",
+        "command": "mrvc.file.paste",
+        "title": "%command.mrvc.file.paste.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.file.copyPath",
-        "title": "%command.mrs2.file.copyPath.title%",
+        "command": "mrvc.file.copyPath",
+        "title": "%command.mrvc.file.copyPath.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.file.copyRelPath",
-        "title": "%command.mrs2.file.copyRelPath.title%",
+        "command": "mrvc.file.copyRelPath",
+        "title": "%command.mrvc.file.copyRelPath.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.file.copyName",
-        "title": "%command.mrs2.file.copyName.title%",
+        "command": "mrvc.file.copyName",
+        "title": "%command.mrvc.file.copyName.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.file.rename",
-        "title": "%command.mrs2.file.rename.title%",
+        "command": "mrvc.file.rename",
+        "title": "%command.mrvc.file.rename.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.file.delete",
-        "title": "%command.mrs2.file.delete.title%",
+        "command": "mrvc.file.delete",
+        "title": "%command.mrvc.file.delete.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.file.reveal",
-        "title": "%command.mrs2.file.reveal.title%",
+        "command": "mrvc.file.reveal",
+        "title": "%command.mrvc.file.reveal.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.excludeFromBuild",
-        "title": "%command.mrs2.excludeFromBuild.title%",
+        "command": "mrvc.excludeFromBuild",
+        "title": "%command.mrvc.excludeFromBuild.title%",
         "category": "MRVC"
       },
       {
-        "command": "mrs2.includeFromBuild",
-        "title": "%command.mrs2.includeFromBuild.title%",
+        "command": "mrvc.includeFromBuild",
+        "title": "%command.mrvc.includeFromBuild.title%",
         "category": "MRVC"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "mrs2.openProject",
-          "when": "view == mrs2.projectExplorer",
+          "command": "mrvc.openProject",
+          "when": "view == mrvc.projectExplorer",
           "group": "navigation@1"
         },
         {
-          "command": "mrs2.openFolder",
-          "when": "view == mrs2.projectExplorer",
+          "command": "mrvc.openFolder",
+          "when": "view == mrvc.projectExplorer",
           "group": "navigation@2"
         },
         {
-          "command": "mrs2.collapseAll",
-          "when": "view == mrs2.projectExplorer",
+          "command": "mrvc.collapseAll",
+          "when": "view == mrvc.projectExplorer",
           "group": "navigation@3"
         },
         {
-          "command": "mrs2.refreshTree",
-          "when": "view == mrs2.projectExplorer",
+          "command": "mrvc.refreshTree",
+          "when": "view == mrvc.projectExplorer",
           "group": "navigation@4"
         },
         {
-          "command": "mrs2.buildAll",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.buildAll",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "1_build@1"
         },
         {
-          "command": "mrs2.rebuildAll",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.rebuildAll",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "1_build@2"
         },
         {
-          "command": "mrs2.cleanAll",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.cleanAll",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "1_build@3"
         },
         {
-          "command": "mrs2.deleteOutputKeepImages",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.deleteOutputKeepImages",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "2_delete@1"
         },
         {
-          "command": "mrs2.deleteOutputDirs",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.deleteOutputDirs",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "2_delete@2"
         },
         {
-          "command": "mrs2.generateSolution",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.generateSolution",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "3_generate@1"
         },
         {
-          "command": "mrs2.syncSettings",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.syncSettings",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "4_sync@1"
         },
         {
-          "command": "mrs2.flashUtility",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.flashUtility",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "5_tools@1"
         },
         {
-          "command": "mrs2.ispTool",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.ispTool",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "5_tools@2"
         },
         {
-          "command": "mrs2.touchkeyTool",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.touchkeyTool",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "5_tools@3"
         },
         {
-          "command": "mrs2.uiDesigner",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.uiDesigner",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "5_tools@4"
         },
         {
-          "command": "mrs2.hexBinTool",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.hexBinTool",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "5_tools@5"
         },
         {
-          "command": "mrs2.comTransmit",
-          "when": "view == mrs2.projectExplorer && mrs2.hasProjects",
+          "command": "mrvc.comTransmit",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "5_tools@6"
         },
         {
-          "command": "mrs2.createProject",
-          "when": "view == mrs2.projectExplorer",
+          "command": "mrvc.createProject",
+          "when": "view == mrvc.projectExplorer",
           "group": "0_new@1"
         },
         {
-          "command": "mrs2.createStaticLib",
-          "when": "view == mrs2.projectExplorer",
+          "command": "mrvc.createStaticLib",
+          "when": "view == mrvc.projectExplorer",
           "group": "0_new@2"
         }
       ],
       "view/item/context": [
         {
-          "command": "mrs2.buildSolution",
-          "when": "view == mrs2.projectExplorer && viewItem == solution",
-          "group": "mrs2@1"
+          "command": "mrvc.buildSolution",
+          "when": "view == mrvc.projectExplorer && viewItem == solution",
+          "group": "mrvc@1"
         },
         {
-          "command": "mrs2.cleanSolution",
-          "when": "view == mrs2.projectExplorer && viewItem == solution",
-          "group": "mrs2@2"
+          "command": "mrvc.cleanSolution",
+          "when": "view == mrvc.projectExplorer && viewItem == solution",
+          "group": "mrvc@2"
         },
         {
-          "command": "mrs2.excludeFromBuild",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file|folder)$/",
+          "command": "mrvc.excludeFromBuild",
+          "when": "view == mrvc.projectExplorer && viewItem =~ /^(file|folder)$/",
           "group": "buildcfg@1"
         },
         {
-          "command": "mrs2.includeFromBuild",
-          "when": "view == mrs2.projectExplorer && viewItem =~ /^(file\\.excluded|folder\\.excluded)$/",
+          "command": "mrvc.includeFromBuild",
+          "when": "view == mrvc.projectExplorer && viewItem =~ /^(file\\.excluded|folder\\.excluded)$/",
           "group": "buildcfg@1"
         },
         {
-          "command": "mrs2.file.newFile",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.file.newFile",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "2_file@1"
         },
         {
-          "command": "mrs2.file.newFolder",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.file.newFolder",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "2_file@2"
         },
         {
-          "command": "mrs2.file.copy",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.file.copy",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "2_file@3"
         },
         {
-          "command": "mrs2.file.paste",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.file.paste",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "2_file@4"
         },
         {
-          "command": "mrs2.file.copyPath",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.file.copyPath",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "2_file@5"
         },
         {
-          "command": "mrs2.file.copyRelPath",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.file.copyRelPath",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "2_file@6"
         },
         {
-          "command": "mrs2.file.copyName",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.file.copyName",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "2_file@7"
         },
         {
-          "command": "mrs2.file.reveal",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.file.reveal",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "2_file@10"
         },
         {
-          "command": "mrs2.file.copy",
-          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "command": "mrvc.file.copy",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
           "group": "file@1"
         },
         {
-          "command": "mrs2.file.copyPath",
-          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "command": "mrvc.file.copyPath",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
           "group": "file@2"
         },
         {
-          "command": "mrs2.file.copyRelPath",
-          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "command": "mrvc.file.copyRelPath",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
           "group": "file@3"
         },
         {
-          "command": "mrs2.file.copyName",
-          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "command": "mrvc.file.copyName",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
           "group": "file@4"
         },
         {
-          "command": "mrs2.file.rename",
-          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "command": "mrvc.file.rename",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
           "group": "file@5"
         },
         {
-          "command": "mrs2.file.delete",
-          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "command": "mrvc.file.delete",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
           "group": "file@6"
         },
         {
-          "command": "mrs2.file.reveal",
-          "when": "view == mrs2.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "command": "mrvc.file.reveal",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
           "group": "file@7"
         },
         {
-          "command": "mrs2.file.newFile",
-          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "command": "mrvc.file.newFile",
+          "when": "view == mrvc.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
           "group": "folder@1"
         },
         {
-          "command": "mrs2.file.newFolder",
-          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "command": "mrvc.file.newFolder",
+          "when": "view == mrvc.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
           "group": "folder@2"
         },
         {
-          "command": "mrs2.file.copy",
-          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "command": "mrvc.file.copy",
+          "when": "view == mrvc.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
           "group": "folder@3"
         },
         {
-          "command": "mrs2.file.paste",
-          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "command": "mrvc.file.paste",
+          "when": "view == mrvc.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
           "group": "folder@4"
         },
         {
-          "command": "mrs2.file.copyPath",
-          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "command": "mrvc.file.copyPath",
+          "when": "view == mrvc.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
           "group": "folder@5"
         },
         {
-          "command": "mrs2.file.copyRelPath",
-          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "command": "mrvc.file.copyRelPath",
+          "when": "view == mrvc.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
           "group": "folder@6"
         },
         {
-          "command": "mrs2.file.copyName",
-          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "command": "mrvc.file.copyName",
+          "when": "view == mrvc.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
           "group": "folder@7"
         },
         {
-          "command": "mrs2.file.rename",
-          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "command": "mrvc.file.rename",
+          "when": "view == mrvc.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
           "group": "folder@8"
         },
         {
-          "command": "mrs2.file.delete",
-          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "command": "mrvc.file.delete",
+          "when": "view == mrvc.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
           "group": "folder@9"
         },
         {
-          "command": "mrs2.file.reveal",
-          "when": "view == mrs2.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
+          "command": "mrvc.file.reveal",
+          "when": "view == mrvc.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
           "group": "folder@10"
         },
         {
-          "command": "mrs2.file.newFile",
-          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "command": "mrvc.file.newFile",
+          "when": "view == mrvc.projectExplorer && viewItem == linkedFolder",
           "group": "linkdir@1"
         },
         {
-          "command": "mrs2.file.newFolder",
-          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "command": "mrvc.file.newFolder",
+          "when": "view == mrvc.projectExplorer && viewItem == linkedFolder",
           "group": "linkdir@2"
         },
         {
-          "command": "mrs2.file.copy",
-          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "command": "mrvc.file.copy",
+          "when": "view == mrvc.projectExplorer && viewItem == linkedFolder",
           "group": "linkdir@3"
         },
         {
-          "command": "mrs2.file.paste",
-          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "command": "mrvc.file.paste",
+          "when": "view == mrvc.projectExplorer && viewItem == linkedFolder",
           "group": "linkdir@4"
         },
         {
-          "command": "mrs2.file.copyPath",
-          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "command": "mrvc.file.copyPath",
+          "when": "view == mrvc.projectExplorer && viewItem == linkedFolder",
           "group": "linkdir@5"
         },
         {
-          "command": "mrs2.file.copyRelPath",
-          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "command": "mrvc.file.copyRelPath",
+          "when": "view == mrvc.projectExplorer && viewItem == linkedFolder",
           "group": "linkdir@6"
         },
         {
-          "command": "mrs2.file.copyName",
-          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "command": "mrvc.file.copyName",
+          "when": "view == mrvc.projectExplorer && viewItem == linkedFolder",
           "group": "linkdir@7"
         },
         {
-          "command": "mrs2.file.reveal",
-          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
+          "command": "mrvc.file.reveal",
+          "when": "view == mrvc.projectExplorer && viewItem == linkedFolder",
           "group": "linkdir@8"
         },
         {
-          "command": "mrs2.file.newFile",
-          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "command": "mrvc.file.newFile",
+          "when": "view == mrvc.projectExplorer && viewItem == products",
           "group": "products@1"
         },
         {
-          "command": "mrs2.file.newFolder",
-          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "command": "mrvc.file.newFolder",
+          "when": "view == mrvc.projectExplorer && viewItem == products",
           "group": "products@2"
         },
         {
-          "command": "mrs2.file.copy",
-          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "command": "mrvc.file.copy",
+          "when": "view == mrvc.projectExplorer && viewItem == products",
           "group": "products@3"
         },
         {
-          "command": "mrs2.file.paste",
-          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "command": "mrvc.file.paste",
+          "when": "view == mrvc.projectExplorer && viewItem == products",
           "group": "products@4"
         },
         {
-          "command": "mrs2.file.copyPath",
-          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "command": "mrvc.file.copyPath",
+          "when": "view == mrvc.projectExplorer && viewItem == products",
           "group": "products@5"
         },
         {
-          "command": "mrs2.file.copyRelPath",
-          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "command": "mrvc.file.copyRelPath",
+          "when": "view == mrvc.projectExplorer && viewItem == products",
           "group": "products@6"
         },
         {
-          "command": "mrs2.file.copyName",
-          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "command": "mrvc.file.copyName",
+          "when": "view == mrvc.projectExplorer && viewItem == products",
           "group": "products@7"
         },
         {
-          "command": "mrs2.file.delete",
-          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "command": "mrvc.file.delete",
+          "when": "view == mrvc.projectExplorer && viewItem == products",
           "group": "products@9"
         },
         {
-          "command": "mrs2.file.reveal",
-          "when": "view == mrs2.projectExplorer && viewItem == products",
+          "command": "mrvc.file.reveal",
+          "when": "view == mrvc.projectExplorer && viewItem == products",
           "group": "products@10"
         },
         {
-          "command": "mrs2.file.copy",
-          "when": "view == mrs2.projectExplorer && viewItem == outputFile",
+          "command": "mrvc.file.copy",
+          "when": "view == mrvc.projectExplorer && viewItem == outputFile",
           "group": "outfile@1"
         },
         {
-          "command": "mrs2.file.copyPath",
-          "when": "view == mrs2.projectExplorer && viewItem == outputFile",
+          "command": "mrvc.file.copyPath",
+          "when": "view == mrvc.projectExplorer && viewItem == outputFile",
           "group": "outfile@2"
         },
         {
-          "command": "mrs2.file.copyRelPath",
-          "when": "view == mrs2.projectExplorer && viewItem == outputFile",
+          "command": "mrvc.file.copyRelPath",
+          "when": "view == mrvc.projectExplorer && viewItem == outputFile",
           "group": "outfile@3"
         },
         {
-          "command": "mrs2.file.copyName",
-          "when": "view == mrs2.projectExplorer && viewItem == outputFile",
+          "command": "mrvc.file.copyName",
+          "when": "view == mrvc.projectExplorer && viewItem == outputFile",
           "group": "outfile@4"
         },
         {
-          "command": "mrs2.file.reveal",
-          "when": "view == mrs2.projectExplorer && viewItem == outputFile",
+          "command": "mrvc.file.reveal",
+          "when": "view == mrvc.projectExplorer && viewItem == outputFile",
           "group": "outfile@5"
         },
         {
-          "command": "mrs2.flash",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.flash",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "inline@1"
         },
         {
-          "command": "mrs2.build",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.build",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "inline@2"
         },
         {
-          "command": "mrs2.rebuild",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.rebuild",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "inline@3"
         },
         {
-          "command": "mrs2.build",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.build",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@1"
         },
         {
-          "command": "mrs2.buildAndDownload",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.buildAndDownload",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@2"
         },
         {
-          "command": "mrs2.rebuild",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.rebuild",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@3"
         },
         {
-          "command": "mrs2.clean",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.clean",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@4"
         },
         {
-          "command": "mrs2.flash",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.flash",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@5"
         },
         {
-          "command": "mrs2.configure",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.configure",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "9_props@1"
         },
         {
-          "command": "mrs2.renameProject",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.renameProject",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@6"
         },
         {
-          "command": "mrs2.syncProjectName",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.syncProjectName",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@7"
         },
         {
-          "command": "mrs2.switchProjectType",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.switchProjectType",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@8"
         },
         {
-          "command": "mrs2.addLinkedFolder",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.addLinkedFolder",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "3_link@1"
         },
         {
-          "command": "mrs2.removeLinkedFolder",
-          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
-          "group": "mrs2link@2"
+          "command": "mrvc.removeLinkedFolder",
+          "when": "view == mrvc.projectExplorer && viewItem == linkedFolder",
+          "group": "mrvclink@2"
         },
         {
-          "command": "mrs2.addProjectToSolution",
-          "when": "view == mrs2.projectExplorer && viewItem == solution",
-          "group": "mrs2@3"
+          "command": "mrvc.addProjectToSolution",
+          "when": "view == mrvc.projectExplorer && viewItem == solution",
+          "group": "mrvc@3"
         },
         {
-          "command": "mrs2.addProjectsByBatch",
-          "when": "view == mrs2.projectExplorer && viewItem == solution",
-          "group": "mrs2@4"
+          "command": "mrvc.addProjectsByBatch",
+          "when": "view == mrvc.projectExplorer && viewItem == solution",
+          "group": "mrvc@4"
         },
         {
-          "command": "mrs2.setBuildOrder",
-          "when": "view == mrs2.projectExplorer && viewItem == solution",
-          "group": "mrs2@5"
+          "command": "mrvc.setBuildOrder",
+          "when": "view == mrvc.projectExplorer && viewItem == solution",
+          "group": "mrvc@5"
         },
         {
-          "command": "mrs2.closeSolution",
-          "when": "view == mrs2.projectExplorer && viewItem == solution",
-          "group": "mrs2@9"
+          "command": "mrvc.closeSolution",
+          "when": "view == mrvc.projectExplorer && viewItem == solution",
+          "group": "mrvc@9"
         },
         {
-          "command": "mrs2.generateCMakeList",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.generateCMakeList",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@9"
         },
         {
-          "command": "mrs2.exportAsCMake",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.exportAsCMake",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@10"
         },
         {
-          "command": "mrs2.restoreRemoved",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.restoreRemoved",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@11"
         },
         {
-          "command": "mrs2.showStackUsage",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.showStackUsage",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@12"
         },
         {
-          "command": "mrs2.showCallAnalysis",
-          "when": "view == mrs2.projectExplorer && viewItem == project",
+          "command": "mrvc.showCallAnalysis",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@13"
         },
         {
-          "command": "mrs2.changeLinkedFolder",
-          "when": "view == mrs2.projectExplorer && viewItem == linkedFolder",
-          "group": "mrs2link@3"
+          "command": "mrvc.changeLinkedFolder",
+          "when": "view == mrvc.projectExplorer && viewItem == linkedFolder",
+          "group": "mrvclink@3"
         }
       ],
       "editor/context": [
         {
-          "command": "mrs2.showFullBuildOutput",
+          "command": "mrvc.showFullBuildOutput",
           "when": "view == workbench.panel.output",
           "group": "8_showFullBuildOutput"
         }
       ],
       "commandPalette": [
         {
-          "command": "mrs2.build",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.build",
+          "when": "mrvc.hasActiveProject"
         },
         {
-          "command": "mrs2.buildAndDownload",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.buildAndDownload",
+          "when": "mrvc.hasActiveProject"
         },
         {
-          "command": "mrs2.buildAll",
-          "when": "mrs2.hasProjects"
+          "command": "mrvc.resetInstallGuidance",
+          "when": "true"
         },
         {
-          "command": "mrs2.cleanAll",
-          "when": "mrs2.hasProjects"
+          "command": "mrvc.buildAll",
+          "when": "mrvc.hasProjects"
         },
         {
-          "command": "mrs2.rebuild",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.cleanAll",
+          "when": "mrvc.hasProjects"
         },
         {
-          "command": "mrs2.flash",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.rebuild",
+          "when": "mrvc.hasActiveProject"
         },
         {
-          "command": "mrs2.clean",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.flash",
+          "when": "mrvc.hasActiveProject"
         },
         {
-          "command": "mrs2.configure",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.clean",
+          "when": "mrvc.hasActiveProject"
         },
         {
-          "command": "mrs2.switchProjectType",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.configure",
+          "when": "mrvc.hasActiveProject"
         },
         {
-          "command": "mrs2.generateCMakeList",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.switchProjectType",
+          "when": "mrvc.hasActiveProject"
         },
         {
-          "command": "mrs2.exportAsCMake",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.generateCMakeList",
+          "when": "mrvc.hasActiveProject"
         },
         {
-          "command": "mrs2.showFullBuildOutput",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.exportAsCMake",
+          "when": "mrvc.hasActiveProject"
         },
         {
-          "command": "mrs2.restoreRemoved",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.showFullBuildOutput",
+          "when": "mrvc.hasActiveProject"
         },
         {
-          "command": "mrs2.syncSettings",
-          "when": "mrs2.hasProjects"
+          "command": "mrvc.restoreRemoved",
+          "when": "mrvc.hasActiveProject"
         },
         {
-          "command": "mrs2.updateIntellisense",
-          "when": "mrs2.hasProjects"
+          "command": "mrvc.syncSettings",
+          "when": "mrvc.hasProjects"
         },
         {
-          "command": "mrs2.addLinkedFolder",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.updateIntellisense",
+          "when": "mrvc.hasProjects"
         },
         {
-          "command": "mrs2.revealProducts",
-          "when": "mrs2.hasActiveProject"
+          "command": "mrvc.addLinkedFolder",
+          "when": "mrvc.hasActiveProject"
         },
         {
-          "command": "mrs2.removeLinkedFolder",
+          "command": "mrvc.revealProducts",
+          "when": "mrvc.hasActiveProject"
+        },
+        {
+          "command": "mrvc.removeLinkedFolder",
           "when": "false"
         },
         {
-          "command": "mrs2.changeLinkedFolder",
+          "command": "mrvc.changeLinkedFolder",
           "when": "false"
         },
         {
-          "command": "mrs2.file.newFile",
+          "command": "mrvc.file.newFile",
           "when": "false"
         },
         {
-          "command": "mrs2.file.newFolder",
+          "command": "mrvc.file.newFolder",
           "when": "false"
         },
         {
-          "command": "mrs2.file.copy",
+          "command": "mrvc.file.copy",
           "when": "false"
         },
         {
-          "command": "mrs2.file.paste",
+          "command": "mrvc.file.paste",
           "when": "false"
         },
         {
-          "command": "mrs2.file.copyPath",
+          "command": "mrvc.file.copyPath",
           "when": "false"
         },
         {
-          "command": "mrs2.file.copyRelPath",
+          "command": "mrvc.file.copyRelPath",
           "when": "false"
         },
         {
-          "command": "mrs2.file.copyName",
+          "command": "mrvc.file.copyName",
           "when": "false"
         },
         {
-          "command": "mrs2.file.rename",
+          "command": "mrvc.file.rename",
           "when": "false"
         },
         {
-          "command": "mrs2.file.delete",
+          "command": "mrvc.file.delete",
           "when": "false"
         },
         {
-          "command": "mrs2.file.reveal",
+          "command": "mrvc.file.reveal",
           "when": "false"
         },
         {
-          "command": "mrs2.refreshTree",
+          "command": "mrvc.refreshTree",
           "when": "false"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "mrs2.build",
+        "command": "mrvc.build",
         "key": "f7",
-        "when": "mrs2.hasActiveProject"
+        "when": "mrvc.hasActiveProject"
       },
       {
-        "command": "mrs2.rebuild",
+        "command": "mrvc.rebuild",
         "key": "shift+f7",
-        "when": "mrs2.hasActiveProject"
+        "when": "mrvc.hasActiveProject"
       },
       {
-        "command": "mrs2.flash",
+        "command": "mrvc.flash",
         "key": "f8",
-        "when": "mrs2.hasActiveProject"
+        "when": "mrvc.hasActiveProject"
       }
     ],
     "colors": [

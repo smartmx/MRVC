@@ -141,7 +141,7 @@ export class BuildManager {
   /** output directories are not covered by any file watcher — the tree must
    * be told explicitly that they changed */
   private refreshTree(): void {
-    void vscode.commands.executeCommand('mrs2.refreshTree');
+    void vscode.commands.executeCommand('mrvc.refreshTree');
   }
 
   /**

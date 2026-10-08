@@ -33,7 +33,7 @@ export function targetDir(node: TreeNode): string | undefined {
 }
 
 function refresh(): void {
-  void vscode.commands.executeCommand('mrs2.refreshTree');
+  void vscode.commands.executeCommand('mrvc.refreshTree');
 }
 
 /** First non-existing "name - copy (n)" variant inside dir. */
