@@ -1,6 +1,38 @@
 # MRVC 更新日志
 
-## V0.1.8（未发布）
+## V0.1.9（2026-10-11）
+
+### 新增
+
+- **Bookmark / Note（书签与注释）**：通过 `extensionPack` 推荐 MRS2 内置的同款开源扩展
+  **Labeled Bookmarks**（`koalamer.labeled-bookmarks`，即 MRS2 书签/注释功能的实际来源）——
+  从市场安装/升级 MRVC 时该扩展**随之自动安装**（VSIX 侧载场景则在安装后提示一次，可跳过）：
+  编辑器行级书签、带文字注释的书签（Note）、分组/颜色/导航与书签树视图；不需要可在扩展页
+  单独禁用/卸载。离线机器可侧载 MRS2 安装目录内置的同款扩展副本
+  （`resources/app/extensions/koalamer.labeled-bookmarks-*/`）。
+- **Modify Projects Toolchain（批量修改工程工具链）**（MRS2 同名命令对齐）：Solution 右键
+  与命令面板入口——QuickPick 选工具链（GCC8/12/15，预选 GCC15 与 MRS2 默认一致）→ 模态确认 →
+  把全部已加载 **RISC-V** 工程的 `target.rvGcc` 改写为所选值（ARM 工程跳过并计数；当前写入
+  活动（第一个）配置——多配置工程的其余配置待多配置改造后再覆盖，与 MRVC 全局单配置构建
+  模型一致）。工具链解析器读该选项，**在 `mrvc.toolchain=auto`（默认）时下次编译即生效**；
+  显式设置 `mrvc.toolchain` 为 GCC8/12/15 者以该设置优先（既有设计）；输出频道逐工程
+  `[OK]/[SKIP]/[FAIL]`。
+- **文件标旗（Flag / Clear Flag）**（MRS2 "Flag" 对齐）：文件右键 → **标旗** → 20 色
+  QuickPick（与 MRS2 `getSupportedColors` 全量一致：Red/Orange/Peach/Green/Teal/Olive/Blue/
+  Purple/Maroon/DarkSteel/Gray + Dark×9，别名与色值逐项照抄）→ 树中该文件带
+  ● 色点装饰（按旗色映射最接近的主题色）；**清除标旗**移除。存储与 MRS2 **完全互通**（工程目录
+  `.mrs/preferredColor.json`，`{logic_file, color}` 列表）——同一工程在 MRS2 与 MRVC 里
+  标旗互相可见（含 MRS2 用任意颜色标的旗）。排除编译的文件同样可标旗。
+
+### 勘误
+
+- **"链接目录深层拆分只识别第 1 层"系误判，撤销该已知限制**：经挖取 MRS2 扫描器源码
+  （`getLogicDirFilesMap`，对工程根与全部链接目录走同一无深度限制的完整递归）并与 MRVC
+  实证对照（三层嵌套链接目录探针：L1/L2/L3 全部扫进），MRVC 的构建扫描从头就是完整递归，
+  与 MRS2 语义一致——972 工程 mass 全绿从未暴露问题与此相符。原表述混淆了**构建扫描**与
+  **工程树的链接目录深层展开**两回事：若树视图存在深层展开受限，仅影响浏览不影响编译。
+
+## V0.1.8（2026-10-10）
 
 ### 新增
 

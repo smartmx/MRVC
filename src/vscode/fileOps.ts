@@ -9,6 +9,8 @@ import * as path from 'path';
 import { TreeNode } from './tree';
 import { ProjectStore, MrsProject, msg } from './projects';
 import { appendRemovedResource, clearRemovedResource, listRemovedResources } from '../core/projectFile';
+import { Cproject } from '../core/cproject';
+import { MARK_COLORS, setMark, clearMark } from '../core/colorMarks';
 import { t } from '../core/i18n';
 
 interface Clip {
@@ -288,4 +290,58 @@ export async function restoreRemovedCmd(store: ProjectStore, node?: unknown): Pr
   }
   refresh();
   vscode.window.showInformationMessage(t('restoredCount', pick.length));
+}
+
+/**
+ * Flag / Clear Flag (MRS2 "Flag" parity): color-mark a file in the tree so
+ * it is easy to spot. Stored MRS2-compatibly in the project's
+ * .mrs/preferredColor.json — the same project shows the same flags in MRS2.
+ * The logic path (linked folders rooted at their link name) is what both
+ * IDEs key on.
+ */
+export async function flagFileCmd(_store: ProjectStore, item?: unknown): Promise<void> {
+  const node = item as { fsPath?: string; project?: MrsProject } | undefined;
+  if (!node?.fsPath) return;
+  if (!node.project?.root) {
+    // loose file (Workspace Files group): it belongs to no loaded project
+    vscode.window.showErrorMessage(t('flagNotInProject'));
+    return;
+  }
+  const logic = node.project.logicPathOf(node.fsPath);
+  if (!logic) {
+    vscode.window.showErrorMessage(t('flagNotInProject'));
+    return;
+  }
+  const pick = await vscode.window.showQuickPick(
+    MARK_COLORS.map(
+      (c): vscode.QuickPickItem & { alias: string; displayName: string } => ({
+        label: `$(circle-large-filled) ${c.displayName}`,
+        description: c.rgb,
+        alias: c.alias,
+        displayName: c.displayName,
+      })
+    ),
+    { placeHolder: t('flagPickColor') }
+  );
+  if (!pick) return;
+  const cp = Cproject.load(node.project.root);
+  setMark(node.project.root, cp.linkedFolders, logic, pick.alias);
+  vscode.commands.executeCommand('mrvc.refreshTreeDecorations');
+  vscode.window.setStatusBarMessage(t('flagApplied', path.basename(node.fsPath), pick.displayName), 4000);
+}
+
+export async function clearFlagCmd(_store: ProjectStore, item?: unknown): Promise<void> {
+  const node = item as { fsPath?: string; project?: MrsProject } | undefined;
+  if (!node?.fsPath) return;
+  if (!node.project?.root) {
+    vscode.window.showErrorMessage(t('flagNotInProject'));
+    return;
+  }
+  const logic = node.project.logicPathOf(node.fsPath);
+  // unflagging a file MRVC can't map (no logic path) is a silent no-op —
+  // there is nothing to clear and the user loses nothing
+  if (!logic) return;
+  const cp = Cproject.load(node.project.root);
+  clearMark(node.project.root, cp.linkedFolders, logic);
+  vscode.commands.executeCommand('mrvc.refreshTreeDecorations');
 }

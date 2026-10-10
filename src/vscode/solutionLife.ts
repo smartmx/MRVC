@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import { ProjectStore, MrsSolution, MrsProject, msg } from './projects';
 import { appendSolutionMembers, recordBuildOrder } from '../core/solution';
 import { findProjectRoots } from '../core/discover';
+import { Cproject } from '../core/cproject';
 import { t } from '../core/i18n';
 
 function solutionArg(item?: unknown): MrsSolution | undefined {
@@ -150,4 +151,77 @@ export async function closeSolutionCmd(_store: ProjectStore, item?: unknown): Pr
   const sol = solutionArg(item);
   void sol; // any solution node closes the window, matching MRS2
   await vscode.commands.executeCommand('workbench.action.closeFolder');
+}
+
+/**
+ * MRS2 modifySolutionProjectsToolchain parity: pick a toolchain, then
+ * rewrite `target.rvGcc` on EVERY loaded RISC-V project — MRS2's own
+ * implementation iterates getAllCurrentProjects() even when invoked from
+ * a solution node, so the scope is "all loaded projects" regardless of
+ * the entry point. ARM projects are skipped. Takes effect on the next
+ * build (toolchain resolution reads this option).
+ */
+const OPT_BASE = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.';
+
+let toolchainChannel: vscode.OutputChannel | undefined;
+
+export async function modifySolutionToolchainCmd(store: ProjectStore, item?: unknown): Promise<void> {
+  void item; // MRS2 ignores the node too: scope is always ALL loaded projects
+  const members = store.all;
+  if (!members.length) {
+    vscode.window.showErrorMessage(t('noProjectsLoaded'));
+    return;
+  }
+  interface ToolchainPick extends vscode.QuickPickItem {
+    version: string;
+  }
+  const picks: ToolchainPick[] = [
+    { label: 'WCH Toolchain (GCC8)', version: '8' },
+    { label: 'WCH Toolchain (GCC12)', version: '12' },
+    { label: 'WCH Toolchain (GCC15)', version: '15' },
+  ];
+  // MRS2 defaults to GCC15 — createQuickPick can preselect it
+  // (showQuickPick options have no activeItem)
+  const qp = vscode.window.createQuickPick<ToolchainPick>();
+  qp.items = picks;
+  qp.activeItems = [picks[2]];
+  qp.placeholder = t('toolchainPick');
+  qp.ignoreFocusOut = true;
+  const picked = await new Promise<ToolchainPick | undefined>((resolve) => {
+    qp.onDidAccept(() => resolve(qp.selectedItems[0]));
+    qp.onDidHide(() => resolve(undefined));
+    qp.show();
+  });
+  qp.dispose();
+  if (!picked) return;
+  const value = OPT_BASE + 'target.rvGcc.' + picked.version;
+  const go = await vscode.window.showInformationMessage(t('toolchainConfirm', members.length, picked.label), { modal: true }, t('toolchainGo'));
+  if (go !== t('toolchainGo')) return;
+
+  // lazy singleton — repeated runs reuse the channel (no accumulation)
+  if (!toolchainChannel) toolchainChannel = vscode.window.createOutputChannel('MRVC Toolchain');
+  const ch = toolchainChannel;
+  ch.appendLine(`\n===== Modify Projects Toolchain → ${picked.label} (${members.length} project(s)) =====`);
+  let ok = 0;
+  let skipped = 0;
+  for (const p of members) {
+    try {
+      const cp = Cproject.load(p.root);
+      // MRS2 skips non-RISC-V architecture projects
+      if (!/riscv/i.test(cp.toolChain.attr('superClass') ?? '')) {
+        skipped++;
+        ch.appendLine(`[SKIP] ${p.projectName} (not a RISC-V project)`);
+        continue;
+      }
+      cp.setOptionValue('target.rvGcc', value);
+      cp.save();
+      store.reloadProject(p);
+      ok++;
+      ch.appendLine(`[OK] ${p.projectName}`);
+    } catch (e) {
+      ch.appendLine(`[FAIL] ${p.projectName}  — ${msg(e)}`);
+    }
+  }
+  ch.appendLine(`===== Toolchain modify finished: ${ok} OK, ${skipped} skipped =====`);
+  ch.show(true);
 }

@@ -22,8 +22,11 @@ import {
   renameNode,
   deleteNode,
   restoreRemovedCmd,
+  flagFileCmd,
+  clearFlagCmd,
 } from './vscode/fileOps';
 import { excludeFromBuild, includeFromBuild, excludedResourcePaths } from './vscode/exclude';
+import { listMarks } from './core/colorMarks';
 import { renameProjectCmd, syncProjectNameFromFolder } from './vscode/renameProject';
 import { writeSolution } from './core/solution';
 import { setCppNature } from './core/projectFile';
@@ -31,7 +34,7 @@ import { SyncPage } from './vscode/syncPage';
 import { MacroBatchPage } from './vscode/macroBatch';
 import { comTransmitCmd, hexBinToolCmd, ispToolCmd, touchkeyToolCmd, uiDesignerCmd } from './vscode/mrsTools';
 import { ensureIntellisenseConfig, resolveProjectForFile, switchContext, maybePromptCppTools } from './vscode/intellisense';
-import { addProjectToSolutionCmd, addProjectsByBatchCmd, setBuildOrderCmd, closeSolutionCmd } from './vscode/solutionLife';
+import { addProjectToSolutionCmd, addProjectsByBatchCmd, setBuildOrderCmd, closeSolutionCmd, modifySolutionToolchainCmd } from './vscode/solutionLife';
 import { generateCMakeListCmd, exportAsCMakeCmd } from './vscode/cmakeExport';
 import { buildRecordFile } from './core/buildLog';
 import { setLanguage, vscodeLanguageIsChinese, t } from './core/i18n';
@@ -139,9 +142,23 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     treeDecorations.setOutputs(store.all.map((p) => p.buildDir));
     treeDecorations.setExcludedByProject(new Map(store.all.map((p) => [ProjectStore.key(p.root), excludedResourcePaths(p)] as const)));
+    // file flags (MRS2-compatible .mrs/preferredColor.json)
+    const flagMap = new Map<string, string>();
+    for (const p of store.all) {
+      for (const m of listMarks(p.root, p.cproject.linkedFolders)) flagMap.set(ProjectStore.key(m.absFile), m.color);
+    }
+    treeDecorations.setFlags(flagMap);
   };
   store.onDidChange(updateTreeDecorations);
   updateTreeDecorations();
+  // flags can also be edited OUTSIDE MRVC (MRS2 writes the same
+  // .mrs/preferredColor.json): watch each project's copy so decorations
+  // refresh without waiting for an unrelated store change
+  const flagWatcher = vscode.workspace.createFileSystemWatcher('**/.mrs/preferredColor.json');
+  flagWatcher.onDidChange(updateTreeDecorations);
+  flagWatcher.onDidCreate(updateTreeDecorations);
+  flagWatcher.onDidDelete(updateTreeDecorations);
+  context.subscriptions.push(flagWatcher);
 
   const build = new BuildManager(store);
   const configView = new ConfigView(store, context);
@@ -194,6 +211,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   reg('mrvc.openProject', () => store.openProject());
   reg('mrvc.openFolder', () => store.openFolder());
+  // the Flag commands refresh decorations through this (fileOps cannot
+  // reach the decoration provider instance directly)
+  reg('mrvc.refreshTreeDecorations', () => updateTreeDecorations());
   reg('mrvc.build', (item?: { project?: unknown }) => build.run('build', (item as { project?: MrsProject })?.project));
   reg('mrvc.buildAndDownload', (item?: { project?: unknown }) =>
     build.buildAndDownload((item as { project?: MrsProject })?.project)
@@ -213,6 +233,7 @@ export function activate(context: vscode.ExtensionContext): void {
   reg('mrvc.addProjectToSolution', (item?: unknown) => addProjectToSolutionCmd(store, item));
   reg('mrvc.addProjectsByBatch', (item?: unknown) => addProjectsByBatchCmd(store, item));
   reg('mrvc.setBuildOrder', (item?: unknown) => setBuildOrderCmd(store, item));
+  reg('mrvc.modifySolutionToolchain', (item?: unknown) => modifySolutionToolchainCmd(store, item));
   reg('mrvc.closeSolution', (item?: unknown) => closeSolutionCmd(store, item));
   reg('mrvc.generateCMakeList', (item?: { project?: unknown }) => generateCMakeListCmd(store, item));
   reg('mrvc.exportAsCMake', (item?: { project?: unknown }) => exportAsCMakeCmd(store, item));
@@ -333,6 +354,8 @@ export function activate(context: vscode.ExtensionContext): void {
   reg('mrvc.file.rename', (item?: unknown) => renameNode(item as never));
   reg('mrvc.file.delete', (item?: unknown) => deleteNode(item as never));
   reg('mrvc.restoreRemoved', (item?: unknown) => restoreRemovedCmd(store, item));
+  reg('mrvc.flagFile', (item?: unknown) => flagFileCmd(store, item));
+  reg('mrvc.clearFlag', (item?: unknown) => clearFlagCmd(store, item));
   reg('mrvc.renameProject', (item?: unknown) => renameProjectCmd(store, item as never));
   reg('mrvc.syncProjectName', (item?: unknown) => syncProjectNameFromFolder(store, item as never));
   // C/C++ toggle = the CDT cxx nature in .project: it drives which property

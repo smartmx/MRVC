@@ -8,6 +8,7 @@ import { ProjectStore, MrsProject, MrsSolution } from './projects';
 import { isLogicExcluded } from '../core/scan';
 import { RemovedResource, listRemovedResources } from '../core/projectFile';
 import { toPosix } from '../core/macros';
+import { themeColorFor } from '../core/colorMarks';
 import { t } from '../core/i18n';
 
 type NodeType = 'project' | 'solution' | 'linkedFolder' | 'folder' | 'file' | 'products' | 'empty' | 'loose';
@@ -46,10 +47,26 @@ export class TreeDecorations implements vscode.FileDecorationProvider {
   private outputs = new Set<string>();
   private excludedByProject = new Map<string, Set<string>>();
   private excludedAll = new Set<string>();
+  /** file flag colors (abs key → color alias), fed by the Flag commands */
+  private flags = new Map<string, string>();
 
   private fireChanged(next: Set<string>, prev: Set<string>): void {
     const changed = [...new Set([...next, ...prev])];
     if (changed.length) this._onDidChange.fire(undefined);
+  }
+
+  setFlags(next: Map<string, string>): void {
+    // only keys whose color actually changed (or added/removed) — firing on
+    // every store change would recompute all decorations for nothing
+    const changed = new Set<string>();
+    for (const [k, c] of next) {
+      if (this.flags.get(k) !== c) changed.add(k);
+    }
+    for (const k of this.flags.keys()) {
+      if (!next.has(k)) changed.add(k);
+    }
+    this.flags = next;
+    if (changed.size) this._onDidChange.fire(undefined);
   }
 
   setLinks(paths: Iterable<string>): void {
@@ -97,6 +114,12 @@ export class TreeDecorations implements vscode.FileDecorationProvider {
     }
     const perProject = uri.query ? this.excludedByProject.get(uri.query) : undefined;
     const excluded = perProject ? perProject.has(key) : this.excludedAll.has(key);
+    // file flag (MRS2 "Flag" parity): colored dot badge — takes precedence
+    // over the excluded grey (an explicit user action wins)
+    const flag = this.flags.get(key);
+    if (flag) {
+      return new vscode.FileDecoration('●', `Flagged: ${flag}`, new vscode.ThemeColor(themeColorFor(flag)));
+    }
     if (excluded) {
       // VSCode has no icon overlays (MRS2/Eclipse-style slash), the closest
       // is the single-char badge next to the label plus the gray row

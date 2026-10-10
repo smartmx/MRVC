@@ -81,7 +81,7 @@ npm run package      # @vscode/vsce 打包 .vsix（--no-dependencies）
 ```
 
 > **顺序陷阱**：`npx tsc` 与 `node esbuild.js` 都会写 `out/extension.js`——tsc 产出的是 10KB 的模块入口，
-> esbuild 产出的是 ~934KB 的完整 bundle（发布用）。**必须先 tsc 后 esbuild**；顺序颠倒会把 bundle 覆盖成
+> esbuild 产出的是 ~978KB 的完整 bundle（发布用）。**必须先 tsc 后 esbuild**；顺序颠倒会把 bundle 覆盖成
 > 小文件，打出的 vsix 缺失全部功能。打包前建议 `ls -la out/extension.js` 确认体积。
 
 测试脚本在 `tools/`，均为纯 Node 断言，直接 `node tools/<脚本>` 运行：

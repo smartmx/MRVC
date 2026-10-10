@@ -448,6 +448,20 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   macroBatchActSkip: { en: 'Skip this project', 'zh-cn': '跳过此工程' },
   macroBatchActApplyRest: { en: 'Apply this and ALL remaining', 'zh-cn': '应用此工程，其余全部应用' },
   macroBatchActSkipRest: { en: 'Skip this and ALL remaining', 'zh-cn': '跳过此工程，其余全部跳过' },
+
+  // batch toolchain (solution menu) + file flags
+  toolchainPick: { en: 'Select the toolchain for ALL projects (RISC-V only)', 'zh-cn': '选择全部工程（仅 RISC-V）使用的工具链' },
+  toolchainConfirm: {
+    en: 'Set the toolchain of {0} project(s) to {1}? Takes effect on the next build.',
+    'zh-cn': '将 {0} 个工程的工具链设置为 {1}？下次编译时生效。',
+  },
+  toolchainGo: { en: 'Modify', 'zh-cn': '修改' },
+  flagPickColor: { en: 'Select a flag color', 'zh-cn': '选择标旗颜色' },
+  flagApplied: { en: 'MRVC: "{0}" flagged ({1})', 'zh-cn': 'MRVC：已标旗“{0}”（{1}）' },
+  flagNotInProject: {
+    en: 'MRVC: this file does not belong to a loaded project.',
+    'zh-cn': 'MRVC：该文件不属于任何已加载的工程。',
+  },
 };
 
 /** translate a key with optional {0}/{1} substitution */

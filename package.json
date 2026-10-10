@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "publisher": "smartmx",
   "private": true,
   "license": "MIT",
@@ -13,6 +13,9 @@
   "engines": {
     "vscode": "^1.80.0"
   },
+  "extensionPack": [
+    "koalamer.labeled-bookmarks"
+  ],
   "categories": [
     "Programming Languages",
     "Other"
@@ -415,6 +418,21 @@
         "category": "MRVC"
       },
       {
+        "command": "mrvc.modifySolutionToolchain",
+        "title": "%command.mrvc.modifySolutionToolchain.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.flagFile",
+        "title": "%command.mrvc.flagFile.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.clearFlag",
+        "title": "%command.mrvc.clearFlag.title%",
+        "category": "MRVC"
+      },
+      {
         "command": "mrvc.showStackUsage",
         "title": "%command.mrvc.showStackUsage.title%",
         "category": "MRVC"
@@ -723,6 +741,16 @@
           "group": "file@7"
         },
         {
+          "command": "mrvc.flagFile",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "group": "file@8"
+        },
+        {
+          "command": "mrvc.clearFlag",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "group": "file@9"
+        },
+        {
           "command": "mrvc.file.newFile",
           "when": "view == mrvc.projectExplorer && (viewItem == folder || viewItem == folder.excluded)",
           "group": "folder@1"
@@ -968,6 +996,11 @@
           "group": "mrvc@5"
         },
         {
+          "command": "mrvc.modifySolutionToolchain",
+          "when": "view == mrvc.projectExplorer && viewItem == solution",
+          "group": "mrvc@6"
+        },
+        {
           "command": "mrvc.closeSolution",
           "when": "view == mrvc.projectExplorer && viewItem == solution",
           "group": "mrvc@9"
@@ -1074,6 +1107,18 @@
         {
           "command": "mrvc.batchMacros",
           "when": "mrvc.hasProjects"
+        },
+        {
+          "command": "mrvc.modifySolutionToolchain",
+          "when": "mrvc.hasProjects"
+        },
+        {
+          "command": "mrvc.flagFile",
+          "when": "false"
+        },
+        {
+          "command": "mrvc.clearFlag",
+          "when": "false"
         },
         {
           "command": "mrvc.openSettings"
