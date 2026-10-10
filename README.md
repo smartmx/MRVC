@@ -4,6 +4,7 @@
 无需 MRS2 IDE 本体（仅复用其安装目录中的工具链与工具组件）。
 **当前仅支持 Windows**（Linux/macOS 暂不支持）。
 活动栏视图名为 "Project Explorer"；命令 ID 与设置键统一为 `mrvc.*`（V0.1.7 起，原 `mrs2.*` 历史前缀已退役——自定义快捷键需同步更新）。
+扩展 ID 自 V0.1.7 起为 `smartmx.mrvc`（publisher 由 `mrvc` 更名为 `smartmx`）：装过旧 `mrvc.mrvc` 的用户升级时需**先卸载旧扩展**再安装新版——两者是相互独立、不会自动互相覆盖的扩展。
 
 ## 功能
 
@@ -98,6 +99,7 @@ npm run package      # @vscode/vsce 打包 .vsix（--no-dependencies）
 - `makefile-dollar-test.js` — makefile `$` 转义回归（用户 `$` 翻倍，`$@`/`$(VAR)` 等 make 语法原样保留；守护“生成汇编清单”的 `.lst` 开关）
 - `build-test.mjs <EVT工程路径>` — 真实工具链编译单工程；`build-all.mjs` 全量批跑
 - `print-menus.mjs` — 打印各类树节点右键菜单排序（开发辅助）
+- `verify-vsix.mjs` — 打包产物核对：自动先从 src 重建 bundle，再与 vsix 逐字节断言（manifest/NLS/changelog/bundle/版本号/泄漏）——改源码忘 esbuild、或包被旧产物顶替都会被拦，发布前必跑
 
 VSCode 调试（调试配置已配好，`esbuild` 已开 sourcemap，断点直接打在 `src/**/*.ts` 上）：
 

@@ -67,6 +67,7 @@ const vscodeStub = {
   TaskPanelKind: { Shared: 1, Dedicated: 2 },
   FileDecoration: class {},
   ThemeColor: class {},
+  QuickPickItemKind: { Separator: -1, Default: 0 },
   EventEmitter: class { constructor() { this.event = undefined; } fire() {} dispose() {} },
   RelativePattern: class {},
   ViewColumn: { Active: 1 },
@@ -290,6 +291,214 @@ await view.show(store.active);
       h({ command: 'applySync', items: [{ suffix: 'mrvc.test.absent.enum', type: 'enum', enumBase: 'mrvc.test.absent.enum.', value: 'default' }] });
     await new Promise((r) => setTimeout(r, 300));
     check('sync batch: default-valued enum leaves the option unset', !Cproject.load(scratch1).optionValue('mrvc.test.absent.enum'));
+
+    // ---- Macro Definitions Across Projects (dedicated page) ----
+    const macroPanel = {
+      html: '', title: '', reveal() {}, dispose() {},
+      onDidDispose() { return { dispose() {} }; },
+      webview: {
+        onDidReceiveMessage(h) { macroHandlers.push(h); return { dispose() {} }; },
+        postMessage(m) { macroPosted.push(m); return Promise.resolve(true); },
+      },
+    };
+    const macroHandlers = [];
+    const macroPosted = [];
+    // per-project review decisions: each element is an action string consumed
+    // by ONE showQuickPick call ('apply'/'skip'/'applyRest'/'skipRest'), or
+    // undefined (= Esc — cancels all remaining)
+    const macroQuickPicks = [];
+    const vscodePatch3 = {
+      window: {
+        ...vscodeStub.window,
+        createWebviewPanel: () => macroPanel,
+        withProgress: (_o, task) => task({ report() {} }, { isCancellationRequested: false }).then(() => undefined),
+        createOutputChannel: () => ({ appendLine() {}, show() {}, dispose() {} }),
+        showWarningMessage: (...a) => {
+          macroWarnArgs = a;
+          // the user always clicks the FIRST BUTTON (confirm). a[0] is the
+          // message text itself — buttons start at a[1]. A modal with no
+          // buttons resolves undefined (dismiss).
+          const buttons = a.slice(1).filter((x) => typeof x === 'string');
+          return Promise.resolve(buttons[0]);
+        },
+        showQuickPick: (items) => {
+          const action = macroQuickPicks.shift();
+          macroQuickPickItems = items;
+          return Promise.resolve(action === undefined ? undefined : (items || []).find((i) => i.action === action));
+        },
+        showErrorMessage: () => undefined,
+        showInformationMessage: () => undefined,
+      },
+    };
+    let macroWarnArgs = null;
+    let macroQuickPickItems = null;
+    const origResolve3 = Module._resolveFilename;
+    Module._resolveFilename = function (request, ...args) {
+      if (request === 'vscode') return 'vscode-stub3';
+      return origResolve3.call(this, request, ...args);
+    };
+    require.cache['vscode-stub3'] = { id: 'vscode-stub3', filename: 'vscode-stub3', loaded: true, exports: { ...vscodeStub, window: vscodePatch3.window, ProgressLocation: { Notification: 15 } } };
+    delete require.cache[path.join(__dirname, '..', 'out', 'vscode', 'macroBatch.js')];
+    const { MacroBatchPage } = require(path.join(__dirname, '..', 'out', 'vscode', 'macroBatch.js'));
+    // fresh scratch pair (the sync scratch dirs were already loaded above)
+    const mscratch1 = path.join(__dirname, '..', '.scratch', 'macro-page-1');
+    const mscratch2 = path.join(__dirname, '..', '.scratch', 'macro-page-2');
+    fs.rmSync(mscratch1, { recursive: true, force: true });
+    fs.rmSync(mscratch2, { recursive: true, force: true });
+    fs.cpSync(PROJ, mscratch1, { recursive: true });
+    fs.cpSync(PROJ, mscratch2, { recursive: true });
+    // a private macro the batch must never delete ("unmentioned stays
+    // untouched" needs a real unmentioned macro to assert against)
+    {
+      const pre = Cproject.load(mscratch1);
+      pre.setOptionList('c.compiler.defs', [...pre.listOption('c.compiler.defs').values, 'PRIVATE_MACRO']);
+      pre.save();
+    }
+    const mbStore = {
+      active: null,
+      all: [mscratch1, mscratch2].map((root, i) => ({
+        root,
+        projectName: 'M' + (i + 1),
+        cproject: Cproject.load(root),
+        toolchain: () => undefined,
+        reload() {},
+        buildDir: path.join(root, 'obj'),
+      })),
+      reloadProject() {},
+    };
+    const mp = new MacroBatchPage(mbStore);
+    mp.open();
+    const mHtml = macroPanel.webview.html;
+    check('macro page rendered', mHtml.includes('Macro Definitions Across Projects'));
+    // Form A: read-only per-project summary + editor + target selection
+    check('macro page: per-project summary (2 sections, open)', (mHtml.match(/<details class="proj" open>/g) || []).length === 2 && mHtml.includes('id="summary"'));
+    check('macro page: summary rows carry pane tags + macro filter', mHtml.includes('class="mrow') && mHtml.includes('id="mfilter"'));
+    check('macro page: three editor panes with sync checkboxes', (mHtml.match(/class="syncbox"/g) || []).length === 3);
+    check('macro page: textareas start EMPTY (no union prefill)', (mHtml.match(/<textarea data-pane="[^"]*" spellcheck="false"><\/textarea>/g) || []).length === 3);
+    check('macro page: undo button present', mHtml.includes('id="undo"'));
+    check('macro page: per-pane stats + rules line + add-missing switch', mHtml.includes('data-stat=') && mHtml.includes('id="rules"') && mHtml.includes('id="addmissing"'));
+    check('macro page: target project list (2 tick boxes, default unchecked, select all/none + filter)', (mHtml.match(/class="tbox"/g) || []).length === 2 && !/class="tbox" checked/.test(mHtml) && mHtml.includes('id="all"') && mHtml.includes('id="none"') && mHtml.includes('id="tfilter"') && mHtml.includes('id="tcount"'));
+    check('macro page: CSP nonce gates scripts', !/script-src [^;]*'unsafe-inline'/.test(mHtml) && /script-src [^;]*'nonce-[0-9a-f]+'/.test(mHtml));
+
+  // ---- buildMakeArgs: the mrvc.build.verbose setting must reach the make
+  // command line (it was a declared-but-unimplemented setting before) ----
+  {
+    const { buildMakeArgs } = require(path.join(__dirname, '..', 'out', 'vscode', 'tasks.js'));
+    check('verbose normal: plain -j + all', JSON.stringify(buildMakeArgs('build', 8, 'normal')) === JSON.stringify(['-j8', 'all']));
+    check('verbose full: --trace + VERBOSE=1 before -j', JSON.stringify(buildMakeArgs('build', 4, 'full')) === JSON.stringify(['--trace', 'VERBOSE=1', '-j4', 'all']));
+    check('verbose concise: -s', JSON.stringify(buildMakeArgs('build', 4, 'concise')) === JSON.stringify(['-s', '-j4', 'all']));
+    check('verbose clean: never -j, targets clean', JSON.stringify(buildMakeArgs('clean', 4, 'full')) === JSON.stringify(['--trace', 'VERBOSE=1', 'clean']));
+    check('verbose unknown value falls back to normal', JSON.stringify(buildMakeArgs('rebuild', 2, 'bogus')) === JSON.stringify(['-j2', 'all']));
+  }
+    check('macro page: panes carry the suffix metadata', mHtml.includes('c.compiler.defs') && mHtml.includes('cpp.compiler.defs') && mHtml.includes('assembler.defs'));
+    // selective sync: apply to ONLY the first project (targets filter) —
+    // the per-project review gets ONE decision: apply
+    macroQuickPicks.push('apply');
+    for (const h of macroHandlers)
+      h({
+        command: 'applyMacros',
+        panes: [
+          { key: 'defs', suffix: 'c.compiler.defs', cppOnly: false, text: 'DEBUG=1\nNEW_MACRO=42' },
+          { key: 'cppdefs', suffix: 'cpp.compiler.defs', cppOnly: true, text: 'CPP_ONLY=1' },
+        ],
+        addMissing: true,
+        targets: [mscratch1],
+      });
+    await new Promise((r) => setTimeout(r, 300));
+    const mAfter1 = Cproject.load(mscratch1).listOption('c.compiler.defs').values;
+    const mAfter2 = Cproject.load(mscratch2).listOption('c.compiler.defs').values;
+    check('macro page: review QuickPick carried before/after + change lines', !!macroQuickPickItems && macroQuickPickItems.some((i) => (i.label || '').includes('Before')) && macroQuickPickItems.some((i) => (i.label || '').includes('After')) && macroQuickPickItems.some((i) => (i.label || '').includes('⇒')) && macroQuickPickItems.some((i) => (i.label || '').includes('+ NEW_MACRO=42')));
+    check('macro page: target #1 written (DEBUG updated + NEW_MACRO added)', mAfter1.includes('DEBUG=1') && mAfter1.includes('NEW_MACRO=42'));
+    check('macro page: target #2 NOT touched (selective sync)', !mAfter2.includes('DEBUG=1') && !mAfter2.includes('NEW_MACRO=42') && mAfter2.includes('DEBUG=0'));
+    check('macro page: unmentioned macros preserved (PRIVATE_MACRO survives)', mAfter1.includes('PRIVATE_MACRO') && mAfter1.every((v) => !v.startsWith('DEBUG=0')));
+    check('macro page: C++ pane skipped on C projects', !Cproject.load(mscratch1).listOption('cpp.compiler.defs').values.includes('CPP_ONLY=1'));
+    check('macro page: done message posted (1/1 written)', macroPosted.some((m) => m.command === 'macroDone' && m.text.includes('1/1 written')));
+    // skip decision: nothing written for the reviewed project
+    macroQuickPicks.push('skip');
+    const beforeSkip = JSON.stringify(Cproject.load(mscratch1).listOption('c.compiler.defs').values);
+    for (const h of macroHandlers)
+      h({ command: 'applyMacros', panes: [{ key: 'defs', suffix: 'c.compiler.defs', cppOnly: false, text: 'DEBUG=7' }], addMissing: false, targets: [mscratch1] });
+    await new Promise((r) => setTimeout(r, 300));
+    check('macro page: skip decision writes nothing', JSON.stringify(Cproject.load(mscratch1).listOption('c.compiler.defs').values) === beforeSkip);
+    // applyRest: first review SKIPS m1, second decision applies to ALL remaining
+    macroQuickPicks.push('skip', 'applyRest');
+    for (const h of macroHandlers)
+      h({ command: 'applyMacros', panes: [{ key: 'defs', suffix: 'c.compiler.defs', cppOnly: false, text: 'DEBUG=8' }], addMissing: false, targets: [mscratch1, mscratch2] });
+    await new Promise((r) => setTimeout(r, 300));
+    check('macro page: applyRest writes every remaining project', !Cproject.load(mscratch1).listOption('c.compiler.defs').values.includes('DEBUG=8') && Cproject.load(mscratch2).listOption('c.compiler.defs').values.includes('DEBUG=8'));
+    check('macro page: applyRest done message (1/1 written, 1 skipped in review)', macroPosted.some((m) => m.command === 'macroDone' && m.text.includes('1/1 written') && m.text.includes('1 skipped')));
+    // Esc on the first review cancels ALL remaining without writing
+    macroQuickPicks.push(undefined);
+    for (const h of macroHandlers)
+      h({ command: 'applyMacros', panes: [{ key: 'defs', suffix: 'c.compiler.defs', cppOnly: false, text: 'DEBUG=9' }], addMissing: false, targets: [mscratch1, mscratch2] });
+    await new Promise((r) => setTimeout(r, 300));
+    check('macro page: Esc on review cancels everything', !Cproject.load(mscratch1).listOption('c.compiler.defs').values.includes('DEBUG=9') && !Cproject.load(mscratch2).listOption('c.compiler.defs').values.includes('DEBUG=9'));
+    // empty targets must be refused without writing anything
+    const beforeEmpty = Cproject.load(mscratch1).listOption('c.compiler.defs').values;
+    for (const h of macroHandlers)
+      h({ command: 'applyMacros', panes: [{ key: 'defs', suffix: 'c.compiler.defs', cppOnly: false, text: 'DEBUG=9' }], addMissing: false, targets: [] });
+    await new Promise((r) => setTimeout(r, 300));
+    check('macro page: empty targets refused (warning, no write)', macroWarnArgs !== null && JSON.stringify(Cproject.load(mscratch1).listOption('c.compiler.defs').values) === JSON.stringify(beforeEmpty));
+
+    // ---- undo last apply: restore the BEFORE macros of everything the
+    // last successful apply wrote (m1: DEBUG=1+NEW_MACRO=42 → back to DEBUG=0;
+    // m2: DEBUG=8 → back to DEBUG=0), and the second undo has nothing to do
+    const beforeUndo1 = Cproject.load(mscratch1).listOption('c.compiler.defs').values;
+    const beforeUndo2 = Cproject.load(mscratch2).listOption('c.compiler.defs').values;
+    check('undo fixture: both scratch projects were written earlier', beforeUndo1.includes('DEBUG=1') && beforeUndo2.includes('DEBUG=8'));
+    for (const h of macroHandlers) h({ command: 'undoMacros' });
+    await new Promise((r) => setTimeout(r, 300));
+    const afterUndo1 = Cproject.load(mscratch1).listOption('c.compiler.defs').values;
+    const afterUndo2 = Cproject.load(mscratch2).listOption('c.compiler.defs').values;
+    // replacement semantics: only the LAST apply's projects ride the undo —
+    // m1 was written by an EARLIER apply and keeps that earlier change
+    check('undo: m2 restored (DEBUG=0 back, DEBUG=8 gone)', afterUndo2.includes('DEBUG=0') && !afterUndo2.includes('DEBUG=8'));
+    check('undo: m1 untouched (earlier apply, not in the last snapshot)', afterUndo1.includes('DEBUG=1') && afterUndo1.includes('NEW_MACRO=42') && !afterUndo1.includes('DEBUG=0'));
+    check('undo: stored shape intact on the restored project (quoted listOptionValue)', fs.readFileSync(mscratch2 + '/.cproject', 'utf-8').includes('&quot;DEBUG=0&quot;'));
+    // the snapshot is consumed: a second undo reports nothing to undo
+    const stable = JSON.stringify(Cproject.load(mscratch1).listOption('c.compiler.defs').values);
+    for (const h of macroHandlers) h({ command: 'undoMacros' });
+    await new Promise((r) => setTimeout(r, 300));
+    check('undo: second undo is a no-op (snapshot consumed)', JSON.stringify(Cproject.load(mscratch1).listOption('c.compiler.defs').values) === stable);
+
+    // ---- skip-review fast mode: writes WITHOUT any review QuickPick
+    // (the decision queue stays empty — a review call would consume an
+    // undefined = Esc = cancel everything, so success proves the review
+    // never ran); Undo still snapshots the before state
+    macroQuickPicks.length = 0;
+    macroQuickPickItems = null;
+    for (const h of macroHandlers)
+      h({ command: 'applyMacros', panes: [{ key: 'defs', suffix: 'c.compiler.defs', cppOnly: false, text: 'DEBUG=11\nFAST=1' }], addMissing: true, skipReview: true, targets: [mscratch1, mscratch2] });
+    await new Promise((r) => setTimeout(r, 300));
+    const fastAfter1 = Cproject.load(mscratch1).listOption('c.compiler.defs').values;
+    const fastAfter2 = Cproject.load(mscratch2).listOption('c.compiler.defs').values;
+    check('skip review: both projects written without any QuickPick', macroQuickPickItems === null && fastAfter1.includes('DEBUG=11') && fastAfter1.includes('FAST=1') && fastAfter2.includes('DEBUG=11') && fastAfter2.includes('FAST=1'));
+    check('skip review: done message (2/2 written, 0 skipped)', macroPosted.some((m) => m.command === 'macroDone' && m.text.includes('2/2 written') && m.text.includes('0 skipped')));
+    for (const h of macroHandlers) h({ command: 'undoMacros' });
+    await new Promise((r) => setTimeout(r, 300));
+    const fastUndo1 = Cproject.load(mscratch1).listOption('c.compiler.defs').values;
+    const fastUndo2 = Cproject.load(mscratch2).listOption('c.compiler.defs').values;
+    // each project restores to ITS OWN pre-apply state (m1: the earlier
+    // apply's DEBUG=1; m2: the pristine DEBUG=0) — the fast-mode additions
+    // are gone either way
+    check('skip review: undo still restores the fast-mode apply', !fastUndo1.includes('DEBUG=11') && !fastUndo1.includes('FAST=1') && fastUndo1.includes('DEBUG=1') && !fastUndo2.includes('DEBUG=11') && !fastUndo2.includes('FAST=1') && fastUndo2.includes('DEBUG=0'));
+    // re-entry guard (after the undo chain above): a second apply while one
+    // is running must be refused — busy hint posted, second write never lands
+    {
+      const tBusyHint = require(path.join(__dirname, '..', 'out', 'core', 'i18n.js')).t('macroBatchBusy');
+      const postedBefore = macroPosted.length;
+      for (const h of macroHandlers) {
+        h({ command: 'applyMacros', panes: [{ key: 'defs', suffix: 'c.compiler.defs', cppOnly: false, text: 'BUSY=1' }], addMissing: true, skipReview: true, targets: [mscratch1] });
+        h({ command: 'applyMacros', panes: [{ key: 'defs', suffix: 'c.compiler.defs', cppOnly: false, text: 'BUSY=2' }], addMissing: true, skipReview: true, targets: [mscratch1] });
+      }
+      await new Promise((r) => setTimeout(r, 300));
+      const busyPosted = macroPosted.slice(postedBefore).some((m) => m.command === 'macroDone' && m.text === tBusyHint);
+      check('re-entry: the overlapped second apply is refused with the busy hint', busyPosted);
+      check('re-entry: exactly one write landed (BUSY=1 from the first, BUSY=2 refused)', Cproject.load(mscratch1).listOption('c.compiler.defs').values.includes('BUSY=1') && !Cproject.load(mscratch1).listOption('c.compiler.defs').values.includes('BUSY=2'));
+    }
+    fs.rmSync(mscratch1, { recursive: true, force: true });
+    fs.rmSync(mscratch2, { recursive: true, force: true });
+
     fs.rmSync(scratch2, { recursive: true, force: true });
     console.log(failures ? `\n${failures} FAILURES` : '\nwebview render verification passed');
     process.exit(failures ? 1 : 0);

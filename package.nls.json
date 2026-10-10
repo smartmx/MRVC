@@ -25,6 +25,8 @@
   "command.mrvc.renameProject.title": "Rename Project",
   "command.mrvc.syncProjectName.title": "Sync Project Name from Folder",
   "command.mrvc.syncSettings.title": "Sync Setting Across Projects",
+  "command.mrvc.batchMacros.title": "Edit Macro Definitions Across Projects",
+  "command.mrvc.openSettings.title": "Open MRVC Settings",
   "command.mrvc.ispTool.title": "WCH In-System Programmer",
   "command.mrvc.touchkeyTool.title": "WCH Touchkey Calibrate Tool",
   "command.mrvc.uiDesigner.title": "WCHGUIDesigner",

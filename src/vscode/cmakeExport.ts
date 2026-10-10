@@ -39,6 +39,12 @@ export async function generateCMakeListCmd(store: ProjectStore, item?: unknown):
     return;
   }
   const file = path.join(project.root, 'CMakeLists.txt');
+  // same confirm as the export path below: a hand-maintained CMakeLists.txt
+  // in the project root must not be silently overwritten
+  if (fs.existsSync(file)) {
+    const overwrite = await vscode.window.showWarningMessage(t('cmakeExists', 'CMakeLists.txt'), { modal: true }, t('overwrite'));
+    if (overwrite !== t('overwrite')) return;
+  }
   try {
     project.reload();
     const built = buildCMakeContent(project.cproject, tc, file, { forExport: false });

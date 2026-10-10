@@ -28,6 +28,7 @@ import { renameProjectCmd, syncProjectNameFromFolder } from './vscode/renameProj
 import { writeSolution } from './core/solution';
 import { setCppNature } from './core/projectFile';
 import { SyncPage } from './vscode/syncPage';
+import { MacroBatchPage } from './vscode/macroBatch';
 import { comTransmitCmd, hexBinToolCmd, ispToolCmd, touchkeyToolCmd, uiDesignerCmd } from './vscode/mrsTools';
 import { ensureIntellisenseConfig, resolveProjectForFile, switchContext, maybePromptCppTools } from './vscode/intellisense';
 import { addProjectToSolutionCmd, addProjectsByBatchCmd, setBuildOrderCmd, closeSolutionCmd } from './vscode/solutionLife';
@@ -37,7 +38,33 @@ import { setLanguage, vscodeLanguageIsChinese, t } from './core/i18n';
 import { createProjectCmd, createStaticLibCmd } from './vscode/newProject';
 import { showStackUsageCmd, showCallAnalysisCmd } from './vscode/analysisReport';
 
+/** V0.1.7 renamed the persisted keys mrs2.* → mrvc.*. One-time migration:
+ * copy legacy values the new keys don't have yet, then drop the old keys
+ * (both stores — without this, cpptoolsDontAsk would re-prompt and the
+ * create-dir memory reset even though the values are still on disk). */
+function migrateLegacyState(context: vscode.ExtensionContext): void {
+  const ws = context.workspaceState;
+  for (const [oldKey, newKey] of [
+    ['mrs2.projects', 'mrvc.projects'],
+    ['mrs2.active', 'mrvc.active'],
+  ] as const) {
+    const legacy = ws.get(oldKey);
+    if (legacy !== undefined && ws.get(newKey) === undefined) void ws.update(newKey, legacy);
+    void ws.update(oldKey, undefined);
+  }
+  const gs = context.globalState;
+  for (const [oldKey, newKey] of [
+    ['mrs2.lastCreateDir', 'mrvc.lastCreateDir'],
+    ['mrs2.cpptoolsDontAsk', 'mrvc.cpptoolsDontAsk'],
+  ] as const) {
+    const legacy = gs.get(oldKey);
+    if (legacy !== undefined && gs.get(newKey) === undefined) void gs.update(newKey, legacy);
+    void gs.update(oldKey, undefined);
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
+  migrateLegacyState(context);
   // UI language: mrvc.language ('auto' follows VSCode's display language)
   const langCfg = vscode.workspace.getConfiguration('mrvc').get<string>('language', 'auto');
   setLanguage(langCfg === 'zh-cn' || (langCfg === 'auto' && vscodeLanguageIsChinese(vscode.env.language)) ? 'zh-cn' : 'en');
@@ -247,12 +274,19 @@ export function activate(context: vscode.ExtensionContext): void {
   // workspace root; members stay in BuildOrder-less file order)
   const syncPage = new SyncPage(store);
   reg('mrvc.syncSettings', () => syncPage.open());
+  // dedicated batch macro-editing page (independent of the Sync Setting page)
+  const macroBatchPage = new MacroBatchPage(store);
+  reg('mrvc.batchMacros', () => macroBatchPage.open());
+  // open the Settings UI filtered to this extension's contributions
+  // (@ext:<publisher>.<name> — dynamic so a publisher change stays correct)
+  reg('mrvc.openSettings', () => vscode.commands.executeCommand('workbench.action.openSettings', `@ext:${context.extension.id}`));
   reg('mrvc.ispTool', () => ispToolCmd());
   reg('mrvc.touchkeyTool', () => touchkeyToolCmd());
   reg('mrvc.uiDesigner', () => uiDesignerCmd());
   reg('mrvc.hexBinTool', () => hexBinToolCmd());
   reg('mrvc.comTransmit', () => comTransmitCmd());
-  reg('mrvc.generateSolution', async () => {    const all = store.all;
+  reg('mrvc.generateSolution', async () => {
+    const all = store.all;
     if (!all.length) {
       vscode.window.showErrorMessage(t('noProjectsLoaded'));
       return;

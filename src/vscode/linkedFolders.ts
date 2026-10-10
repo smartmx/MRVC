@@ -128,7 +128,8 @@ export async function changeLinkedFolderPathCmd(store: ProjectStore, node?: { li
   vscode.window.showInformationMessage(t('linkedChanged', name, newTarget));
 }
 
-export async function removeLinkedFolderCmd(store: ProjectStore, node?: { linkedName?: string; project?: MrsProject }): Promise<void> {  let name = node?.linkedName;
+export async function removeLinkedFolderCmd(store: ProjectStore, node?: { linkedName?: string; project?: MrsProject }): Promise<void> {
+  let name = node?.linkedName;
   let project = node?.project ?? store.active;
   if (!name) {
     if (!project) {

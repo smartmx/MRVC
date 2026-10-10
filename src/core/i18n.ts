@@ -370,6 +370,84 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
 
   // sync page
   syncingSettings: { en: 'MRVC: syncing {0} setting(s)', 'zh-cn': 'MRVC：正在同步 {0} 项设置' },
+
+  // macro batch page
+  macroBatchHint: {
+    en: '{0} project(s) loaded — type the macros to set below; the stats show what every project currently defines',
+    'zh-cn': '已加载 {0} 个工程——在下方输入要设置的宏；统计信息展示各工程当前的宏定义情况',
+  },
+  macroBatchRules: {
+    en: 'One macro per line (NAME=VALUE or bare NAME). Only macros WRITTEN here are touched: same-name entries are updated in place, everything a project already has that is not listed stays untouched — nothing is deleted.',
+    'zh-cn': '每行一条宏（NAME=VALUE 或裸 NAME）。只会修改此处写出的宏：同名宏原位更新，工程中已有但此处未列出的宏保持原样——不会删除任何宏。',
+  },
+  macroBatchStats: {
+    en: '{0} macro name(s), {1} with differing values across projects',
+    'zh-cn': '{0} 个宏名，{1} 个跨工程取值不一致',
+  },
+  macroBatchCppOnly: { en: '(C++ projects only)', 'zh-cn': '（仅 C++ 工程）' },
+  macroBatchAddMissing: {
+    en: 'Add these macros to projects that do not define them yet',
+    'zh-cn': '为尚未定义这些宏的工程新增',
+  },
+  macroBatchSkipReview: {
+    en: 'Skip the per-project review and apply directly',
+    'zh-cn': '跳过逐工程确认，直接应用',
+  },
+  macroBatchNothingSelected: {
+    en: 'Nothing selected — tick the checkbox of the panes to apply.',
+    'zh-cn': '未选择任何栏——请勾选要应用的编译器栏。',
+  },
+  macroBatchApply: { en: 'Apply to Selected Projects', 'zh-cn': '应用到勾选的工程' },
+  macroBatchProgress: { en: 'MRVC: applying macros to {0} project(s)', 'zh-cn': 'MRVC：正在将宏应用到 {0} 个工程' },
+  macroBatchSummaryHead: { en: 'Macro definitions by project', 'zh-cn': '按工程的宏定义汇总' },
+  macroBatchEditorHead: { en: 'Target macros', 'zh-cn': '目标宏定义' },
+  macroBatchDivLegend: {
+    en: 'highlighted rows differ in value across projects',
+    'zh-cn': '高亮行 = 该宏跨工程取值不一致',
+  },
+  macroBatchFilterMacro: { en: 'Filter by macro name…', 'zh-cn': '按宏名过滤…' },
+  macroBatchNoMacros: { en: '(no macros defined)', 'zh-cn': '（无宏定义）' },
+  macroBatchCount: { en: '{0} macro(s)', 'zh-cn': '{0} 条宏' },
+  macroBatchTargets: { en: 'Target projects', 'zh-cn': '目标工程' },
+  macroBatchSelectAll: { en: 'Select all', 'zh-cn': '全选' },
+  macroBatchSelectNone: { en: 'Select none', 'zh-cn': '全不选' },
+  macroBatchFilterProject: { en: 'Filter projects…', 'zh-cn': '过滤工程…' },
+  macroBatchNoTargets: {
+    en: 'No target project selected — tick at least one project.',
+    'zh-cn': '未选择目标工程——请至少勾选一个工程。',
+  },
+  macroBatchUndo: { en: 'Undo last apply', 'zh-cn': '撤销上次应用' },
+  macroBatchUndoConfirm: {
+    en: 'Restore {0} project(s) to their pre-apply macro definitions?',
+    'zh-cn': '将 {0} 个工程恢复到上次应用前的宏定义？',
+  },
+  macroBatchNoUndo: {
+    en: 'MRVC: nothing to undo — no batch macro apply has been made in this window.',
+    'zh-cn': 'MRVC：没有可撤销的操作——本窗口尚未执行过批量宏应用。',
+  },
+  macroBatchBusy: {
+    en: 'MRVC: a batch macro operation is already running — wait for it to finish.',
+    'zh-cn': 'MRVC：已有批量宏操作正在进行——请等待其完成。',
+  },
+  // per-project review (QuickPick before writing)
+  macroBatchReviewTitle: {
+    en: '"{0}" — review macro changes ({1}/{2})',
+    'zh-cn': '“ {0} ”——确认宏修改（{1}/{2}）',
+  },
+  macroBatchReviewHint: {
+    en: 'Compare macros before/after, then choose. Esc cancels ALL remaining projects.',
+    'zh-cn': '对比修改前后的宏定义后选择。Esc 取消其余全部工程。',
+  },
+  macroBatchBefore: { en: 'Before', 'zh-cn': '修改前' },
+  macroBatchAfter: { en: 'After', 'zh-cn': '修改后' },
+  macroBatchEmpty: { en: '(empty)', 'zh-cn': '（空）' },
+  macroBatchCppSkipRow: { en: 'C++ pane — skipped (C project)', 'zh-cn': 'C++ 栏——C 工程跳过' },
+  macroBatchKeepHint: { en: 'macros not listed in the editor stay untouched', 'zh-cn': '编辑区未提及的宏保持不变' },
+  macroBatchActionsSep: { en: 'Actions', 'zh-cn': '操作' },
+  macroBatchActApply: { en: 'Apply this project', 'zh-cn': '应用此工程' },
+  macroBatchActSkip: { en: 'Skip this project', 'zh-cn': '跳过此工程' },
+  macroBatchActApplyRest: { en: 'Apply this and ALL remaining', 'zh-cn': '应用此工程，其余全部应用' },
+  macroBatchActSkipRest: { en: 'Skip this and ALL remaining', 'zh-cn': '跳过此工程，其余全部跳过' },
 };
 
 /** translate a key with optional {0}/{1} substitution */

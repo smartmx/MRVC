@@ -503,7 +503,8 @@ export function macroConflicts(values: Record<string, string>): string[] {
   return conflicts;
 }
 
-function readEnum(cp: Cproject, f: FieldDef): string {  if (!f.suffix) return '';
+function readEnum(cp: Cproject, f: FieldDef): string {
+  if (!f.suffix) return '';
   const raw = cp.optionValue(f.suffix);
   if (raw === undefined || raw === '') return 'default';
   if (f.enumBase && raw.startsWith(f.enumBase)) {
@@ -548,7 +549,8 @@ export class ConfigView {
     this.panel.webview.html = this.render(project);
   }
 
-  private async onMessage(m: {    command: string;
+  private async onMessage(m: {
+    command: string;
     values?: Record<string, string>;
     mode?: 'dir' | 'file';
     path?: string;
@@ -817,7 +819,8 @@ export class ConfigView {
 <script nonce="${nonce}">const DL_CTX = ${jsonForScript(ctx)};</script>`;
   }
 
-  private fieldHtml(cp: Cproject, f: FieldDef, tplData?: TemplateData): string {    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  private fieldHtml(cp: Cproject, f: FieldDef, tplData?: TemplateData): string {
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     if (f.tplKey) {
       const value = tplData?.values[f.tplKey] ?? '';
       const ro = f.tplReadonly ? ' readonly style="opacity:.75"' : ' spellcheck="false"';

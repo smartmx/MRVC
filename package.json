@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "publisher": "smartmx",
   "private": true,
   "license": "MIT",
@@ -126,12 +126,12 @@
             "full"
           ],
           "enumDescriptions": [
-            "Only errors/warnings",
+            "Quiet: pass make -s (suppress make's own messages)",
             "Per-file compile lines (default)",
-            "Echo every gcc command line"
+            "Echo every command: pass make --trace + VERBOSE=1"
           ],
           "default": "normal",
-          "description": "Build output verbosity. 'full' passes VERBOSE=1 style echoing.",
+          "description": "Build output verbosity. 'full' traces every recipe (make --trace + VERBOSE=1); 'concise' silences make itself.",
           "order": 3
         },
         "mrvc.openocd.path": {
@@ -337,6 +337,16 @@
       {
         "command": "mrvc.syncSettings",
         "title": "%command.mrvc.syncSettings.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.batchMacros",
+        "title": "%command.mrvc.batchMacros.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.openSettings",
+        "title": "%command.mrvc.openSettings.title%",
         "category": "MRVC"
       },
       {
@@ -556,14 +566,19 @@
           "group": "2_delete@2"
         },
         {
-          "command": "mrvc.generateSolution",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
-          "group": "3_generate@1"
-        },
-        {
           "command": "mrvc.syncSettings",
           "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "4_sync@1"
+        },
+        {
+          "command": "mrvc.batchMacros",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
+          "group": "4_sync@2"
+        },
+        {
+          "command": "mrvc.generateSolution",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
+          "group": "4_sync@3"
         },
         {
           "command": "mrvc.flashUtility",
@@ -604,6 +619,11 @@
           "command": "mrvc.createStaticLib",
           "when": "view == mrvc.projectExplorer",
           "group": "0_new@2"
+        },
+        {
+          "command": "mrvc.openSettings",
+          "when": "view == mrvc.projectExplorer",
+          "group": "7_settings@1"
         }
       ],
       "view/item/context": [
@@ -1050,6 +1070,13 @@
         {
           "command": "mrvc.syncSettings",
           "when": "mrvc.hasProjects"
+        },
+        {
+          "command": "mrvc.batchMacros",
+          "when": "mrvc.hasProjects"
+        },
+        {
+          "command": "mrvc.openSettings"
         },
         {
           "command": "mrvc.updateIntellisense",

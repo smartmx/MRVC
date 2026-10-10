@@ -48,6 +48,32 @@ interface BatchOptions {
   worker: (p: MrsProject, install: NonNullable<ReturnType<typeof getInstall>>) => Promise<BuildAllResult>;
 }
 
+/**
+ * make command line for a build/clean/rebuild, honoring the
+ * `mrvc.build.verbose` setting. The generated makefiles suppress recipes
+ * with `@`, so "full" cannot flip that from outside — make --trace prints
+ * every recipe even when silenced (VERBOSE=1 rides along as the variable
+ * the makefiles may honor in the future); "concise" adds make's own -s.
+ */
+export function buildMakeArgs(kind: 'build' | 'clean' | 'rebuild', jobs: number, verbosity: string): string[] {
+  const args: string[] = [];
+  if (verbosity === 'full') {
+    args.push('--trace', 'VERBOSE=1');
+  } else if (verbosity === 'concise') {
+    args.push('-s');
+  }
+  if (kind !== 'clean') {
+    args.push(`-j${jobs}`);
+  }
+  args.push(kind === 'clean' ? 'clean' : 'all');
+  return args;
+}
+
+/** the `mrvc.build.verbose` value */
+function buildVerbosity(): string {
+  return vscode.workspace.getConfiguration('mrvc').get<string>('build.verbose', 'normal');
+}
+
 export class BuildManager {
   private buildAllRunning = false;
   private buildAllChannel: vscode.OutputChannel | null = null;
@@ -314,9 +340,13 @@ export class BuildManager {
         { type: 'mrvc-clean-all' },
         'MRVC: Clean All',
         'MRVC',
-        new vscode.ProcessExecution(this.writeCleanWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe')), [], {
-          env: { PATH: `${install.makeBin};${process.env['PATH'] ?? ''}` },
-        }),
+        new vscode.ProcessExecution(
+          this.writeCleanWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe'), buildMakeArgs('clean', 1, buildVerbosity()).slice(0, -1)),
+          [],
+          {
+            env: { PATH: `${install.makeBin};${process.env['PATH'] ?? ''}` },
+          }
+        ),
         []
       );
       task.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
@@ -381,7 +411,7 @@ export class BuildManager {
         if (e.execution !== exec) return;
         finish(e.exitCode);
       });
-      const wrapper = this.writeBuildWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe'), ['-j' + jobs, 'all'], buildRecordFile(p.root));
+      const wrapper = this.writeBuildWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe'), buildMakeArgs('build', jobs, buildVerbosity()), buildRecordFile(p.root));
       const task = new vscode.Task(
         { type: 'mrvc-build-all' },
         'MRVC: Build All',
@@ -458,11 +488,7 @@ export class BuildManager {
       vscode.window.showInformationMessage(t('neverBuilt', project.projectName));
       return;
     }
-    const makeArgs: string[] = [];
-    if (kind !== 'clean') {
-      makeArgs.push(`-j${jobs}`);
-    }
-    makeArgs.push(kind === 'clean' ? 'clean' : 'all');
+    const makeArgs = buildMakeArgs(kind, jobs, buildVerbosity());
 
     // from here on a make may run: hold the guard until its process ends
     this.building.set(buildKey, {});
@@ -470,11 +496,14 @@ export class BuildManager {
     const envPath = [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].join(path.delimiter);
     const target = kind === 'clean' ? 'MRVC: clean' : kind === 'rebuild' ? 'MRVC: rebuild' : 'MRVC: build';
     const makeExe = path.join(install.makeBin, 'make.exe');
+    // verbosity flags for the clean wrappers (build/clean target stripped —
+    // the wrapper appends its own)
+    const cleanFlags = buildMakeArgs('clean', jobs, buildVerbosity()).slice(0, -1);
     const shell =
       kind === 'clean'
         ? // a clean must not trample the last build's record — run make via
           // the clean wrapper (no record writes, same metacharacter safety)
-          new vscode.ProcessExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe), [], {
+          new vscode.ProcessExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags), [], {
             env: { PATH: envPath },
           })
         : new vscode.ProcessExecution(
@@ -499,7 +528,7 @@ export class BuildManager {
         { type: 'mrvc-clean', project: project.projectName },
         `MRVC: clean - ${project.projectName}`,
         'MRVC',
-        new vscode.ProcessExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe), [], {
+        new vscode.ProcessExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags), [], {
           env: { PATH: envPath },
         }),
         []
@@ -695,13 +724,16 @@ export class BuildManager {
    * batch Clean — every make invocation carries a wrapper, so no
    * ProcessExecution ever carries a user-controlled cwd again.
    */
-  private writeCleanWrapper(projectRoot: string, buildDir: string, makeExe: string): string {
+  private writeCleanWrapper(projectRoot: string, buildDir: string, makeExe: string, extraArgs: string[] = []): string {
     const wrapper = buildWrapperFile(projectRoot, 'clean');
+    // verbosity flags ride along (concise -s / full --trace) — the caller
+    // passes buildMakeArgs('clean', ...) minus the target
+    const args = [...extraArgs, 'clean'].join(' ');
     const body =
       `@echo off\r\n` +
       `setlocal DisableDelayedExpansion\r\n` +
       `cd /d "${pct(buildDir)}"\r\n` +
-      `"${pct(makeExe)}" clean\r\n` +
+      `"${pct(makeExe)}" ${args}\r\n` +
       `exit /b %errorlevel%\r\n`;
     fs.writeFileSync(wrapper, encodeArtifact(body));
     return wrapper;
