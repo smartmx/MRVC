@@ -8,7 +8,16 @@ const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(here, '..', 'package.json'), 'utf8'));
 const items = pkg.contributes.menus['view/item/context'];
-const cmds = Object.fromEntries(pkg.contributes.commands.map((c) => [c.command, c.title]));
+// titles are NLS placeholders since menu localization — resolve them against
+// both language files so the printed menu shows real text (en by default,
+// zh with `node tools/print-menus.mjs zh`)
+const lang = process.argv[2] === 'zh' ? 'zh-cn' : 'en';
+const nlsFile = lang === 'zh-cn' ? 'package.nls.zh-cn.json' : 'package.nls.json';
+const nls = JSON.parse(fs.readFileSync(path.join(here, '..', nlsFile), 'utf8'));
+const resolveTitle = (title) =>
+  title.replace(/%([^%]+)%/g, (_, k) => nls[k] ?? title);
+const cmds = Object.fromEntries(pkg.contributes.commands.map((c) => [c.command, resolveTitle(c.title)]));
+console.log(`(titles: ${nlsFile})`);
 
 /** node types a menu `when` applies to (explicit viewItem == X, ||-joined,
  * plus the legacy regex form for completeness) */

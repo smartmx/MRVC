@@ -383,12 +383,16 @@ await view.show(store.active);
   // ---- buildMakeArgs: the mrvc.build.verbose setting must reach the make
   // command line (it was a declared-but-unimplemented setting before) ----
   {
-    const { buildMakeArgs } = require(path.join(__dirname, '..', 'out', 'vscode', 'tasks.js'));
+    const tasksMod = require(path.join(__dirname, '..', 'out', 'vscode', 'tasks.js'));
+    const buildMakeArgs = tasksMod.buildMakeArgs;
+    const defaultJobs = tasksMod.defaultJobs;
+    const realCpus = require('os').cpus().length;
     check('verbose normal: plain -j + all', JSON.stringify(buildMakeArgs('build', 8, 'normal')) === JSON.stringify(['-j8', 'all']));
     check('verbose full: --trace + VERBOSE=1 before -j', JSON.stringify(buildMakeArgs('build', 4, 'full')) === JSON.stringify(['--trace', 'VERBOSE=1', '-j4', 'all']));
     check('verbose concise: -s', JSON.stringify(buildMakeArgs('build', 4, 'concise')) === JSON.stringify(['-s', '-j4', 'all']));
     check('verbose clean: never -j, targets clean', JSON.stringify(buildMakeArgs('clean', 4, 'full')) === JSON.stringify(['--trace', 'VERBOSE=1', 'clean']));
     check('verbose unknown value falls back to normal', JSON.stringify(buildMakeArgs('rebuild', 2, 'bogus')) === JSON.stringify(['-j2', 'all']));
+    check('defaultJobs = cpus-1, at least 1', defaultJobs() === Math.max(1, realCpus - 1) && defaultJobs() >= 1);
   }
     check('macro page: panes carry the suffix metadata', mHtml.includes('c.compiler.defs') && mHtml.includes('cpp.compiler.defs') && mHtml.includes('assembler.defs'));
     // selective sync: apply to ONLY the first project (targets filter) —

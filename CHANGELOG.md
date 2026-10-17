@@ -1,5 +1,32 @@
 # MRVC 更新日志
 
+## V0.2.0（2026-10-17）
+
+### 新增
+
+- **extensionPack 扩充：随包安装/推荐五项扩展**——`ms-vscode.cpptools-extension-pack`
+  （C/C++ 套装：元包，市场安装时自动拉取 cpptools 本体与 CMake Tools；代码跳转的必要
+  消费端——MRVC 生成的 IntelliSense 数据库由 cpptools 读取）、`koalamer.labeled-bookmarks`
+  （书签/注释，0.1.9 已有）、`MS-CEINTL.vscode-language-pack-zh`（中文界面语言包——MRVC
+  的中文菜单跟随 VSCode 显示语言）、`ms-vscode.hexeditor`（hex 文件查看/编辑）、
+  `maziac.hex-hover-converter`（悬停即进制转换）。从市场安装/升级 MRVC 时一并自动安装；
+  **VSIX 侧载场景由 VSCode 弹出一次安装提示，可跳过**（不强制）。已知边界：离线机侧载
+  元包 VSIX 不会自动带出 cpptools 本体——需按提示单独安装本体（win-x64 VSIX），
+  MRVC 检测到 clangd 时不再提示、配置行为不变。侧载跳过后仍有运行时兜底提示
+  （打开工程时，"不再提示"可永久关闭，Reset Extension Install Guidance 可重开）。
+
+### 修复
+
+- **构建并行度留一核**：传给 make 的并行任务数从全部逻辑核（`cpus()`）改为 `cpus - 1`，
+  满核编译时 VSCode 界面不再卡顿（编译时长影响约百分之几）。
+
+### 内部
+
+- ROADMAP 与 MRS2 功能对照文档刷新：宏定义批量同步（0.1.8）、文件标旗与批量修改工具链、
+  书签/注释推荐（0.1.9）等已落地项从"候选"清单勾销，剩余差距按 0.2.x/0.3.0 分档重排。
+- `tools/print-menus.mjs` 开发辅助脚本读 NLS 文件解析 `%command.*.title%` 占位符，
+  打印的菜单恢复为可读的中英文标题（中文化以来一直显示占位符原文）。
+
 ## V0.1.9（2026-10-11）
 
 ### 新增

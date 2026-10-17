@@ -49,6 +49,14 @@ interface BatchOptions {
 }
 
 /**
+ * Parallel make jobs when `mrvc.build.parallelJobs` is 0 (auto): all logical
+ * cores but one, so a full-core build still leaves the IDE a core to breathe.
+ */
+export function defaultJobs(): number {
+  return Math.max(1, os.cpus().length - 1);
+}
+
+/**
  * make command line for a build/clean/rebuild, honoring the
  * `mrvc.build.verbose` setting. The generated makefiles suppress recipes
  * with `@`, so "full" cannot flip that from outside — make --trace prints
@@ -92,7 +100,7 @@ export class BuildManager {
   async buildAll(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const toolchainReq = cfg.get<string>('toolchain', 'auto');
-    const jobs = cfg.get<number>('build.parallelJobs', 0) || os.cpus().length;
+    const jobs = cfg.get<number>('build.parallelJobs', 0) || defaultJobs();
     const analysis = cfg.get<boolean>('build.analysis', false);
     return this.runBatch(this.store.all, {
       progressTitle: t('progressBuildAll'),
@@ -112,7 +120,7 @@ export class BuildManager {
     }
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const toolchainReq = cfg.get<string>('toolchain', 'auto');
-    const jobs = cfg.get<number>('build.parallelJobs', 0) || os.cpus().length;
+    const jobs = cfg.get<number>('build.parallelJobs', 0) || defaultJobs();
     const analysis = cfg.get<boolean>('build.analysis', false);
     return this.runBatch(members, {
       progressTitle: t('progressBuildSolution', sol.name),
@@ -127,7 +135,7 @@ export class BuildManager {
   async rebuildAll(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const toolchainReq = cfg.get<string>('toolchain', 'auto');
-    const jobs = cfg.get<number>('build.parallelJobs', 0) || os.cpus().length;
+    const jobs = cfg.get<number>('build.parallelJobs', 0) || defaultJobs();
     const analysis = cfg.get<boolean>('build.analysis', false);
     return this.runBatch(this.store.all, {
       progressTitle: t('progressRebuildAll'),
@@ -483,7 +491,7 @@ export class BuildManager {
     void genResult;
 
     const cfg = vscode.workspace.getConfiguration('mrvc');
-    const jobs = cfg.get<number>('build.parallelJobs', 0) || os.cpus().length;
+    const jobs = cfg.get<number>('build.parallelJobs', 0) || defaultJobs();
     if (kind === 'clean' && !fs.existsSync(path.join(project.buildDir, 'makefile'))) {
       vscode.window.showInformationMessage(t('neverBuilt', project.projectName));
       return;

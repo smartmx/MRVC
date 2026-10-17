@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "publisher": "smartmx",
   "private": true,
   "license": "MIT",
@@ -14,7 +14,11 @@
     "vscode": "^1.80.0"
   },
   "extensionPack": [
-    "koalamer.labeled-bookmarks"
+    "ms-vscode.cpptools-extension-pack",
+    "koalamer.labeled-bookmarks",
+    "MS-CEINTL.vscode-language-pack-zh",
+    "ms-vscode.hexeditor",
+    "maziac.hex-hover-converter"
   ],
   "categories": [
     "Programming Languages",
@@ -118,7 +122,7 @@
           "type": "number",
           "default": 0,
           "minimum": 0,
-          "description": "Number of parallel make jobs (-j). 0 = number of CPU cores.",
+          "description": "Number of parallel make jobs (-j). 0 = all CPU cores but one (leaves a core for the IDE).",
           "order": 2
         },
         "mrvc.build.verbose": {
