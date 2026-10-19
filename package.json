@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "smartmx",
   "private": true,
   "license": "MIT",
@@ -16,7 +16,7 @@
   "extensionPack": [
     "ms-vscode.cpptools-extension-pack",
     "koalamer.labeled-bookmarks",
-    "MS-CEINTL.vscode-language-pack-zh",
+    "MS-CEINTL.vscode-language-pack-zh-hans",
     "ms-vscode.hexeditor",
     "maziac.hex-hover-converter"
   ],
