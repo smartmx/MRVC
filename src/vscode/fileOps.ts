@@ -303,7 +303,7 @@ export async function flagFileCmd(_store: ProjectStore, item?: unknown): Promise
   const node = item as { fsPath?: string; project?: MrsProject } | undefined;
   if (!node?.fsPath) return;
   if (!node.project?.root) {
-    // loose file (Workspace Files group): it belongs to no loaded project
+    // defensive: a tree node with an fsPath but no owning project
     vscode.window.showErrorMessage(t('flagNotInProject'));
     return;
   }

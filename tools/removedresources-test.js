@@ -89,7 +89,25 @@ check('append: idempotent', pf.listRemovedResources(PROJ).length === 3);
   check('foreign filters not listed as removed', pf.listRemovedResources(PROJ).every((r) => r.name !== 'orFilter'));
 }
 
-// 6. tree filtering (vscode stub): removed root file/folder invisible
+// 6. tree top level lists the scanned project only — the Workspace Files
+// group (source files sitting NEXT TO projects, in the project's parent
+// directory) was removed: a stray .h next to the project root must not
+// appear anywhere in the tree
+{
+  const store = { all: [], solutionList: [], active: null, onDidChange: () => ({ dispose() {} }) };
+  const provider = new ProjectTreeProvider(store, { joinPath: () => ({ fsPath: '' }) });
+  store.all = [{ root: PROJ.replace(/\//g, path.sep), projectName: 'LED' }];
+  const stray = path.join(WS, 'stray_next_to_project.h');
+  fs.writeFileSync(stray, '/* shared header next to the project */\n');
+  const nodes = provider.getChildren();
+  const labels = nodes.map((c) => c.label || (c.treeItem || {}).label);
+  check('tree root: no Workspace Files group', !labels.includes('Workspace Files') && !labels.includes('工作区文件'));
+  check('tree root: project node present', labels.includes('LED'));
+  check('tree root: project is the only node', labels.length === 1);
+  fs.rmSync(stray, { force: true });
+}
+
+// 7. tree filtering (vscode stub): removed root file/folder invisible
 {
   const store = {
     all: [],

@@ -14,7 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const outCore = path.join(here, '..', 'out', 'core');
 
 const { findSolutionFiles, findProjectRoots } = require(path.join(outCore, 'discover.js'));
-const { parseSolution, writeSolution, appendSolutionMembers, recordBuildOrder } = require(path.join(outCore, 'solution.js'));
+const { parseSolution, writeSolution, appendSolutionMembers, recordBuildOrder, solutionCandidates } = require(path.join(outCore, 'solution.js'));
 const { Cproject } = require(path.join(outCore, 'cproject.js'));
 const { scanSources } = require(path.join(outCore, 'scan.js'));
 
@@ -306,6 +306,40 @@ const memberDir = (name) => {
   // repeat: still exactly one line (idempotent on the indented form too)
   recordBuildOrder(indFile, ['Proj2', 'Proj1']);
   check('BuildOrder: indented rewrite idempotent', (fs.readFileSync(indFile, 'utf-8').match(/BuildOrder=/g) || []).length === 1);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// ---------- stale mrvc.solution recovery candidates (0.2.2) ----------
+// A generated solution workspace has the solution's directory as its folder,
+// so a renamed/moved .wvsln is recovered from the DIRECT children of the
+// workspace roots only — never from deeper EVT examples (silently adopting an
+// unrelated solution would be worse than reporting none). 0 = gone,
+// 1 = auto-adopt, >1 = the caller asks which one.
+{
+  const dir = path.join(here, '..', '.scratch', 'solution-recover');
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(path.join(dir, 'sub'), { recursive: true });
+  fs.mkdirSync(path.join(dir, '.hidden'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'obj'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'proj'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'Top.wvsln'), 'A\n');
+  fs.writeFileSync(path.join(dir, 'sub', 'Deep.wvsln'), 'A\n');
+  fs.writeFileSync(path.join(dir, '.hidden', 'H.wvsln'), 'A\n');
+  fs.writeFileSync(path.join(dir, 'obj', 'O.wvsln'), 'A\n');
+  fs.writeFileSync(path.join(dir, 'proj', '.project'), '<?xml version="1.0"?><projectDescription/>');
+  fs.writeFileSync(path.join(dir, 'proj', 'P.wvsln'), 'A\n');
+
+  const one = solutionCandidates([dir]);
+  check('recover: direct child found; nested/.hidden/obj ignored', one.length === 1 && path.basename(one[0]) === 'Top.wvsln');
+  check('recover: a project root contributes nothing', solutionCandidates([path.join(dir, 'proj')]).length === 0);
+  check('recover: the same root twice dedupes', solutionCandidates([dir, dir]).length === 1);
+  check('recover: case-insensitive dedupe across roots', solutionCandidates([dir, dir.toUpperCase()]).length === 1);
+  check('recover: no roots / missing root -> empty', solutionCandidates([]).length === 0 && solutionCandidates([path.join(dir, 'nope')]).length === 0);
+
+  // a second direct child -> ambiguous, both candidates reported
+  fs.writeFileSync(path.join(dir, 'Second.wvsln'), 'A\n');
+  check('recover: two direct children -> two candidates (caller asks)', solutionCandidates([dir]).length === 2);
 
   fs.rmSync(dir, { recursive: true, force: true });
 }

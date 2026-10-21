@@ -14,14 +14,45 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { ProjectStore, MrsSolution, MrsProject, msg } from './projects';
-import { appendSolutionMembers, recordBuildOrder } from '../core/solution';
+import { ProjectStore, MrsSolution, MrsProject, msg, updateMrsSetting } from './projects';
+import { appendSolutionMembers, recordBuildOrder, solutionCandidates } from '../core/solution';
 import { findProjectRoots } from '../core/discover';
 import { Cproject } from '../core/cproject';
 import { t } from '../core/i18n';
 
 function solutionArg(item?: unknown): MrsSolution | undefined {
   return (item as { solution?: MrsSolution } | undefined)?.solution;
+}
+
+/**
+ * The window's mrvc.solution path is stale (the .wvsln was renamed, moved, or
+ * the tree was copied to another machine). Instead of silently degrading the
+ * window to a plain folder, a single sibling *.wvsln in the workspace root
+ * takes over and the setting is repaired; several candidates ask which one;
+ * none reports. Runs at activation, hence non-blocking for the caller.
+ */
+export async function recoverSolutionPath(store: ProjectStore, stale: string): Promise<void> {
+  const adopt = (file: string): void => {
+    if (!file) return;
+    store.addSolution(file);
+    void updateMrsSetting('solution', file);
+    void vscode.window.showInformationMessage(t('solutionRecovered', path.basename(file)));
+  };
+  const roots = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+  const candidates = solutionCandidates(roots);
+  if (candidates.length === 1) {
+    adopt(candidates[0]);
+    return;
+  }
+  if (candidates.length > 1) {
+    const pick = await vscode.window.showQuickPick(
+      candidates.map((c) => ({ label: path.basename(c), description: c })),
+      { placeHolder: t('solutionPickOne') }
+    );
+    if (pick) adopt(pick.description ?? '');
+    return;
+  }
+  void vscode.window.showWarningMessage(t('solutionPathStale', stale));
 }
 
 /** append one or more project roots to a solution file and reload it */

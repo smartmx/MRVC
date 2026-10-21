@@ -660,5 +660,67 @@ const check = (name, cond) => {
 
 
 
+// ---------- 13. MRS 2.3.0+ forces -lm into objects.mk (exe only) ----------
+// Byte-verified rule (the MRS 2.5.0 generator source plus a scan of 333 EVT
+// projects): an executable project's LIBS gets ` -lm` appended unless one of
+// the configured libraries is exactly "m"; entries are trimmed first. Non-exe
+// artefacts keep `LIBS :=` empty. Regression for the LiteOS_m_IOTC_Sleep
+// link failure (libcjson_static.a's fabs had no libm on an FPU-less chip).
+{
+  const tcStub = {
+    name: 'GCC12', dir: '', compilerC: 'riscv-wch-elf-gcc', compilerCpp: 'riscv-wch-elf-g++',
+    linkerC: 'riscv-wch-elf-gcc', linkerCpp: 'riscv-wch-elf-g++', debugger: 'riscv-wch-elf-gdb',
+    objcopy: 'riscv-wch-elf-objcopy', objdump: 'riscv-wch-elf-objdump', size: 'riscv-wch-elf-size', prefix: 'riscv-wch-elf-',
+  };
+  const mkProj = (libVals, kind) => {
+    const caseDir = path.join(__dirname, '', '.scratch', 'path-r7-mathlib');
+    const proj = path.join(caseDir, 'proj');
+    fs.rmSync(caseDir, { recursive: true, force: true });
+    fs.mkdirSync(path.join(proj, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(proj, 'src', 'main.c'), 'int main(void){return 0;}\n');
+    fs.writeFileSync(path.join(proj, '.project'), '<?xml version="1.0"?><projectDescription><name>r7</name></projectDescription>');
+    const list = libVals.map((v) => '<listOptionValue builtIn="false" value="' + v + '"/>').join('');
+    const lo = '<option id="l" name="Libraries" superClass="ilg.gnumcueclipse.managedbuild.cross.riscv.option.c.linker.libs" valueType="libs">' + list + '</option>';
+    // real .cproject configurations carry BOTH attributes; Cproject.artifactType
+    // reads the buildProperties comma list (buildArtefactType alone defaults to exe)
+    const base = 'org.eclipse.cdt.build.core.buildArtefactType.';
+    const attrs = 'buildArtefactType="' + base + kind + '" buildProperties="' + base + '=' + base + kind + ',org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.release"';
+    fs.writeFileSync(path.join(proj, '.cproject'), '<?xml version="1.0"?><cproject><cconfiguration id="x" name="obj"><storageModule moduleId="cdtBuildSystem" version="4.0.0"><configuration ' + attrs + ' name="obj"><folderInfo><toolChain superClass="ilg.gnumcueclipse.managedbuild.cross.riscv.toolchain.elf.release">' + lo + '<sourceEntries><entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/></sourceEntries></toolChain></folderInfo></configuration></storageModule></cconfiguration></cproject>');
+    return { caseDir, proj };
+  };
+  const libsLine = (proj) => {
+    generateMakefiles(Cproject.load(proj), tcStub);
+    return (fs.readFileSync(path.join(proj, 'obj', 'objects.mk'), 'utf-8').match(/^LIBS :=(.*)$/m) || [])[1] || '';
+  };
+  // the reported project's shape: two configured libs, no "m" -> -lm appended
+  {
+    const c = mkProj(['ISP585', 'CH58xBLE'], 'exe');
+    const got = libsLine(c.proj);
+    check('path auto -lm: appended when no lib is m', got === ' -lISP585 -lCH58xBLE -lm');
+    fs.rmSync(c.caseDir, { recursive: true, force: true });
+  }
+  // "m" configured in place -> in-position, never duplicated
+  {
+    const c = mkProj(['ISP585', 'm', 'wchnet'], 'exe');
+    const got = libsLine(c.proj);
+    check('path auto -lm: m configured keeps position, no duplicate', got === ' -lISP585 -lm -lwchnet');
+    fs.rmSync(c.caseDir, { recursive: true, force: true });
+  }
+  // padded entry trims to "m" (MRS2 tests the trimmed value)
+  {
+    const c = mkProj([' m '], 'exe');
+    const got = libsLine(c.proj);
+    check('path auto -lm: padded m trims and suppresses the append', got === ' -lm');
+    fs.rmSync(c.caseDir, { recursive: true, force: true });
+  }
+  // static library: no LIBS content at all, so no -lm either
+  {
+    const c = mkProj(['foo'], 'staticLibrary');
+    const got = libsLine(c.proj);
+    check('path auto -lm: static library stays empty', got === '');
+    fs.rmSync(c.caseDir, { recursive: true, force: true });
+  }
+}
+
 console.log(failures ? `\n${failures} FAILURES` : '\nall enhancement tests passed');
 process.exit(failures ? 1 : 0);

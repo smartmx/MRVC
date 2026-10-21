@@ -16,6 +16,32 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { findSolutionFiles } from './discover';
+
+/**
+ * Candidates to take over a stale mrvc.solution path (the .wvsln was renamed,
+ * moved, or the whole tree was copied to another machine): the *.wvsln files
+ * DIRECTLY in the given workspace roots — a generated solution workspace has
+ * the solution's directory as its folder, so the sibling file is the one the
+ * window was opened for. Deeper hits are deliberately not searched: silently
+ * adopting an unrelated EVT example's solution would be worse than reporting.
+ * Deduped case-insensitively (Windows fs semantics); 0 = gone, 1 = auto-adopt,
+ * >1 = ask the user.
+ */
+export function solutionCandidates(roots: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const root of roots) {
+    for (const f of findSolutionFiles(root, 0)) {
+      const key = f.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(f);
+      }
+    }
+  }
+  return out;
+}
 
 export interface SolutionEntry {
   /** line as written in the file */

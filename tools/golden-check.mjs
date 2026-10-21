@@ -119,11 +119,16 @@ for (const proj of projects) {
   // between SRCS and DEPS; newer ones (MRS 2.1.0, HarmonyOS golden) emit each
   // DEPS block right after its SRCS group
   const mrs2Style = /^2\./.test(verStr);
+  // MRS 2.3.0 introduced the forced `-lm` in objects.mk (byte-verified:
+  // every 2.3.0/2.4.0/2.5.0 sample has it, every 1.8.5–2.2.18 sample does
+  // not); older goldens must be generated without it to stay byte-equal
+  const vNum = /^(\d+)\.(\d+)/.exec(verStr);
+  const autoMathLib = vNum ? Number(vNum[1]) * 1000 + Number(vNum[2]) >= 2003 : false;
   // per-project toolchain: inferred from the golden text (review §4.1a —
   // a fixed riscv-none-elf- prefix was an analysis artifact that inflated
   // the HarmonyOS diff list)
   const goldenTc = TcFor(inferPrefixFromGolden(goldenMakefile));
-  const res = generateMakefiles(cp, goldenTc, { headerTool: `MRS Version: ${verStr}`, mrs2Style });
+  const res = generateMakefiles(cp, goldenTc, { headerTool: `MRS Version: ${verStr}`, mrs2Style, autoMathLib });
 
   const goldenDir = path.join(proj, 'obj');
   const files = ['makefile', 'sources.mk', 'objects.mk', ...res.dirs.filter(Boolean).map((d) => `${d}/subdir.mk`)];

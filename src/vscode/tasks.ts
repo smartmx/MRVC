@@ -23,6 +23,16 @@ function pct(s: string): string {
   return s.replace(/%/g, '%%');
 }
 
+/** the install label the build wrapper echoes ("MRS: MounRiver Studio 3") —
+ *  the label comes from the install's product.json, so keep it to characters
+ *  cmd treats literally */
+function echoSafeLabel(label: string): string {
+  return label
+    .replace(/[^A-Za-z0-9 ._-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export interface RunOptions {
   /** MRS2 "Build Project And Download" mode: wait for the build to end and
    * download only on success */
@@ -232,6 +242,11 @@ export class BuildManager {
       this.buildAllChannel = vscode.window.createOutputChannel('MRVC Build All');
     }
     const channel = this.buildAllChannel;
+    if (install) {
+      // which installation the batch uses — the two install settings are
+      // either-or, so make the active one visible up front
+      channel.appendLine('MRS: ' + install.label + ' (' + install.root + ')');
+    }
     this.buildAllRunning = true;
     const results: BuildAllResult[] = [];
     const started = Date.now();
@@ -349,7 +364,7 @@ export class BuildManager {
         'MRVC: Clean All',
         'MRVC',
         new vscode.ProcessExecution(
-          this.writeCleanWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe'), buildMakeArgs('clean', 1, buildVerbosity()).slice(0, -1)),
+          this.writeCleanWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe'), buildMakeArgs('clean', 1, buildVerbosity()).slice(0, -1), install.label),
           [],
           {
             env: { PATH: `${install.makeBin};${process.env['PATH'] ?? ''}` },
@@ -419,7 +434,7 @@ export class BuildManager {
         if (e.execution !== exec) return;
         finish(e.exitCode);
       });
-      const wrapper = this.writeBuildWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe'), buildMakeArgs('build', jobs, buildVerbosity()), buildRecordFile(p.root));
+      const wrapper = this.writeBuildWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe'), buildMakeArgs('build', jobs, buildVerbosity()), buildRecordFile(p.root), install.label);
       const task = new vscode.Task(
         { type: 'mrvc-build-all' },
         'MRVC: Build All',
@@ -511,11 +526,11 @@ export class BuildManager {
       kind === 'clean'
         ? // a clean must not trample the last build's record — run make via
           // the clean wrapper (no record writes, same metacharacter safety)
-          new vscode.ProcessExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags), [], {
+          new vscode.ProcessExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags, install.label), [], {
             env: { PATH: envPath },
           })
         : new vscode.ProcessExecution(
-            this.writeBuildWrapper(project.root, project.buildDir, makeExe, makeArgs, buildRecordFile(project.root)),
+            this.writeBuildWrapper(project.root, project.buildDir, makeExe, makeArgs, buildRecordFile(project.root), install.label),
             [],
             { env: { PATH: envPath } }
           );
@@ -536,7 +551,7 @@ export class BuildManager {
         { type: 'mrvc-clean', project: project.projectName },
         `MRVC: clean - ${project.projectName}`,
         'MRVC',
-        new vscode.ProcessExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags), [], {
+        new vscode.ProcessExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags, install.label), [], {
           env: { PATH: envPath },
         }),
         []
@@ -703,13 +718,17 @@ export class BuildManager {
    * (all sources, link, objcopy) — the record then answers "how was each file
    * compiled", which neither MRS2's nor a bare make log does.
    */
-  private writeBuildWrapper(projectRoot: string, buildDir: string, makeExe: string, makeArgs: string[], recordFile: string): string {
+  private writeBuildWrapper(projectRoot: string, buildDir: string, makeExe: string, makeArgs: string[], recordFile: string, installLabel = ''): string {
     const wrapper = buildWrapperFile(projectRoot);
+    const label = echoSafeLabel(installLabel);
     const body =
       `@echo off\r\n` +
       // `!` is only safe with delayed expansion off — a parent environment can
       // turn it on (AutoRun / /v:on), which would eat `!` in the build path
       `setlocal DisableDelayedExpansion\r\n` +
+      // which installation this build uses (mrvc.mrs2InstallPath /
+      // mrvc.mrs3InstallPath are either-or — show the active one)
+      (label ? 'echo MRS: ' + label + '\r\n' : '') +
       `cd /d "${pct(buildDir)}"\r\n` +
       `"${pct(makeExe)}" ${makeArgs.join(' ')} > "${pct(recordFile)}" 2>&1\r\n` +
       `set "MRVC_EXIT=%errorlevel%"\r\n` +
@@ -732,14 +751,16 @@ export class BuildManager {
    * batch Clean — every make invocation carries a wrapper, so no
    * ProcessExecution ever carries a user-controlled cwd again.
    */
-  private writeCleanWrapper(projectRoot: string, buildDir: string, makeExe: string, extraArgs: string[] = []): string {
+  private writeCleanWrapper(projectRoot: string, buildDir: string, makeExe: string, extraArgs: string[] = [], installLabel = ''): string {
     const wrapper = buildWrapperFile(projectRoot, 'clean');
+    const label = echoSafeLabel(installLabel);
     // verbosity flags ride along (concise -s / full --trace) — the caller
     // passes buildMakeArgs('clean', ...) minus the target
     const args = [...extraArgs, 'clean'].join(' ');
     const body =
       `@echo off\r\n` +
       `setlocal DisableDelayedExpansion\r\n` +
+      (label ? 'echo MRS: ' + label + '\r\n' : '') +
       `cd /d "${pct(buildDir)}"\r\n` +
       `"${pct(makeExe)}" ${args}\r\n` +
       `exit /b %errorlevel%\r\n`;

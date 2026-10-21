@@ -35,8 +35,8 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     'zh-cn': 'MRVC：" {0} "在工程之外且不在任何链接文件夹下——不存在工程相对路径。',
   },
   noToolchainFound: {
-    en: 'No RISC-V toolchain found. Check the "mrvc.mrs2InstallPath" setting — it must point to your MRS2 (MounRiver Studio 2) installation folder.',
-    'zh-cn': '未找到 RISC-V 工具链。请检查 "mrvc.mrs2InstallPath" 设置——它必须指向您的 MRS2（MounRiver Studio 2）安装文件夹。',
+    en: 'No RISC-V toolchain found. Check the "mrvc.mrs2InstallPath" / "mrvc.mrs3InstallPath" setting — it must point to your MounRiver Studio installation folder.',
+    'zh-cn': '未找到 RISC-V 工具链。请检查 "mrvc.mrs2InstallPath" / "mrvc.mrs3InstallPath" 设置——它必须指向您的 MounRiver Studio 安装文件夹。',
   },
 
   // batch progress titles (notification popups)
@@ -69,9 +69,37 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   noActiveProject: { en: 'No active MRS project.', 'zh-cn': '没有活动 MRS 工程。' },
   pickProject: { en: 'Select project', 'zh-cn': '选择工程' },
   installNotFound: {
-    en: 'MRS2 (MounRiver Studio 2) installation not found — set "mrvc.mrs2InstallPath" to your MRS2 install folder.',
-    'zh-cn': '未找到 MRS2（MounRiver Studio 2）安装目录——请在设置 "mrvc.mrs2InstallPath" 中指定 MRS2 安装文件夹。',
+    en: 'No MounRiver Studio installation found — point "mrvc.mrs2InstallPath" (MRS2) or "mrvc.mrs3InstallPath" (MRS3) at your install folder.',
+    'zh-cn': '未找到 MounRiver Studio 安装——请在 "mrvc.mrs2InstallPath"（MRS2）或 "mrvc.mrs3InstallPath"（MRS3）中指定安装文件夹。',
   },
+  installWrongField: {
+    en: 'That path points at a {0} installation — it belongs in "mrvc.{1}", or clear this field.',
+    'zh-cn': '该路径指向的是 {0} 安装——应改填到 "mrvc.{1}"，或清空本字段。',
+  },
+  installMoveValue: { en: 'Move it', 'zh-cn': '更正设置' },
+  installSwappedFields: {
+    en: 'The two install paths look swapped — "mrvc.mrs2InstallPath" points at {0} and "mrvc.mrs3InstallPath" at {1}.',
+    'zh-cn': '两个安装路径看起来填反了："mrvc.mrs2InstallPath" 指向 {0}，"mrvc.mrs3InstallPath" 指向 {1}。',
+  },
+  installSwapValues: { en: 'Swap them', 'zh-cn': '交换两者' },
+  installForcedMissing: {
+    en: '"mrvc.mrsVersion" pins {0}, but no {0} installation was found — fix the install paths or set mrvc.mrsVersion back to auto.',
+    'zh-cn': '"mrvc.mrsVersion" 固定为 {0}，但未找到 {0} 安装——请检查安装路径，或将 mrvc.mrsVersion 改回 auto。',
+  },
+  installForcedWrongField: {
+    en: '"{0}" points at {1}.',
+    'zh-cn': '"{0}" 指向的是 {1}。',
+  },
+  installFallback: {
+    en: '"mrvc.{0}" does not point to a valid installation — fell back to {1}.',
+    'zh-cn': '"mrvc.{0}" 指向的目录不是有效安装，已回退到 {1}。',
+  },
+  installBothValid: {
+    en: 'Two MounRiver installations are present — active: {0}. Pin one with "mrvc.mrsVersion".',
+    'zh-cn': '检测到两个 MounRiver 安装，当前生效：{0}。可用 "mrvc.mrsVersion" 固定其一。',
+  },
+  installPinMRS2: { en: 'Use MRS2', 'zh-cn': '改用 MRS2' },
+  installPinMRS3: { en: 'Use MRS3', 'zh-cn': '改用 MRS3' },
   makeNotFound: { en: 'make.exe not found under the MounRiver installation ({0})', 'zh-cn': '在 MounRiver 安装目录下未找到 make.exe（{0}）' },
   makefileGenFailed: { en: 'Makefile generation failed: {0}', 'zh-cn': 'Makefile 生成失败：{0}' },
   neverBuilt: { en: 'MRVC: "{0}" has never been built — nothing to clean.', 'zh-cn': 'MRVC：" {0} " 尚未编译过——没有可清理的内容。' },
@@ -83,12 +111,23 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
 
   // tree
   noMrsProjectNode: { en: 'No MRS project', 'zh-cn': '无 MRS 工程' },
-  workspaceFiles: { en: 'Workspace Files', 'zh-cn': '工作区文件' },
 
   // open project / folder
 
   // solution lifecycle
   needSolution: { en: 'To add a project, open a solution first!', 'zh-cn': '请先打开解决方案，然后才能添加工程！' },
+  solutionRecovered: {
+    en: 'The solution was moved or renamed — this window now uses "{0}".',
+    'zh-cn': '解决方案已被移动或改名——本窗口已切换为"{0}"。',
+  },
+  solutionPickOne: {
+    en: 'Several solutions are in this folder — pick the one this window uses',
+    'zh-cn': '该文件夹下有多个解决方案——请选择本窗口使用的那个',
+  },
+  solutionPathStale: {
+    en: 'The solution this window was opened for no longer exists: {0}',
+    'zh-cn': '本窗口原先打开的解决方案已不存在：{0}',
+  },
   needSolutionOrder: { en: 'To set the build order, open a solution first!', 'zh-cn': '请先打开解决方案，然后才能设置编译顺序！' },
   alreadyMember: { en: 'MRVC: those projects are already solution members.', 'zh-cn': 'MRVC：这些工程已经是解决方案成员。' },
   addedToSolution: { en: 'MRVC: {0} project(s) added to "{1}".', 'zh-cn': 'MRVC：已将 {0} 个工程添加到" {1} "。' },
@@ -103,7 +142,7 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   searchProjects: { en: 'MRVC: searching projects…', 'zh-cn': 'MRVC：正在搜索工程…' },
 
   // cmake
-  cmakeNoToolchain: { en: 'No RISC-V toolchain found — check "mrvc.mrs2InstallPath".', 'zh-cn': '未找到 RISC-V 工具链——请检查 "mrvc.mrs2InstallPath"。' },
+  cmakeNoToolchain: { en: 'No RISC-V toolchain found — check "mrvc.mrs2InstallPath" / "mrvc.mrs3InstallPath".', 'zh-cn': '未找到 RISC-V 工具链——请检查 "mrvc.mrs2InstallPath" / "mrvc.mrs3InstallPath"。' },
   cmakeGenerated: { en: 'MRVC: CMakeLists.txt generated ({0} sources, {1} include dirs).', 'zh-cn': 'MRVC：CMakeLists.txt 已生成（{0} 个源文件，{1} 个包含目录）。' },
   cmakeGenFailed: { en: 'MRVC: CMake generation failed — {0}', 'zh-cn': 'MRVC：CMake 生成失败——{0}' },
   cmakeExportTitle: { en: 'Export folder for "{0}" (a subfolder is created)', 'zh-cn': '为" {0} "选择导出位置（将创建子文件夹）' },
@@ -261,12 +300,12 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
 
   // MRS Tools launchers
   mrsToolsNoInstallStart: {
-    en: 'MRVC: cannot start {0} — MRS2 installation not found (set mrvc.mrs2InstallPath).',
-    'zh-cn': 'MRVC：无法启动 {0}——未找到 MRS2 安装（请设置 mrvc.mrs2InstallPath）。',
+    en: 'MRVC: cannot start {0} — MounRiver installation not found (set mrvc.mrs2InstallPath or mrvc.mrs3InstallPath).',
+    'zh-cn': 'MRVC：无法启动 {0}——未找到 MounRiver 安装（请设置 mrvc.mrs2InstallPath 或 mrvc.mrs3InstallPath）。',
   },
   mrsToolsNotFound: {
-    en: 'MRVC: {0} not found under the MRS2 installation ({1}).',
-    'zh-cn': 'MRVC：在 MRS2 安装目录下未找到 {0}（{1}）。',
+    en: 'MRVC: {0} not found under the MounRiver installation ({1}).',
+    'zh-cn': 'MRVC：在 MounRiver 安装目录下未找到 {0}（{1}）。',
   },
   mrsToolsStartFailed: { en: 'MRVC: failed to start {0} — {1}', 'zh-cn': 'MRVC：启动 {0} 失败——{1}' },
 

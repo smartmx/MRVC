@@ -8,7 +8,7 @@ import * as path from 'path';
 import { Cproject } from '../core/cproject';
 import { MrsProjectFile, readProjectFile, linkedFolderMap } from '../core/projectFile';
 import { readTemplate, TemplateData } from '../core/templateFile';
-import { locateInstall, mergeCustomToolchains, CustomToolchain, MrsInstall, selectToolchain, ToolchainInfo } from '../core/toolchain';
+import { selectInstall, InstallSelection, flavorLabel, mergeCustomToolchains, CustomToolchain, MrsInstall, selectToolchain, ToolchainInfo } from '../core/toolchain';
 import { findProjectRoots } from '../core/discover';
 import { parseSolution } from '../core/solution';
 import { t } from '../core/i18n';
@@ -527,13 +527,122 @@ export function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export function getInstall(): MrsInstall | null {
+/** one resolved install per settings combination — selectInstall re-reads
+ *  product.json/manifests on every call and getInstall has ~14 callers */
+let installCache: { key: string; selection: InstallSelection } | null = null;
+/** install-choice notes fire once per window session */
+const installNotesShown = new Set<string>();
+
+/** the active installation, per the mrvc.mrs2InstallPath /
+ *  mrvc.mrs3InstallPath / mrvc.mrsVersion settings (policy in selectInstall) */
+export function selectMrsInstall(): InstallSelection {
   const cfg = vscode.workspace.getConfiguration('mrvc');
-  const install = locateInstall(cfg.get<string>('mrs2InstallPath'));
-  if (!install) return null;
+  const mrs2 = cfg.get<string>('mrs2InstallPath', '');
+  const mrs3 = cfg.get<string>('mrs3InstallPath', '');
+  const version = cfg.get<string>('mrsVersion', 'auto');
+  const key = mrs2 + '|' + mrs3 + '|' + version;
+  if (installCache?.key !== key) {
+    installCache = { key, selection: selectInstall({ mrs2Path: mrs2, mrs3Path: mrs3, version }) };
+  }
+  return installCache.selection;
+}
+
+export function getInstall(): MrsInstall | null {
+  const selection = selectMrsInstall();
+  announceInstallNotes(selection);
+  if (!selection.install) return null;
   // user-provided toolchains (mrvc.customToolchains) override same-named
-  // MRS2-installed ones — every consumer (build, IntelliSense, flash,
-  // CMake) resolves toolchains through this function
+  // installed ones — every consumer (build, IntelliSense, flash, CMake)
+  // resolves toolchains through this function
+  const cfg = vscode.workspace.getConfiguration('mrvc');
   const custom = cfg.get<CustomToolchain[]>('customToolchains', []);
-  return mergeCustomToolchains(install, custom);
+  return mergeCustomToolchains(selection.install, custom);
+}
+
+/** make the either-or install choice visible: a path in the wrong field, an
+ *  invalid MRS3 path falling back to MRS2, and the both-valid case (with
+ *  buttons that pin mrvc.mrsVersion) — each at most once per session */
+function announceInstallNotes(sel: InstallSelection): void {
+  const once = (kind: string): boolean => {
+    if (installNotesShown.has(kind)) return false;
+    installNotesShown.add(kind);
+    return true;
+  };
+  // a pinned generation (mrvc.mrsVersion) that resolved to nothing: report it
+  // loudly — the active install is null on purpose (MRS2 must never be
+  // silently used when MRS3 is pinned, and vice versa)
+  if (sel.forcedFlavorMissing && once('forced')) {
+    const req = sel.forcedFlavorMissing;
+    // canonical generation label — the field's own resolved label would name
+    // the OTHER generation here (that is exactly why nothing was found)
+    const label = sel.forcedFlavorMissingLabel ?? flavorLabel(req);
+    const field = req === 'mrs2' ? 'mrvc.mrs2InstallPath' : 'mrvc.mrs3InstallPath';
+    const fieldFlavor = req === 'mrs2' ? sel.mrs2FieldFlavor : sel.mrs3FieldFlavor;
+    const otherLabel = req === 'mrs2' ? sel.mrs3Label : sel.mrs2Label;
+    let msg = t('installForcedMissing', label);
+    if (fieldFlavor && fieldFlavor !== 'unknown' && fieldFlavor !== req) {
+      msg += ' ' + t('installForcedWrongField', field, otherLabel);
+    }
+    void vscode.window.showWarningMessage(msg);
+    return;
+  }
+  const install = sel.install;
+  if (!install) return;
+  if (sel.swappedFields && once('swapped')) {
+    const swapBtn = t('installSwapValues');
+    void vscode.window
+      .showWarningMessage(t('installSwappedFields', sel.mrs2Label, sel.mrs3Label), swapBtn)
+      .then((pick) => {
+        if (pick !== swapBtn) return;
+        void updateMrsSetting('mrs2InstallPath', sel.mrs3PathValue);
+        void updateMrsSetting('mrs3InstallPath', sel.mrs2PathValue);
+      });
+  }
+  // a field holding the other generation's path (the swapped case above is
+  // reported by the swap note instead)
+  if (!sel.swappedFields && sel.mismatchedFields.length && once('mismatch')) {
+    const from = sel.mismatchedFields[0];
+    const to = from === 'mrs2InstallPath' ? 'mrs3InstallPath' : 'mrs2InstallPath';
+    const label = from === 'mrs2InstallPath' ? sel.mrs2Label : sel.mrs3Label;
+    const targetValue = to === 'mrs2InstallPath' ? sel.mrs2PathValue : sel.mrs3PathValue;
+    const body = t('installWrongField', label, to);
+    if (targetValue) {
+      // the target field already holds something — advise, do not offer a
+      // move that would clobber it
+      void vscode.window.showWarningMessage(body);
+    } else {
+      const moveBtn = t('installMoveValue');
+      void vscode.window.showWarningMessage(body, moveBtn).then((pick) => {
+        if (pick !== moveBtn) return;
+        void updateMrsSetting(to, from === 'mrs2InstallPath' ? sel.mrs2PathValue : sel.mrs3PathValue);
+        void updateMrsSetting(from, '');
+      });
+    }
+  }
+  if (sel.fellBackFromMrs3 && once('fallback')) {
+    void vscode.window.showWarningMessage(t('installFallback', 'mrs3InstallPath', install.label));
+  }
+  if (sel.bothValid && once('both')) {
+    const pin3 = t('installPinMRS3');
+    const pin2 = t('installPinMRS2');
+    void vscode.window
+      .showInformationMessage(t('installBothValid', install.label), pin3, pin2)
+      .then((pick) => {
+        if (pick === pin3) void updateMrsSetting('mrsVersion', 'mrs3');
+        else if (pick === pin2) void updateMrsSetting('mrsVersion', 'mrs2');
+      });
+  }
+}
+
+/** write a setting at the scope the user already used (global by default) */
+export function updateMrsSetting(key: string, value: string): Thenable<void> {
+  const cfg = vscode.workspace.getConfiguration('mrvc');
+  const insp = cfg.inspect<string>(key);
+  const target =
+    insp?.workspaceFolderValue !== undefined
+      ? vscode.ConfigurationTarget.WorkspaceFolder
+      : insp?.workspaceValue !== undefined
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+  return cfg.update(key, value, target);
 }

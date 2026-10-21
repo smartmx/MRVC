@@ -34,7 +34,7 @@ import { SyncPage } from './vscode/syncPage';
 import { MacroBatchPage } from './vscode/macroBatch';
 import { comTransmitCmd, hexBinToolCmd, ispToolCmd, touchkeyToolCmd, uiDesignerCmd } from './vscode/mrsTools';
 import { ensureIntellisenseConfig, resolveProjectForFile, switchContext, maybePromptCppTools } from './vscode/intellisense';
-import { addProjectToSolutionCmd, addProjectsByBatchCmd, setBuildOrderCmd, closeSolutionCmd, modifySolutionToolchainCmd } from './vscode/solutionLife';
+import { addProjectToSolutionCmd, addProjectsByBatchCmd, setBuildOrderCmd, closeSolutionCmd, modifySolutionToolchainCmd, recoverSolutionPath } from './vscode/solutionLife';
 import { generateCMakeListCmd, exportAsCMakeCmd } from './vscode/cmakeExport';
 import { buildRecordFile } from './core/buildLog';
 import { setLanguage, vscodeLanguageIsChinese, t } from './core/i18n';
@@ -203,6 +203,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const slnSetting = vscode.workspace.getConfiguration('mrvc').get<string>('solution');
   if (slnSetting && fs.existsSync(slnSetting)) {
     store.addSolution(slnSetting);
+  } else if (slnSetting) {
+    // stale path (renamed/moved solution, or a tree copied to another
+    // machine): repair from a sibling *.wvsln instead of silently opening
+    // the window as a plain folder
+    void recoverSolutionPath(store, slnSetting);
   }
 
   // ---- commands ----

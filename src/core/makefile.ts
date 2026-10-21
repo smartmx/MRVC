@@ -86,7 +86,7 @@ function assertInsideBuildDir(buildDir: string, target: string): void {
 export function generateMakefiles(
   cp: Cproject,
   tc: ToolchainInfo,
-  opts: { headerTool?: string; analysis?: boolean; mrs2Style?: boolean } = {}
+  opts: { headerTool?: string; analysis?: boolean; mrs2Style?: boolean; autoMathLib?: boolean } = {}
 ): GenerateResult {
   const buildDir = path.join(cp.projectRoot, cp.configName);
   fs.mkdirSync(buildDir, { recursive: true });
@@ -145,6 +145,11 @@ export function generateMakefiles(
   // its own piece, so this single flag stays the only switch needed.
   // Pass false only to reproduce the legacy 1.9.2 layout (golden checks).
   const mrs2Style = opts.mrs2Style ?? true;
+  // The forced `-lm` (see objects.mk below) appeared in MRS 2.3.0: every
+  // 2.3.0/2.4.0/2.5.0 sample emits it, every 1.8.5–2.2.18 sample does not.
+  // The runtime default is on (it emulates the installed 2.5.x); the golden
+  // harness turns it off for goldens older than 2.3.0.
+  const autoMathLib = opts.autoMathLib ?? true;
 
   const isCpp = cp.isCpp;
   const map: LogicDirMap = scanSources(cp);
@@ -407,7 +412,14 @@ export function generateMakefiles(
       for (const lib of libs) {
         t += ` -l${lib}`;
       }
-      t += wchLibs;
+      // MRS 2.3.0+ forces the math library in: unless the configured list
+      // already names "m", `-lm` is appended after it. Without it, any
+      // --whole-archive archive that calls fabs/sqrt (libcjson in the
+      // LiteOS example) fails with an undefined reference on chips without
+      // hardware FP. The WCH helper libs (-lIQmath_RV32, -lprintf,
+      // -lprintfloat) do NOT live here — MRS2 passes them on the recipe
+      // right after `$(LIBS)`.
+      if (autoMathLib && !libs.includes('m')) t += ' -lm';
     }
     if (!mrs2Style) t += '\n\n';
     writeMk('objects.mk', t);
@@ -557,11 +569,14 @@ export function generateMakefiles(
 
     if (isExe) {
       t += `${elfTarget}: $(OBJS) $(USER_OBJS)\n`;
+      // the WCH helper libs (-lIQmath_RV32 / -lprintf / -lprintfloat) sit on
+      // the recipe right after `$(LIBS)`, not inside objects.mk — MRS2 2.5.0
+      // and the 1.9.2 goldens agree (e.g. `$(OBJS) $(LIBS) -lprintf`)
       if (mrs2Style) {
         // 2.x: single @ prefix, no tail line
-        t += `\t@\t${linker}${common}${ldOpts} -o "${elfTarget}" $(OBJS) $(USER_OBJS) $(LIBS)\n`;
+        t += `\t@\t${linker}${common}${ldOpts} -o "${elfTarget}" $(OBJS) $(USER_OBJS) $(LIBS)${wchLibs}\n`;
       } else {
-        t += `\t@\t@\t${linker}${common}${ldOpts} -o "${elfTarget}" $(OBJS) $(USER_OBJS) $(LIBS)\n`;
+        t += `\t@\t@\t${linker}${common}${ldOpts} -o "${elfTarget}" $(OBJS) $(USER_OBJS) $(LIBS)${wchLibs}\n`;
         t += `\t@\t@\n`;
       }
       if (flashVar) {

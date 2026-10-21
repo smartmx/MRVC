@@ -1,0 +1,7 @@
+# tools/enhancements-test.js opens with Chinese-heavy comment blocks: the first
+# 8 KB cross git's binary-sniffing threshold in the C locale (ls-files --eol
+# reported "-text"), which disabled CRLF normalization for that one file — every
+# edit then showed up in `git diff --check` as trailing whitespace (the CR of
+# each added CRLF line). Declaring it text restores the same treatment every
+# other file gets: LF in the index, CRLF in the worktree.
+tools/enhancements-test.js text

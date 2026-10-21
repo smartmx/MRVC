@@ -609,7 +609,7 @@ export class ConfigView {
     if (m.command === 'dlOp' && m.op) {
       const install = getInstall();
       if (!install) {
-        this.panel.webview.postMessage({ command: 'dlLog', text: 'MRS2 installation not found — set mrvc.mrs2InstallPath.' });
+        this.panel.webview.postMessage({ command: 'dlLog', text: t('installNotFound') });
         return;
       }
       const op = m.op as WlinkOp;

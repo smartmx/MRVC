@@ -92,14 +92,17 @@ check('debugging level = none', cp.optionEnum('debugging.level') === 'none');
 check('zmmul stored', cp.optionBool('target.isa.zmmul'));
 check('cpp std = cpp17', cp.optionEnum('cpp.compiler.std') === 'cpp17');
 
-// wch libs must flow into objects.mk; -march must gain _zmmul; debug level none drops -g
+// wch libs ride the link recipe after $(LIBS) (MRS2 parity: objects.mk ends
+// with the configured libs plus the forced -lm, the -lprintf/-lIQmath_RV32
+// family sits on the recipe); -march must gain _zmmul; debug none drops -g
 const gen = generateMakefiles(cp, tcStub);
 const objectsMk = fs.readFileSync(path.join(scratch, 'obj', 'objects.mk'), 'utf-8');
+const makeMk = fs.readFileSync(path.join(scratch, 'obj', 'makefile'), 'utf-8');
 const srcSubdir = fs.readFileSync(path.join(scratch, 'obj', 'src', 'subdir.mk'), 'utf-8');
-check('objects.mk has -lprintf', objectsMk.includes('-lprintf '));
-check('objects.mk has -lprintfloat', objectsMk.includes('-lprintfloat'));
-check('objects.mk has -lIQmath_RV32', objectsMk.includes('-lIQmath_RV32'));
 check('user lib ISP585 kept', objectsMk.includes('-lISP585'));
+check('objects.mk appends the forced -lm', objectsMk.includes('-lISP585 -lm'));
+check('objects.mk keeps wch libs out', !objectsMk.includes('-lprintf') && !objectsMk.includes('-lIQmath_RV32'));
+check('recipe has wch libs after $(LIBS)', /\$\(LIBS\) -lIQmath_RV32 -lprintf -lprintfloat/.test(makeMk));
 check('-march gains _zmmul', srcSubdir.includes('_zba_zbb_zbc_zbs_zmmul_xw'));
 check('debug level none removes -g', !srcSubdir.includes(' -g '));
 

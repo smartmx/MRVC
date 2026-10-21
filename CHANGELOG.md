@@ -1,5 +1,64 @@
 # MRVC 更新日志
 
+## V0.2.2（2026-10-21）
+
+### 新增
+
+- **MRS3 支持（与 MRS2 二选一）**：新增 `mrvc.mrs3InstallPath` 安装路径与
+  `mrvc.mrsVersion`（auto / mrs2 / mrs3）选择器——同一时刻只有一个安装生效；
+  MRS3 路径非空即使用 MRS3（路径无效自动回退 MRS2），可用选择器显式固定。
+  安装代次由 `product.json` 的 `mrsVersion` 键探测。实测 MRS3 与 MRS2 同构：
+  工具链 manifest（GCC8/12/15 同名同前缀）、make 包、OpenOCD、WCH-LinkUtility、
+  MRS Tools 路径全部一致，make/sh/openocd/GCC12/GCC15 二进制与 MRS2 逐字节
+  相同。构建输出首行打印当前生效的安装；四类安装提示按场景给出操作——「两个
+  路径都有效」可一键固定其一，「两字段填反」可一键交换，「路径填错字段」仅在
+  目标字段为空时提供一键改填（目标已有值时只提示、不覆盖），「MRS3 路径无效
+  已回退」为纯提示。**强制代次
+  （`mrvc.mrsVersion`）只认所请求代次的安装**：字段指向另一代次时跳过、
+  找不到时明确报错，绝不静默改用另一代次（未标注代次的安装仍接受）。
+- **wlink 桥按 DLL 位数自适配**：MRS2 的 CommunicationLib 为 32 位 DLL、MRS3
+  为 64 位（导出函数 106 个完全相同），桥改用与 DLL 同位数的 Windows
+  PowerShell（System32 / SysWOW64）执行 P/Invoke。
+
+### 修复
+
+- **Download Settings 硬件操作此前从未真正执行**（0.1.2 起的缺陷）：PowerShell
+  桥的 P/Invoke 声明名（`MRSFunc_*`）与脚本体调用名（裸名）不一致，DLL 实际
+  从不被调用——查芯片 ID / 读保护读写 / 禁用调试接口 / 内存类型 / 清除 Code
+  Flash 全部报「找不到方法」。改用调用名声明 + `EntryPoint` 绑定真实导出后，
+  MRS2（32 位）与 MRS3（64 位）均实机进入 DLL（未接芯片时返回 DLL 的
+  连接失败码，措辞正确）。回归不变量：脚本中每个被调用的方法必须在同脚本内
+  有声明。
+- **`-lm` 强制注入（MRS 2.3.0+ 行为）**：可执行工程配置库中没有 `m` 时，
+  `objects.mk` 的 `LIBS` 行自动追加 `-lm`（实证：1.8.5–2.2.18 不加，
+  2.3.0/2.4.0/2.5.0 全加；LiteOS+IOTC 工程因 `libcjson` 缺 libm 链接失败即此故）。
+- **WCH 助手库位置**：`-lIQmath_RV32` / `-lprintf` / `-lprintfloat` 从
+  `objects.mk` 移到链接 recipe 的 `$(LIBS)` 之后（MRS 2.5.0 与 1.9.2 金标一致）。
+- **工程树移除「工作区文件」节点**：树只显示扫描到的工程本身，不再列出工程
+  父目录中的散落源文件。
+- **解决方案窗口的路径自愈**：`.wvsln` 被改名/移动（或整个目录换机器）后，
+  生成的 `.code-workspace` 里 `mrvc.solution` 的旧绝对路径此前会静默失效、
+  窗口退化成普通文件夹；现窗口激活时在**工作区根目录直层**查找 `.wvsln`——
+  唯一则自动接管并回写设置（有提示），多个则弹出选择，一个都没有才提示失效。
+  搜索刻意不递归：静默套用无关 EVT 例程的解决方案比报告"找不到"更糟。
+- **双安装提示的完整诊断**：两个路径字段都非空时，误填的字段现在照样被点名——
+  例如 MRS3 路径里填了 MRS2 目录，会提示该字段填错，而不是误报"检测到两个安装"
+  （字段级诊断与另一字段是否填写无关；真正的两个安装才提示二选一）；
+  强制代次（`mrvc.mrsVersion`）找不到安装时的提示固定使用**所固定代次的名称**，
+  不再写成字段里另一代次的名称（"固定 MRS3 却提示 MRS2"的自相矛盾已消除）。
+
+### 内部
+
+- 新增 `tools/mrsinstall-test.js`（安装探测与二选一策略全断言）；`wlink-test`
+  增 PE 位数判定与方法声明覆盖不变量；`enhancements-test` 增 auto `-lm` 回归。
+- 新增常驻探针 `tools/mrs-install-probe.mjs`：钉住指定安装（MRS2 / MRS3）
+  构建工程并支持 PARENT-N 链接工程；双安装真机回归（LED / tcp_client）通过。
+- 新增发布工具 `tools/sync-to-mrvc.mjs`（逐文件哈希校验的 develop→MRVC 同步；
+  **仅 develop，不入发布仓库**——它操作的是 develop 同级的 MRVC 克隆）；
+  `.gitattributes` 声明 `tools/enhancements-test.js` 为文本——该文件前 8 KB 中文
+  占比越过 git 的二进制嗅探阈值，此前每次改动都会在 `git diff --check` 里报
+  行尾空白（CR），声明后恢复与其他文件一致的 LF 索引 / CRLF 工作区处理。
+
 ## V0.2.1（2026-10-19）
 
 ### 修复

@@ -11,7 +11,7 @@ import { toPosix } from '../core/macros';
 import { themeColorFor } from '../core/colorMarks';
 import { t } from '../core/i18n';
 
-type NodeType = 'project' | 'solution' | 'linkedFolder' | 'folder' | 'file' | 'products' | 'empty' | 'loose';
+type NodeType = 'project' | 'solution' | 'linkedFolder' | 'folder' | 'file' | 'products' | 'empty';
 
 export class TreeNode extends vscode.TreeItem {
   constructor(
@@ -154,34 +154,6 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     });
   }
 
-  /** source files sitting NEXT TO projects (in their parent directories) —
-   * not part of any project, but users keep shared code there and need to
-   * see/edit it from the tree. A directory that is itself a project root is
-   * skipped: its files belong to that project. */
-  private looseFileNodes(): TreeNode[] {
-    const srcExt = new Set(['.c', '.h', '.cpp', '.hpp', '.s', '.S']);
-    const projectRoots = new Set(this.store.all.map((p) => ProjectStore.key(p.root)));
-    const dirs = new Set<string>();
-    for (const p of this.store.all) {
-      const dir = path.dirname(p.root);
-      if (!projectRoots.has(ProjectStore.key(dir))) dirs.add(dir);
-    }
-    const nodes: TreeNode[] = [];
-    for (const dir of dirs) {
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const e of entries) {
-        if (!e.isFile() || !srcExt.has(path.extname(e.name))) continue;
-        nodes.push(new TreeNode('file', e.name, vscode.TreeItemCollapsibleState.None, path.join(dir, e.name)));
-      }
-    }
-    return nodes.sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? '')));
-  }
-
   refresh(): void {
     this._onDidChange.fire(undefined);
   }
@@ -266,10 +238,6 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         // multi-project workspaces unreadable
         nodes.push(new TreeNode('project', p.projectName, vscode.TreeItemCollapsibleState.Collapsed, p.root, p));
       }
-      const loose = this.looseFileNodes();
-      if (loose.length) {
-        nodes.push(new TreeNode('loose', t('workspaceFiles'), vscode.TreeItemCollapsibleState.Collapsed));
-      }
       return nodes;
     }
     if (el.nodeType === 'solution' && el.solution) {
@@ -277,9 +245,6 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       return el.solution.members.map(
         (p) => new TreeNode('project', p.projectName, vscode.TreeItemCollapsibleState.Collapsed, p.root, p)
       );
-    }
-    if (el.nodeType === 'loose') {
-      return this.looseFileNodes();
     }
     const proj = el.project;
     if (!proj) return [];

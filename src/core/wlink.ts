@@ -2,12 +2,16 @@
  * WCH-Link operations bridge (pure Node).
  *
  * MRS2 drives the Download Settings hardware operations (read protection,
- * chip ID query, memory assign, ...) through in-process FFI on the 32-bit
- * McuCompilerDll.dll. MRVC runs inside a 64-bit VSCode host which cannot
- * load that DLL, so each operation is generated as a small PowerShell
- * script (Add-Type P/Invoke, same stdcall exports MRS2 binds with koffi)
- * and executed by the 32-bit Windows PowerShell that ships with every
- * 64-bit Windows (SysWOW64). Results come back as one JSON line.
+ * chip ID query, memory assign, ...) through in-process FFI on its
+ * McuCompilerDll.dll. MRVC runs inside a VSCode extension host which cannot
+ * load that DLL in-process, so each operation is generated as a small
+ * PowerShell script (Add-Type P/Invoke, same stdcall exports MRS2 binds with
+ * koffi) and executed by an out-of-process Windows PowerShell. Results come
+ * back as one JSON line.
+ *
+ * The host bitness must MATCH the DLL: MRS2 ships a 32-bit McuCompilerDll
+ * (32-bit SysWOW64 PowerShell), the MRS3 beta a 64-bit one (64-bit
+ * PowerShell) — same 106 exports, only the machine type differs.
  */
 import * as fs from 'fs';
 import * as os from 'os';
@@ -15,7 +19,44 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { MrsInstall } from './toolchain';
 
-export const OP_LOGIC_PATH = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'SysWOW64', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
+export const POWERSHELL_X86 = path.join(systemRoot, 'SysWOW64', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+export const POWERSHELL_X64 = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+/** the 32-bit bridge path (MRS2's DLL bitness); kept for compatibility */
+export const OP_LOGIC_PATH = POWERSHELL_X86;
+
+/** PE COFF machine type of a file (0x14c = i386, 0x8664 = x64), null when
+ *  the file is not a readable PE image */
+export function peMachine(file: string): number | null {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, 'r');
+    const dos = Buffer.alloc(4);
+    if (fs.readSync(fd, dos, 0, 4, 0x3c) !== 4) return null;
+    const lfanew = dos.readUInt32LE(0);
+    const head = Buffer.alloc(6);
+    if (fs.readSync(fd, head, 0, 6, lfanew) !== 6) return null;
+    if (head.readUInt32LE(0) !== 0x00004550) return null; // "PE\0\0"
+    return head.readUInt16LE(4);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // best-effort close
+      }
+    }
+  }
+}
+
+/** the PowerShell whose bitness matches the CommunicationLib DLL — a host of
+ *  the other bitness cannot load it (an unknown image keeps the historical
+ *  32-bit choice) */
+export function bridgePowerShell(dll: string): string {
+  return peMachine(dll) === 0x8664 ? POWERSHELL_X64 : POWERSHELL_X86;
+}
 
 export interface CommLib {
   dir: string;
@@ -64,31 +105,34 @@ export interface WlinkArgs {
   memVal?: number;
 }
 
-/** The P/Invoke declaration block — same stdcall exports MRS2 binds. */
+/**
+ * The P/Invoke declaration block. The DLL exports ONLY the MRSFunc_* names
+ * (verified from its export table), while the script bodies call the short
+ * names — so each method is declared under the name the body uses and bound
+ * to the real export through EntryPoint. Without EntryPoint every operation
+ * failed with "does not contain a method named QueryRProtect" (the DLL was
+ * never reached). Exports/signatures follow MRS2's own koffi bindings.
+ */
 function psDeclarations(): string {
+  const decl = (name: string, entry: string, sig: string): string =>
+    `  [DllImport("McuCompilerDll.dll", CallingConvention = CallingConvention.StdCall, EntryPoint = "${entry}")]\n` +
+    `  public static extern int ${name}(${sig});\n`;
   return `
 $code = @'
 using System;
 using System.Runtime.InteropServices;
 public static class McuLink {
-  [DllImport("McuCompilerDll.dll", CallingConvention = CallingConvention.StdCall)]
-  public static extern int MRSFunc_QueryRProtect(int chipId, int clk);
-  [DllImport("McuCompilerDll.dll", CallingConvention = CallingConvention.StdCall)]
-  public static extern int MRSFunc_EnableRProtect(int chipId, int clk);
-  [DllImport("McuCompilerDll.dll", CallingConvention = CallingConvention.StdCall)]
-  public static extern int MRSFunc_DisableRProtect(int chipId, int clk);
-  [DllImport("McuCompilerDll.dll", CallingConvention = CallingConvention.StdCall)]
-  public static extern int MRSFunc_DisableDbgInterface(int chipId, int clk);
-  [DllImport("McuCompilerDll.dll", CallingConvention = CallingConvention.StdCall)]
-  public static extern int MRSFunc_GetLinkedMCUID();
-  [DllImport("McuCompilerDll.dll", CallingConvention = CallingConvention.StdCall)]
-  public static extern int MRSFunc_GetMemType(int chipId, int clk);
-  [DllImport("McuCompilerDll.dll", CallingConvention = CallingConvention.StdCall)]
-  public static extern int MRSFunc_SetMemType(int chipId, int clk, int val);
-  [DllImport("McuCompilerDll.dll", CallingConvention = CallingConvention.StdCall)]
-  public static extern int MRSFunc_ClearCodeFlash(int chipId, int clk, int mode);
-  [DllImport("McuCompilerDll.dll", CallingConvention = CallingConvention.StdCall)]
-  public static extern int McuCompiler_SetTargetChip(int chipId, int dbgMode);
+` +
+    decl('QueryRProtect', 'MRSFunc_QueryRProtect', 'int chipId, int clk') +
+    decl('EnableRProtect', 'MRSFunc_EnableRProtect', 'int chipId, int clk') +
+    decl('DisableRProtect', 'MRSFunc_DisableRProtect', 'int chipId, int clk') +
+    decl('DisableDbgInterface', 'MRSFunc_DisableDbgInterface', 'int chipId, int clk') +
+    decl('GetLinkedMCUID', 'MRSFunc_GetLinkedMCUID', '') +
+    decl('GetMemType', 'MRSFunc_GetMemType', 'int chipId, int clk') +
+    decl('SetMemType', 'MRSFunc_SetMemType', 'int chipId, int clk, int val') +
+    decl('ClearCodeFlash', 'MRSFunc_ClearCodeFlash', 'int chipId, int clk, int mode') +
+    decl('SetTargetChip', 'McuCompiler_SetTargetChip', 'int chipId, int dbgMode') +
+    `
 }
 '@;
 Add-Type -TypeDefinition $code;
@@ -158,14 +202,16 @@ export interface WlinkResult {
   error?: string;
 }
 
-/** run one operation through the 32-bit PowerShell bridge */
+/** run one operation through the bitness-matched PowerShell bridge */
 export function runWlinkOp(install: MrsInstall, op: WlinkOp, args: WlinkArgs): Promise<WlinkResult> {
   const commLib = resolveCommLib(install);
   if (!commLib || !fs.existsSync(commLib.mcuDll)) {
-    return Promise.resolve({ op, ok: false, error: 'WCH CommunicationLib (McuCompilerDll.dll) not found under the MRS2 installation' });
+    return Promise.resolve({ op, ok: false, error: 'WCH CommunicationLib (McuCompilerDll.dll) not found under the MounRiver installation' });
   }
-  if (!fs.existsSync(OP_LOGIC_PATH)) {
-    return Promise.resolve({ op, ok: false, error: '32-bit Windows PowerShell (SysWOW64) not found on this system' });
+  // MRS2 ships a 32-bit DLL (SysWOW64 PowerShell), the MRS3 beta a 64-bit one
+  const psExe = bridgePowerShell(commLib.mcuDll);
+  if (!fs.existsSync(psExe)) {
+    return Promise.resolve({ op, ok: false, error: 'Windows PowerShell not found on this system (' + psExe + ')' });
   }
   const script = buildPsScript(commLib, op, args);
   const ps1 = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mrvc-wlink-')), 'op.ps1');
@@ -175,7 +221,7 @@ export function runWlinkOp(install: MrsInstall, op: WlinkOp, args: WlinkArgs): P
   const timeout = op === 'clearCodeFlash' ? 120000 : 30000; // chip erase is slow
   return new Promise((resolve) => {
     execFile(
-      OP_LOGIC_PATH,
+      psExe,
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1],
       { timeout, windowsHide: true },
       (err, stdout) => {
@@ -186,7 +232,7 @@ export function runWlinkOp(install: MrsInstall, op: WlinkOp, args: WlinkArgs): P
         }
         const line = (stdout ?? '').split(/\r?\n/).filter((l) => l.startsWith('{')).pop();
         if (!line) {
-          resolve({ op, ok: false, error: err?.message ?? 'no result from the 32-bit PowerShell bridge' });
+          resolve({ op, ok: false, error: err?.message ?? 'no result from the PowerShell bridge' });
           return;
         }
         try {

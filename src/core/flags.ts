@@ -687,9 +687,12 @@ export function userObjects(cp: Cproject): string[] {
 /** user libraries (-l), from the cpp or c linker depending on project type */
 export function userLibs(cp: Cproject): string[] {
   const prefix = cp.isCpp ? 'cpp' : 'c';
+  // MRS2 emits `-l` + entry.trim() and tests the trimmed value for "m"
+  // (the auto `-lm` rule) — keep the same contract here
   return cp
     .listOption(`${prefix}.linker.libs`)
-    .values.filter((v) => v.trim().length > 0);
+    .values.map((v) => v.trim())
+    .filter((v) => v.length > 0);
 }
 
 /** objdump flags for the .lst rule, derived from createlisting options */
