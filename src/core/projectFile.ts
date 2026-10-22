@@ -91,9 +91,9 @@ export function addLinkedFolder(projectRoot: string, name: string, target: strin
     lr = new XElement('linkedResources');
     const anchor = pd.child('filteredResources');
     if (anchor) {
-      const idx = pd.children.indexOf(anchor);
-      pd.children.splice(idx, 0, lr);
-      lr.parent = pd;
+      // insertChild, not children.splice: the ws slot must be reserved too, or
+      // the last child eats the close-tag indent (same class as the append fix)
+      pd.insertChild(lr, pd.children.indexOf(anchor));
     } else {
       pd.append(lr);
     }
@@ -189,9 +189,8 @@ function filteredListElement(projectRoot: string, create: boolean): { file: MrsP
     list = new XElement('filteredResources');
     const anchor = pd.child('linkedResources');
     if (anchor) {
-      const idx = pd.children.indexOf(anchor);
-      pd.children.splice(idx + 1, 0, list);
-      list.parent = pd;
+      // insertChild reserves the ws slot — see addLinkedFolder
+      pd.insertChild(list, pd.children.indexOf(anchor) + 1);
     } else {
       pd.append(list);
     }
@@ -257,35 +256,57 @@ export function clearRemovedResource(projectRoot: string, parentLogic: string, n
   }
 }
 
-const NATURE_CXX = 'org.eclipse.cdt.core.cxxnature';
+const NATURE_CXX = 'org.eclipse.cdt.core.ccnature';
+/** the id MRVC <= 0.2.2 wrote (and only it recognized) — real CDT/MRS2 never
+ *  matched it; still read on load and replaced by the correct id on toggle */
+const NATURE_CXX_LEGACY = 'org.eclipse.cdt.core.cxxnature';
+
+/** true when the project carries the legacy mis-spelled C++ nature (written by
+ *  MRVC <= 0.2.2): MRS2 reads such a project as C while MRVC reads it as C++,
+ *  so the loader normalizes it once (see migrateLegacyCppNature) */
+export function hasLegacyCppNature(projectRoot: string): boolean {
+  try {
+    return readProjectFile(projectRoot).natures.includes(NATURE_CXX_LEGACY);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Toggle the CDT C++ nature — the "C++ project" switch MRS2/CDT key off in
  * `.project <natures>`: only C++ projects show the C++ compiler/linker
  * property pages, and MRVC's scanner/build pick .cpp sources for them.
  * The nature is inserted right after cnature; the file stays MRS2-openable.
+ * A project carrying the legacy mis-spelled id is normalized on the next
+ * toggle; switching off removes either spelling.
  */
 export function setCppNature(projectRoot: string, on: boolean): void {
   const p = readProjectFile(projectRoot);
-  const has = p.natures.includes(NATURE_CXX);
-  if (on === has) return;
   const natures = p.root.child('projectDescription')?.child('natures');
   if (!natures) {
+    if (!on) return;
     throw new Error('.project: <natures> not found');
   }
   const items = natures.childrenNamed('nature');
+  const real = items.find((n) => n.text === NATURE_CXX);
+  const legacy = items.find((n) => n.text === NATURE_CXX_LEGACY);
+  if (on && real && !legacy) return; // already correct
+  if (!on && !real && !legacy) return; // nothing to remove
   if (on) {
-    const el = new XElement('nature');
-    el.text = NATURE_CXX;
-    const cnature = items.find((n) => n.text === 'org.eclipse.cdt.core.cnature');
-    if (cnature) {
-      natures.insertChild(el, natures.children.indexOf(cnature) + 1);
-    } else {
-      natures.append(el);
+    if (!real) {
+      const el = new XElement('nature');
+      el.text = NATURE_CXX;
+      const cnature = items.find((n) => n.text === 'org.eclipse.cdt.core.cnature');
+      if (cnature) {
+        natures.insertChild(el, natures.children.indexOf(cnature) + 1);
+      } else {
+        natures.append(el);
+      }
     }
+    if (legacy) natures.removeChild(legacy);
   } else {
-    const el = items.find((n) => n.text === NATURE_CXX);
-    if (el) natures.removeChild(el);
+    if (real) natures.removeChild(real);
+    if (legacy) natures.removeChild(legacy);
   }
   saveProjectFile(projectRoot, p);
 }

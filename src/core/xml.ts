@@ -13,6 +13,22 @@ export class XElement {
   text = '';
   /** whitespace text recorded before each child element */
   ws: string[] = [];
+  /**
+   * Set while parsing when the source spelled this element as an explicit
+   * open/close pair that held nothing (MRS2 writes empty `.project` elements as
+   * `<projects>\r\n\t</projects>`; `ws[children.length]` holds that inner
+   * whitespace). Serialization keeps that shape instead of normalizing to
+   * `<projects/>` — collapsing it would rewrite 1,485 of the 2,687 sampled
+   * .project files on any unrelated edit. An element that HAD children and was
+   * emptied by an edit is not marked: there the previous `<x/>` output stands.
+   */
+  emptyPairInSource?: boolean;
+  /**
+   * Source spelled the self-closing tag with whitespace before the slash
+   * (`<projects />` — 4 of the 2,609 sampled .project files do). Kept so a
+   * rewrite does not silently re-spell a tag the edit did not touch.
+   */
+  selfCloseSpaced?: boolean;
   parent: XElement | null = null;
 
   constructor(name: string) {
@@ -35,11 +51,26 @@ export class XElement {
     return this.children.filter((c) => c.name === name);
   }
 
+  /**
+   * Append a programmatically created child. `ws[i]` is the whitespace BEFORE
+   * child i, while `ws[children.length]` is the close-tag indent — so an
+   * explicit empty slot is inserted for the newcomer. Without it a stale
+   * close-tag entry ends up at the newcomer's index and is consumed as its
+   * leading whitespace, which renders it one level too shallow and shifts the
+   * close tag (seen when a list option's values are rewritten a second time).
+   */
   append(child: XElement): XElement {
+    this.ws.splice(this.children.length, 0, undefined as unknown as string);
+    return this.appendParsed(child);
+  }
+
+  /**
+   * Parser entry point: the whitespace preceding this child has already been
+   * pushed onto `ws` (flushWs), so no slot is inserted here. Use `append()`
+   * everywhere else.
+   */
+  appendParsed(child: XElement): XElement {
     child.parent = this;
-    // NOTE: no ws slot management here — the parser pairs flushWs() with
-    // append(); manual appends leave ws[idx] undefined and the serializer
-    // falls back to a fresh CRLF indent for those children
     this.children.push(child);
     return child;
   }
@@ -154,7 +185,7 @@ export function parseXml(src: string): XElement {
       flushWs();
       const c = new XElement('!--');
       c.text = src.slice(lt + 4, end < 0 ? n : end);
-      top().append(c);
+      top().appendParsed(c);
       i = end < 0 ? n : end + 3;
       continue;
     }
@@ -166,7 +197,7 @@ export function parseXml(src: string): XElement {
       const name = sp < 0 ? inner : inner.slice(0, sp);
       const c = new XElement('?' + name);
       c.text = sp < 0 ? '' : inner.slice(sp);
-      top().append(c);
+      top().appendParsed(c);
       i = end < 0 ? n : end + 2;
       continue;
     }
@@ -194,6 +225,9 @@ export function parseXml(src: string): XElement {
         // instead of silently nesting everything one level deeper
         const idx = stack.map((e) => e.name).lastIndexOf(name);
         if (idx > 0) {
+          const closedEl = stack[idx];
+          // an explicit pair that held nothing: remember the source shape
+          if (!closedEl.children.length && !closedEl.text) closedEl.emptyPairInSource = true;
           flushWs();
           stack.length = idx;
         }
@@ -209,9 +243,10 @@ export function parseXml(src: string): XElement {
       continue;
     }
     const el = new XElement(m[1]);
+    if (selfClose && /\s$/.test(tagSrc.slice(0, -1))) el.selfCloseSpaced = true;
     parseAttrs(m[2], el);
     flushWs();
-    top().append(el);
+    top().appendParsed(el);
     if (!selfClose) {
       stack.push(el);
     }
@@ -277,7 +312,13 @@ export function serializeXml(el: XElement, depth = 0): string {
     .map(([k, v]) => ` ${k}="${encodeAttrValue(v)}"`)
     .join('');
   if (!el.children.length && !el.text) {
-    return `<${el.name}${attrs}/>`;
+    if (el.emptyPairInSource) {
+      // keep the open/close shape the source used (see emptyPairInSource);
+      // the recorded whitespace is the close-tag indent
+      const inner = el.ws[el.children.length] !== undefined ? el.ws[el.children.length] : '';
+      return `<${el.name}${attrs}>${inner}</${el.name}>`;
+    }
+    return `<${el.name}${attrs}${el.selfCloseSpaced ? ' ' : ''}/>`;
   }
   if (!el.children.length) {
     return `<${el.name}${attrs}>${encodeText(el.text)}</${el.name}>`;

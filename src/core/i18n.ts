@@ -115,6 +115,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   // open project / folder
 
   // solution lifecycle
+  cppNatureMigrated: {
+    en: 'MRVC: "{0}" used the legacy C++ marker — normalized to the standard CDT nature and mirrored its C options into the C++ set.',
+    'zh-cn': 'MRVC："{0}" 使用了旧版 MRVC 的 C++ 标记——已规范化为标准 CDT nature，并把 C 选项镜像进 C++ 选项集。',
+  },
   needSolution: { en: 'To add a project, open a solution first!', 'zh-cn': '请先打开解决方案，然后才能添加工程！' },
   solutionRecovered: {
     en: 'The solution was moved or renamed — this window now uses "{0}".',

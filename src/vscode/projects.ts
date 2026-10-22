@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Cproject } from '../core/cproject';
 import { MrsProjectFile, readProjectFile, linkedFolderMap } from '../core/projectFile';
+import { migrateLegacyCppNature } from '../core/projectType';
 import { readTemplate, TemplateData } from '../core/templateFile';
 import { selectInstall, InstallSelection, flavorLabel, mergeCustomToolchains, CustomToolchain, MrsInstall, selectToolchain, ToolchainInfo } from '../core/toolchain';
 import { findProjectRoots } from '../core/discover';
@@ -281,6 +282,20 @@ export class ProjectStore implements vscode.Disposable {
       const existing = this.projects.get(key);
       if (existing) return existing;
       const proj = new MrsProject(root);
+      // one-time repair for projects converted by MRVC <= 0.2.2 (legacy nature
+      // id): normalize it and mirror the C options BEFORE the watcher starts,
+      // so the writes don't bounce back as watcher reloads
+      if (!cppNatureMigrated.has(key)) {
+        cppNatureMigrated.add(key);
+        try {
+          if (migrateLegacyCppNature(root)) {
+            proj.reload();
+            void vscode.window.showInformationMessage(t('cppNatureMigrated', proj.projectName));
+          }
+        } catch {
+          // best-effort repair: never block loading a project over it
+        }
+      }
       this.projects.set(key, proj);
       // NOTE: the active project is NOT auto-assigned here — discovery sets
       // it once, after the full scan, so the marker never flickers
@@ -532,6 +547,8 @@ export function msg(e: unknown): string {
 let installCache: { key: string; selection: InstallSelection } | null = null;
 /** install-choice notes fire once per window session */
 const installNotesShown = new Set<string>();
+/** legacy C++ nature repaired once per project per session */
+const cppNatureMigrated = new Set<string>();
 
 /** the active installation, per the mrvc.mrs2InstallPath /
  *  mrvc.mrs3InstallPath / mrvc.mrsVersion settings (policy in selectInstall) */

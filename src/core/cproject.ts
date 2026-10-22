@@ -12,6 +12,7 @@ import { XElement, parseXml, serializeXml } from './xml';
 import { readProjectFile, linkedFolderMap } from './projectFile';
 
 const OPT_BASE = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.';
+const TOOL_BASE = 'ilg.gnumcueclipse.managedbuild.cross.riscv.tool.';
 
 /** Windows path/Name comparison folds case (NTFS is case-insensitive):
  * EVT files sometimes spell exclusion tokens, sourceEntry names or link
@@ -57,7 +58,14 @@ export class Cproject {
       const proj = readProjectFile(this.projectRoot);
       this.projectDisplayName = proj.name ?? '';
       this.linkedFolders = linkedFolderMap(proj);
-      this.cppProject = proj.natures.includes('org.eclipse.cdt.core.cxxnature');
+      // CDT's C++ nature id is org.eclipse.cdt.core.ccnature — checking only
+      // "cxxnature" (not a real id) treated EVERY C++ project as a C one and
+      // silently dropped its .cpp/.cc/.cxx sources from the build (MRVC <=
+      // 0.2.2). The legacy spelling stays accepted: MRVC's own C++ toggle
+      // wrote it until the same fix.
+      this.cppProject =
+        proj.natures.includes('org.eclipse.cdt.core.ccnature') ||
+        proj.natures.includes('org.eclipse.cdt.core.cxxnature');
     } catch {
       // no/broken .project: proceed with macro-only resolution
     }
@@ -263,8 +271,22 @@ export class Cproject {
   }
 
   /** raw command prefix stored in .cproject (informational only) */
+  /**
+   * Toolchain prefix from the `command.prefix` option. Real MRS projects
+   * store the BARE form (verified: 2919/2919 options across 2685 .cproject
+   * files in the CH585/CH592/CH587 trees), but the option is a CDT command
+   * option that other writers spell per language — accept every form, the
+   * project's own language first, so a read never silently falls back to the
+   * GCC8 default just because of a spelling.
+   */
   get storedPrefix(): string {
-    return this.optionValue('command.prefix') ?? 'riscv-none-embed-';
+    const own = this.isCpp ? 'cpp' : 'c';
+    const other = this.isCpp ? 'c' : 'cpp';
+    for (const suffix of [`${own}.command.prefix`, 'command.prefix', `${other}.command.prefix`]) {
+      const value = this.optionValue(suffix);
+      if (value) return value;
+    }
+    return 'riscv-none-embed-';
   }
 
   /** rvGcc enumeration value suffix: "8" | "12" | "15" | undefined */
@@ -506,6 +528,67 @@ export class Cproject {
     opt.setAttr('value', value ? 'true' : 'false');
   }
 
+  /**
+   * Mirror every C option into its C++ twin, creating the twin when missing —
+   * the .cproject half of the C -> C++ project-type conversion. A C project's
+   * .cproject carries only a handful of cpp.* options, so a nature-only toggle
+   * builds C++ with an empty option set: no include paths, no linker script
+   * (measured — the link then dies on a bare "Link.ld"). MRS2 reads the cpp.*
+   * set for a C++ project, so the values must live there.
+   * Returns the number of C options mirrored.
+   */
+  ensureCppOptionsFromC(): number {
+    const prefix = OPT_BASE + 'c.';
+    let mirrored = 0;
+    for (const opt of this.config.findAll((e) => e.name === 'option')) {
+      const sc = opt.attr('superClass') ?? '';
+      if (!sc.startsWith(prefix)) continue;
+      const suffix = sc.slice(OPT_BASE.length); // c.<tool>.<option…>
+      const twin = 'cpp.' + suffix.slice(2); // cpp.<tool>.<option…>
+      const lists = opt.childrenNamed('listOptionValue');
+      const single = opt.attr('value');
+      if (lists.length) {
+        this.mirrorListOption(suffix, twin);
+      } else if (single !== undefined) {
+        this.setOptionValue(twin, single);
+      } else {
+        // mirror "no value" (clears a stale twin; never creates one)
+        this.setOptionValue(twin, undefined);
+      }
+      mirrored++;
+    }
+    return mirrored;
+  }
+
+  /**
+   * Copy a list option's entries into its twin attribute-for-attribute.
+   * MRS2 stores every valueType in its own native spelling — library names,
+   * symbols and other objects unquoted, macro paths as `"${workspace_loc:…}"` —
+   * and its reader strips the quotes only for the path-ish fields
+   * (`EPMacroStrResolve`); `libraries` / `defined_symbols` reach its model
+   * verbatim. Re-quoting everything through setOptionList() would re-spell a
+   * library name as `"m"` and carry those quotes into MRS2's model (and into
+   * `USER_OBJS`, which MRS2 quotes by itself), so the spelling is preserved.
+   */
+  private mirrorListOption(source: string, twin: string): void {
+    const src = this.option(source);
+    if (!src) return;
+    let dst = this.option(twin);
+    if (!dst) dst = this.createOption(twin, '', guessValueType(twin));
+    for (const c of dst.childrenNamed('listOptionValue')) {
+      dst.removeChild(c);
+    }
+    for (const el of src.childrenNamed('listOptionValue')) {
+      const copy = new XElement('listOptionValue');
+      for (const [k, v] of Object.entries(el.attrs)) copy.setAttr(k, v);
+      dst.append(copy);
+    }
+    for (const marker of ['IS_BUILTIN_EMPTY', 'IS_VALUE_EMPTY']) {
+      const v = src.attr(marker);
+      if (v !== undefined) dst.setAttr(marker, v);
+    }
+  }
+
   /** replace the whole list of a list-valued option */
   setOptionList(suffix: string, values: string[]): void {
     let opt = this.option(suffix);
@@ -555,22 +638,76 @@ export class Cproject {
     }
   }
 
+  /** every option suffix present in the active configuration (index order) */
+  optionSuffixes(): string[] {
+    return [...this.suffixIndex.keys()];
+  }
+
   /**
-   * Create an option element under the appropriate tool, generating an id
-   * that CDT accepts. `nameGuess` derives from the suffix.
+   * MRS2's C++ projects carry an <inputType> under the C++ compiler tool — both
+   * real C++ projects inspected (FingerCode, LiteOS) use the very id from
+   * MRS2's own template (...tool.cpp.compiler.input.1079228323, not a random
+   * one), while C projects have it for assembler / c.compiler / c.linker only.
+   * A project converted to C++ must gain it too; returns true when added.
+   */
+  ensureCppCompilerInputType(): boolean {
+    const tool = this.toolChain?.childrenNamed('tool').find((t) => t.attr('name') === 'GNU RISC-V Cross C++ Compiler');
+    if (!tool || tool.childrenNamed('inputType').length) return false;
+    const el = new XElement('inputType');
+    el.setAttr('id', TOOL_BASE + 'cpp.compiler.input.1079228323');
+    el.setAttr('superClass', TOOL_BASE + 'cpp.compiler.input');
+    tool.append(el);
+    return true;
+  }
+
+  /** remove the C++ compiler's <inputType> — switching back to C must restore
+   *  MRS2's native C shape (its own C projects carry input types for
+   *  assembler / c.compiler / c.linker only); returns true when removed */
+  removeCppCompilerInputType(): boolean {
+    const tool = this.toolChain?.childrenNamed('tool').find((t) => t.attr('name') === 'GNU RISC-V Cross C++ Compiler');
+    const el = tool
+      ?.childrenNamed('inputType')
+      .find((e) => (e.attr('superClass') ?? '').endsWith('.tool.cpp.compiler.input'));
+    if (!tool || !el) return false;
+    tool.removeChild(el);
+    return true;
+  }
+
+  /** the same option in the other language (c.<x> <-> cpp.<x>), when present */
+  private siblingOption(suffix: string): XElement | undefined {
+    const lang = suffix.startsWith('cpp.') ? 'cpp' : suffix.startsWith('c.') ? 'c' : '';
+    if (!lang) return undefined;
+    const rest = suffix.slice(lang.length + 1);
+    return this.option((lang === 'c' ? 'cpp' : 'c') + '.' + rest);
+  }
+
+  /**
+   * Create an option element under the appropriate tool, generating an id that
+   * CDT accepts. The metadata MRS2 keys per option — display name, scanner
+   * discovery flag, value type, emptiness markers — is copied from the
+   * option's SIBLING in the other language when one exists: a converted
+   * project's new `cpp.*` option must look exactly like its `c.*` twin (so
+   * MRS2's scanner discovery indexes the same include paths / defines). With
+   * no sibling the name stays empty, the form real MRS2 files use — a
+   * synthesized "Paths"/"Libs" label is not MRS2's.
    */
   private createOption(suffix: string, value: string, valueType?: string): XElement {
     const superClass = OPT_BASE + suffix;
+    const donor = this.siblingOption(suffix);
     const tool = this.toolForOption(suffix);
     const opt = new XElement('option');
     opt.setAttr('id', superClass + '.' + optionIdCounter());
-    opt.setAttr('name', guessOptionName(suffix));
+    opt.setAttr('name', donor?.attr('name') ?? '');
     opt.setAttr('superClass', superClass);
-    opt.setAttr('valueType', valueType ?? guessValueType(suffix));
+    opt.setAttr('valueType', valueType ?? donor?.attr('valueType') ?? guessValueType(suffix));
     if (value !== '') {
       opt.setAttr('value', value);
     }
-    opt.setAttr('useByScannerDiscovery', 'false');
+    opt.setAttr('useByScannerDiscovery', donor?.attr('useByScannerDiscovery') ?? 'false');
+    for (const marker of ['IS_BUILTIN_EMPTY', 'IS_VALUE_EMPTY']) {
+      const v = donor?.attr(marker);
+      if (v !== undefined) opt.setAttr(marker, v);
+    }
     tool.append(opt);
     const list = this.suffixIndex.get(suffix) ?? [];
     list.push(opt);
@@ -601,11 +738,6 @@ export class Cproject {
   save(): void {
     fs.writeFileSync(this.file, serializeXml(this.root), 'utf-8');
   }
-}
-
-function guessOptionName(suffix: string): string {
-  const last = suffix.split('.').pop() ?? suffix;
-  return last.charAt(0).toUpperCase() + last.slice(1);
 }
 
 function splitExcluding(entry: XElement): string[] {

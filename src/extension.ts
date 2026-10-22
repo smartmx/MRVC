@@ -29,7 +29,7 @@ import { excludeFromBuild, includeFromBuild, excludedResourcePaths } from './vsc
 import { listMarks } from './core/colorMarks';
 import { renameProjectCmd, syncProjectNameFromFolder } from './vscode/renameProject';
 import { writeSolution } from './core/solution';
-import { setCppNature } from './core/projectFile';
+import { setProjectCpp } from './core/projectType';
 import { SyncPage } from './vscode/syncPage';
 import { MacroBatchPage } from './vscode/macroBatch';
 import { comTransmitCmd, hexBinToolCmd, ispToolCmd, touchkeyToolCmd, uiDesignerCmd } from './vscode/mrsTools';
@@ -363,9 +363,10 @@ export function activate(context: vscode.ExtensionContext): void {
   reg('mrvc.clearFlag', (item?: unknown) => clearFlagCmd(store, item));
   reg('mrvc.renameProject', (item?: unknown) => renameProjectCmd(store, item as never));
   reg('mrvc.syncProjectName', (item?: unknown) => syncProjectNameFromFolder(store, item as never));
-  // C/C++ toggle = the CDT cxx nature in .project: it drives which property
-  // pages show (C++ compiler/linker), which source extensions the scanner
-  // picks and how makefiles treat .cpp — same key MRS2/CDT use
+  // C/C++ toggle = the CDT cxx nature in .project (MRS2 types projects by
+  // exactly this key) PLUS, when switching to C++, the .cproject option
+  // mirror — a C project has almost no cpp.* options, so a nature-only toggle
+  // would build C++ without include paths or the linker script
   reg('mrvc.switchProjectType', (item?: { project?: unknown }) => {
     const project = (item as { project?: MrsProject })?.project ?? store.active;
     if (!project) {
@@ -373,7 +374,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     try {
-      setCppNature(project.root, !project.cproject.isCpp);
+      setProjectCpp(project.root, !project.cproject.isCpp);
     } catch (e) {
       vscode.window.showErrorMessage(t('switchTypeFailed', e instanceof Error ? e.message : String(e)));
       return;

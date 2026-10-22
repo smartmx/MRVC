@@ -25,7 +25,7 @@
 | Download Settings | 属性页 → Download → Download Settings（镜像 MRS2）：**读保护状态查询 / 使能 / 解除**、**调试保护**、**Linked MCU Type 查询**、**Erase Code Flash**（By Pin NRST / By Power off）、**MCU Memory Assign**（Query/Apply）、**Operation Record** 操作日志；右侧完整编辑下载参数（MCU Type / Memory Type / Program Address / Debug Interface Mode / CLK Speed / Target File / Main Operations 八项），全部写回 `.template`（MRS2 无损打开）。硬件操作经系统 32 位 PowerShell P/Invoke 调用 MRS2 的 McuCompilerDll.dll，零新增依赖；芯片 ID 与能力开关自动来自芯片库，不支持的选项按芯片自动灰显 |
 | 芯片选择器 | 属性页 → General → Chip / Target：MRS2 同款 "Target MCU Type" 选择器——系列树（RISC-V/ARM 分组）→ 型号列表 → 信息区；数据实时扫描 MRS2 的 SDK 组件目录（40+ 系列），选中后自动填充 Series / MCU / Mcu Type / Address 并写回 `.template`；SDK 缺失时回退文本编辑 |
 | Build Steps / Build Artifact | 属性页 → C/C++ Build 分组：**Build Steps**（Pre/Post-build 的 Command 与 Description，进 makefile）；**Build Artifact**（Artifact Type：Executable/Static Library；Artifact name 按 MRS 变量形式显示 `${ProjName}`；Artifact extension；Output prefix——产物名前缀与自定义扩展名在生成的 makefile 中生效） |
-| Switch Project Type (C/C++) | 工程右键一键切换 CDT cxx nature：C++ 属性页显隐、`.cpp` 源扫描与 makefile 生成联动（与 MRS2 判定键一致） |
+| Switch Project Type (C/C++) | 工程右键一键切换工程类型：写 `.project` 的 CDT C++ nature（`org.eclipse.cdt.core.ccnature`——与 MRS2 的判定键一致；旧版 MRVC 写入的假 ID 会在工程加载时自动规范化），**切到 C++ 时同时把 C 选项整组镜像进 C++ 选项集**（值/列表按原写法逐项复制、元数据按 CDT/MRS2 原生形态补齐，另补 C++ 编译器的 `<inputType>`），因此 C++ 属性页显隐、`.cpp` 源扫描、makefile 生成与 MRS2 打开后的构建都联动正确。**范围**：只处理 `.cproject` 的第一个配置（多配置工程的其余配置不镜像）；切回 C 会移除转换新增的 `<inputType>`，镜像的 C++ 选项值保留（与 MRS2 的 C++ 工程两套选项并存的形态一致） |
 | 配置修改 | "MRVC: Project Properties"（右键工程打开）——**按 MRS2 原版属性页布局复刻**：Tool Settings 分类树（Target Processor / Optimization / Warnings / Debugging / Assembler / C Compiler / C Linker / C++ Compiler / C++ Linker / Create Flash Image / Listing / Print Size 各含子页），左侧树结构、右侧页内容、底部描述区 + **Apply/Cancel**。涵盖工具链（rvGcc）、全部 ISA 扩展、17 项警告、C/C++ 编译与链接、hex/bin 双产物、objcopy/objdump 细项、WCH 专属库（`-lprintf`/`-lprintfloat`/`-lIQmath_RV32`）。**Includes 页为表格编辑器**（Add/Edit/Delete，Add 支持 Project 内复选框树浏览或 Local Folder，工程内路径自动写成 `${project}/…` 宏）。仅 C++ 工程（Switch Project Type 切换）显示 C++ 配置页 |
 | 外部链接文件夹 | 右键工程 → Add Linked Folder：同时更新 `.project`（linkedResources，支持 PARENT-N-PROJECT_LOC）与 `.cproject`（include 路径 + sourceEntries） |
 | **Sync Setting Across Projects** | 树标题栏 `…` 菜单打开专用页面（Properties 同款两级导航树）：123 个可同步编译开关（bool/enum）逐行带**同步选择框**（默认不勾）与值控件（值取自活动工程）；勾选后 Apply 批量写入全部工程（C++ 选项自动跳过 C 工程并计数、可取消、输出频道逐工程 [OK/FAIL] 汇总） |
@@ -103,7 +103,7 @@ npm run package      # @vscode/vsce 打包 .vsix（--no-dependencies）
 - `print-menus.mjs` — 打印各类树节点右键菜单排序（开发辅助）
 - `verify-vsix.mjs` — 打包产物核对：自动先从 src 重建 bundle，再与 vsix 逐字节断言（manifest/NLS/changelog/bundle/版本号/泄漏）——改源码忘 esbuild、或包被旧产物顶替都会被拦，发布前必跑
 - `mrsinstall-test.js` — 双安装选择策略（代次探测 / 二选一 / 强制代次 / 字段误填与填反 / 回退）
-- `mrs-install-probe.mjs <安装根> <工程>` — 钉住指定安装（MRS2 / MRS3）真实构建工程，支持 PARENT-N 链接工程
+- `mrs-install-probe.mjs <安装根> <工程> [cpp]` — 钉住指定安装（MRS2 / MRS3）真实构建工程，支持 PARENT-N 链接工程；加 `cpp` 则先做 C→C++ 类型转换再构建（转换功能回归）
 - `sync-to-mrvc.mjs` — develop→MRVC 发布同步（按清单复制 + 逐文件哈希校验；**仅 develop，不入发布仓库**，它操作的是同级 MRVC 克隆）
 
 VSCode 调试（调试配置已配好，`esbuild` 已开 sourcemap，断点直接打在 `src/**/*.ts` 上）：
@@ -123,7 +123,8 @@ VSCode 调试（调试配置已配好，`esbuild` 已开 sourcemap，断点直�
 src/
 ├── core/              # 纯 Node，无 vscode 依赖，可独立测试
 │   ├── xml.ts         # 零依赖 XML DOM（.project/.cproject/.launch 读写，无损序列化）
-│   ├── projectFile.ts # .project：linkedResources、PARENT-N-PROJECT_LOC、重命名联动
+│   ├── projectFile.ts # .project：linkedResources、PARENT-N-PROJECT_LOC、重命名联动、C/C++ nature
+│   ├── projectType.ts # C/C++ 类型转换（nature 规范化 + C 选项镜像进 C++ 集，含旧假 ID 迁移）
 │   ├── cproject.ts    # .cproject 类型化模型（按 superClass 读写 option、excluding、Build Steps/Artifact）
 │   ├── templateFile.ts# .template（下载配置；无损重写保留注释空行）
 │   ├── macros.ts      # ${workspace_loc:/...} / ${project}/... 宏 / PARENT-N 解析

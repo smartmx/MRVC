@@ -2,12 +2,14 @@
  * Build a project against a CHOSEN MounRiver installation (MRS2 or MRS3) with
  * the real generator + toolchain — the dual-install regression harness.
  *
- *   node tools/mrs-install-probe.mjs <installRoot> <projectDir>
+ *   node tools/mrs-install-probe.mjs <installRoot> <projectDir> [cpp]
  *
  * Copies the project into .scratch/<name>-probe, resolves the install through
  * the unmodified locateInstall(), generates makefiles and runs the bundled
  * make. Unlike build-test.mjs (which resolves the DEFAULT installation) this
  * one pins the installation, so "MRVC + MRS3" is testable before switching.
+ * The optional `cpp` argument runs the C -> C++ project-type conversion first
+ * (nature + option mirror), so "does a converted project build" is testable.
  */
 import * as path from 'path';
 import * as fs from 'fs';
@@ -22,6 +24,7 @@ const outCore = path.join(here, '..', 'out', 'core');
 const { Cproject } = require(path.join(outCore, 'cproject.js'));
 const { generateMakefiles } = require(path.join(outCore, 'makefile.js'));
 const { locateInstall, selectToolchain } = require(path.join(outCore, 'toolchain.js'));
+const { setProjectCpp } = require(path.join(outCore, 'projectType.js'));
 
 const installRoot = process.argv[2];
 const projectDir = process.argv[3];
@@ -73,9 +76,19 @@ fs.cpSync(projectDir, projCopy, {
   }
 }
 
-const cp = Cproject.load(projCopy);
+let cp = Cproject.load(projCopy);
 const tc = selectToolchain(install, 'auto', cp.rvGccVersion, cp.storedPrefix);
 console.log('project         : ' + cp.projectName + '  config: ' + cp.configName);
+
+// optional third arg `cpp`: run the C/C++ project-type conversion first, so
+// "does a converted project actually build" is testable end-to-end
+if (process.argv[4] === 'cpp') {
+  const before = cp.isCpp;
+  const { mirrored } = setProjectCpp(projCopy, true);
+  cp = Cproject.load(projCopy); // reload: the toggle rewrote .project/.cproject
+  console.log('convert to cpp  : isCpp ' + before + ' -> ' + cp.isCpp + ', ' + mirrored + ' C options mirrored');
+}
+
 console.log('toolchain       : ' + tc.name + ' (' + path.basename(tc.compilerC) + ')');
 const gen = generateMakefiles(cp, tc);
 console.log('generated       : ' + gen.files.length + ' files, ' + gen.sourceCount + ' sources');
