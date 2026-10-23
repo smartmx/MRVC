@@ -79,16 +79,20 @@ npm run package      # 生成 mrvc-<version>.vsix（@vscode/vsce，--no-dependen
 
 ```bash
 npm install
-npx tsc              # 先生成 out/core/*.js 分文件产物（测试脚本依赖）
+npx tsc              # 生成 out/** 分文件产物（测试脚本依赖其中的 out/core/*.js）
 npm run compile      # 再 esbuild 打包 out/extension.js（会覆盖同名 tsc 产物）
 npm run watch
 npm run golden       # 金标 makefile 逐字节比对（tools/golden-check.mjs）
 npm run package      # @vscode/vsce 打包 .vsix（--no-dependencies）
 ```
 
-> **顺序陷阱**：`npx tsc` 与 `node esbuild.js` 都会写 `out/extension.js`——tsc 产出的是 10KB 的模块入口，
-> esbuild 产出的是 ~978KB 的完整 bundle（发布用）。**必须先 tsc 后 esbuild**；顺序颠倒会把 bundle 覆盖成
-> 小文件，打出的 vsix 缺失全部功能。打包前建议 `ls -la out/extension.js` 确认体积。
+> **顺序陷阱**：`npx tsc` 与 `node esbuild.js` 都会写 `out/extension.js`——tsc 写的是几十 KB 的模块入口，
+> esbuild 写的是近 1 MB 的完整 bundle（发布用）。**必须先 tsc 后 esbuild**；顺序颠倒会把 bundle 覆盖成小文件，
+> 打出的 vsix 缺失全部功能——`npm run verify` 的体积哨兵能拦下这种顶替，打包后必跑（见下）。
+
+发布工序固定为：**`npx tsc`**（生成测试用的分文件产物）→ **`node esbuild.js`**（生成发布 bundle）→
+**`npm run package`** → **`npm run verify`**（`tools/verify-vsix.mjs`，核对包内 bundle 与清单）；发布同步再跑
+`node tools/sync-to-mrvc.mjs`。esbuild 之后不要再跑 tsc——那会把发布 bundle 覆盖回小文件。
 
 测试脚本在 `tools/`，均为纯 Node 断言，直接 `node tools/<脚本>` 运行：
 

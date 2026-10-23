@@ -9,29 +9,11 @@ import { ProjectStore, MrsProject, MrsSolution, msg, getInstall } from './projec
 import { generateMakefiles } from '../core/makefile';
 import { clearOutputDir, removeOutputDir } from '../core/output';
 import { t } from '../core/i18n';
-import { buildRecordFile, buildWrapperFile } from '../core/buildLog';
-import { encodeArtifact } from '../core/platformEncoding';
+import { buildRecordFile } from '../core/buildLog';
+import { writeBuildTaskWrapper, writeCleanTaskWrapper } from '../core/taskWrapper';
 import { downloadProject } from './flash';
 
 export type BuildKind = 'build' | 'rebuild' | 'clean';
-
-/** cmd batch-file escaping for LITERAL paths embedded in a wrapper body:
- * a single % would start variable expansion ("100% done" is fine but
- * "a%x%y" would lose "x%y" as a variable reference) — doubling makes cmd
- * emit one literal percent. %VAR% references must NOT be escaped. */
-function pct(s: string): string {
-  return s.replace(/%/g, '%%');
-}
-
-/** the install label the build wrapper echoes ("MRS: MounRiver Studio 3") —
- *  the label comes from the install's product.json, so keep it to characters
- *  cmd treats literally */
-function echoSafeLabel(label: string): string {
-  return label
-    .replace(/[^A-Za-z0-9 ._-]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 export interface RunOptions {
   /** MRS2 "Build Project And Download" mode: wait for the build to end and
@@ -695,77 +677,34 @@ export class BuildManager {
   }
 
   /**
-   * The generated wrapper captures the build output into the MRS2 build-record
-   * location (%TEMP%/mrs-cache/<project>-<md5>/buildContentRecord.txt, read by
-   * "Show Full Build Output"), echoes it into the task terminal and propagates
-   * make's exit code. The redirection lives in a wrapper FILE — a
-   * ShellExecution string with cmd.exe nesting breaks VSCode's auto-quoting
-   * ("文件名、目录名或卷标语法不正确") — and both build paths (single and
-   * batch) go through it so the record always reflects the last build.
-   *
-   * The wrapper lives under %TEMP%/mrs-build/<md5>.cmd, NOT in the build
-   * directory: VSCode hands the task command line to the terminal shell
-   * UNQUOTED, and a user-controlled project path containing cmd
-   * metacharacters (`EVT-IPV4&6` is a common EVT folder name) gets split by
-   * cmd at every `&`. The hash-named temp path has nothing to split; the
-   * build directory is entered via `cd /d "<buildDir>"` inside the file
-   * (quoted — cmd keeps `&` inside quotes literal), so the ProcessExecution
-   * carries neither a metacharacter command nor a cwd for VSCode to echo.
-   *
-   * MRS's makefile recipes carry `@` silencing prefixes, so make's own output
-   * never contains the per-file command lines. The record therefore ends with
-   * a `make -n -B` dry run, which prints every command the makefile drives
-   * (all sources, link, objcopy) — the record then answers "how was each file
-   * compiled", which neither MRS2's nor a bare make log does.
+   * Write the build wrapper pair (a .cmd launcher + the PowerShell tee script
+   * it runs) for one project and return the launcher path. The PowerShell
+   * script streams make's output to the terminal as it arrives AND into the
+   * MRS2 build-record location (%TEMP%/mrs-cache/<project>-<md5>/
+   * buildContentRecord.txt, read by "Show Full Build Output"), and propagates
+   * make's exit code. Both build paths (single and batch) go through it so the
+   * record always reflects the last build; generation itself lives in
+   * core/taskWrapper (pure, testable — see tools/wrapper-test.js).
    */
   private writeBuildWrapper(projectRoot: string, buildDir: string, makeExe: string, makeArgs: string[], recordFile: string, installLabel = ''): string {
-    const wrapper = buildWrapperFile(projectRoot);
-    const label = echoSafeLabel(installLabel);
-    const body =
-      `@echo off\r\n` +
-      // `!` is only safe with delayed expansion off — a parent environment can
-      // turn it on (AutoRun / /v:on), which would eat `!` in the build path
-      `setlocal DisableDelayedExpansion\r\n` +
-      // which installation this build uses (mrvc.mrs2InstallPath /
-      // mrvc.mrs3InstallPath are either-or — show the active one)
-      (label ? 'echo MRS: ' + label + '\r\n' : '') +
-      `cd /d "${pct(buildDir)}"\r\n` +
-      `"${pct(makeExe)}" ${makeArgs.join(' ')} > "${pct(recordFile)}" 2>&1\r\n` +
-      `set "MRVC_EXIT=%errorlevel%"\r\n` +
-      `type "${pct(recordFile)}"\r\n` +
-      `>> "${pct(recordFile)}" echo(\r\n` +
-      `>> "${pct(recordFile)}" echo ===== All Build Commands (dry run: make -n -B) =====\r\n` +
-      `"${pct(makeExe)}" -n -B all >> "${pct(recordFile)}" 2>&1\r\n` +
-      `exit /b %MRVC_EXIT%\r\n`;
-    // the paths inside the wrapper (record lives under %TEMP%) are not ASCII
-    // on machines with a Chinese user name, and cmd parses the file in the
-    // ANSI code page — same encoding the generated makefiles use
-    fs.writeFileSync(wrapper, encodeArtifact(body));
-    return wrapper;
+    return writeBuildTaskWrapper(projectRoot, { buildDir, makeExe, makeArgs, recordFile, label: installLabel });
   }
 
   /**
    * Same metacharacter-safe shape as writeBuildWrapper, for `make clean`:
-   * no record writes (a clean must not trample the last build's record) and
-   * no dry-run appendix. Used by single Clean, Rebuild's clean step and
-   * batch Clean — every make invocation carries a wrapper, so no
-   * ProcessExecution ever carries a user-controlled cwd again.
+   * a plain .cmd — no record writes (a clean must not trample the last build's
+   * record) and no dry-run appendix, so make's output stays live in the
+   * terminal. Used by single Clean, Rebuild's clean step and batch Clean.
    */
   private writeCleanWrapper(projectRoot: string, buildDir: string, makeExe: string, extraArgs: string[] = [], installLabel = ''): string {
-    const wrapper = buildWrapperFile(projectRoot, 'clean');
-    const label = echoSafeLabel(installLabel);
     // verbosity flags ride along (concise -s / full --trace) — the caller
     // passes buildMakeArgs('clean', ...) minus the target
-    const args = [...extraArgs, 'clean'].join(' ');
-    const body =
-      `@echo off\r\n` +
-      `setlocal DisableDelayedExpansion\r\n` +
-      (label ? 'echo MRS: ' + label + '\r\n' : '') +
-      `cd /d "${pct(buildDir)}"\r\n` +
-      `"${pct(makeExe)}" ${args}\r\n` +
-      `exit /b %errorlevel%\r\n`;
-    fs.writeFileSync(wrapper, encodeArtifact(body));
-    return wrapper;
+    return writeCleanTaskWrapper(projectRoot, {
+      buildDir,
+      makeExe,
+      args: [...extraArgs, 'clean'],
+      label: installLabel,
+    });
   }
 
   private async pickProject(): Promise<MrsProject | undefined> {

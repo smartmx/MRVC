@@ -387,6 +387,94 @@ check('new root entry written with excluding as first attribute', /<entry exclud
   check('toplevel: include rebuilds exactly one entry', cp2.sourceEntries.filter((e) => e.name === 'Startup').length === 1);
 }
 
+// ---------- 12. a bare token is a path, not a basename (finger_11_27) -------
+// Real project (F:/WCHprojects/指纹code/.../finger_11_27): the root entry
+// carries the stale token `lib` while the project has FRFXLL/src/lib (the
+// fingerprint library). Matching `lib` by basename dropped that whole folder
+// from the build — MRS2 builds it — and the link died on undefined FRFXLL*
+// references. CDT semantics: a token is relative to the entry's own folder.
+{
+  const base = path.join(DEVELOP_DIR, '.scratch', 'excl-basename');
+  const proj = path.join(base, 'proj');
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.mkdirSync(path.join(proj, 'FRFXLL', 'src', 'lib'), { recursive: true });
+  fs.mkdirSync(path.join(proj, 'afis'), { recursive: true });
+  fs.mkdirSync(path.join(proj, 'lib'), { recursive: true }); // a REAL root lib/ for the control case
+  fs.writeFileSync(path.join(proj, 'FRFXLL', 'src', 'lib', 'FRFXLLExport.cpp'), 'int f(void){return 0;}\n');
+  fs.writeFileSync(path.join(proj, 'afis', 'match.cpp'), 'int m(void){return 0;}\n');
+  fs.writeFileSync(path.join(proj, 'lib', 'helper.c'), 'int h(void){return 0;}\n');
+  fs.writeFileSync(path.join(proj, 'main.c'), 'int main(void){return 0;}\n');
+  fs.writeFileSync(
+    path.join(proj, '.project'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<projectDescription>\n<name>basename</name>\n<natures>\n' +
+      '<nature>org.eclipse.cdt.core.cnature</nature>\n<nature>org.eclipse.cdt.core.ccnature</nature>\n</natures>\n</projectDescription>'
+  );
+  fs.writeFileSync(
+    path.join(proj, '.cproject'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n' +
+      '<entry excluding="lib|afis/match.cpp" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>\n' +
+      '</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+  );
+  const cp = Cproject.load(proj);
+  check('basename: nested FRFXLL/src/lib NOT excluded by the bare token `lib`', isLogicExcluded(cp, 'FRFXLL/src/lib') === false);
+  check('basename: its files are scanned', (scanSources(cp).get('FRFXLL/src/lib') ?? []).length === 1);
+  check('basename: the real root lib/ IS excluded (token still works as a path)', isLogicExcluded(cp, 'lib') === true);
+  check('basename: a path token still excludes its file', isLogicExcluded(cp, 'afis/match.cpp') === true);
+  check('basename: sibling file in that folder kept', isLogicExcluded(cp, 'main.c') === false);
+  // control: with no root lib/ at all, the token still names the PATH `lib`
+  // (nothing to exclude there) and must not resurrect a basename match
+  fs.rmSync(path.join(proj, 'lib'), { recursive: true, force: true });
+  const cp2 = Cproject.load(proj);
+  check(
+    'basename: the token still names the path <base>/lib, nothing else',
+    isLogicExcluded(cp2, 'lib') === true && isLogicExcluded(cp2, 'FRFXLL/src/lib') === false
+  );
+  check('basename: scanner keeps the library folder', (scanSources(cp2).get('FRFXLL/src/lib') ?? []).length === 1);
+  fs.rmSync(base, { recursive: true, force: true });
+}
+
+// ---------- 13. decorations mirror the engine: bare tokens are paths --------
+// exclusionFsPaths (tree decorations) used to search linked folders to ANY
+// depth for a bare token — the exact semantics the scanner just dropped — so a
+// folder could show as excluded (grey) while it still builds. A bare root
+// token names a direct child of a walk root: for a linked folder that is the
+// link target's own root, nothing deeper.
+{
+  const base = path.join(DEVELOP_DIR, '.scratch', 'excl-decor');
+  const proj = path.join(base, 'proj');
+  const libs = path.join(base, 'libs');
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.mkdirSync(path.join(proj, 'app'), { recursive: true });
+  fs.mkdirSync(path.join(libs, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'app', 'main.c'), 'int main(void){return 0;}\n');
+  fs.writeFileSync(path.join(libs, 'root.c'), 'int root(void){return 0;}\n');
+  fs.writeFileSync(path.join(libs, 'sub', 'deep.c'), 'int deep(void){return 0;}\n');
+  fs.writeFileSync(
+    path.join(proj, '.project'),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<projectDescription>\n<name>decor</name>\n<linkedResources>\n<link>\n<name>StdPeriphDriver</name>\n<type>2</type>\n<location>${libs}</location>\n</link>\n</linkedResources>\n</projectDescription>`
+  );
+  fs.writeFileSync(
+    path.join(proj, '.cproject'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n' +
+      '<entry excluding="deep.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>\n' +
+      '<entry excluding="root.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="StdPeriphDriver"/>\n' +
+      '</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+  );
+  const cp = Cproject.load(proj);
+  const mapped = exclusionFsPaths(cp, proj);
+  check(
+    "decor: a NAMED entry's bare token still maps to the link root child (root.c)",
+    mapped.includes(path.join(libs, 'root.c'))
+  );
+  check(
+    'decor: a ROOT bare token matching only a NESTED link file is not decorated',
+    !mapped.includes(path.join(libs, 'sub', 'deep.c'))
+  );
+  check('decor: ... and that nested file is still scanned (built, not grey)', (scanSources(cp).get('StdPeriphDriver/sub') ?? []).some((f) => f.logicName === 'StdPeriphDriver/sub/deep.c'));
+  check("decor: the named entry's direct child is excluded by the engine too", isLogicExcluded(cp, 'StdPeriphDriver/root.c') === true);
+  fs.rmSync(base, { recursive: true, force: true });
+}
+
 console.log(failures ? `\n${failures} FAILURES` : '\nall exclude tests passed');
 process.exit(failures ? 1 : 0);
 

@@ -69,3 +69,14 @@ export function encodeArtifact(text: string): Buffer {
   }
   return buf;
 }
+
+/**
+ * Encode a PowerShell script file. Windows PowerShell 5.1 decodes a BOM-less
+ * .ps1 with the ANSI code page, so a script carrying a non-ASCII path (the
+ * user's project directory, e.g. `...\指纹code\...`) would be read as garbage.
+ * With the UTF-8 BOM every supported PowerShell reads it correctly on any
+ * locale — and unlike ANSI it can represent such a path at all.
+ */
+export function encodePowerShellScript(text: string): Buffer {
+  return Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text, 'utf-8')]);
+}

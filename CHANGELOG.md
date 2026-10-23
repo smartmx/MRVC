@@ -1,5 +1,61 @@
 # MRVC 更新日志
 
+## V0.2.5（2026-10-23）
+
+### 变更
+
+- **构建输出改为实时显示**：此前构建包装脚本把 make 的全部输出重定向进"完整构建日志"
+  （`%TEMP%/mrs-cache/<工程>-<md5>/buildContentRecord.txt`，供 `Show Full Build Output` 读取），
+  等 make 退出后才用 `type` 整段回显——于是任务终端在整个编译期间一片空白、结束时才一次性刷出。
+  现在构建任务跑的是 **.cmd 启动器 + PowerShell 脚本**：脚本用 .NET 管道逐行读取 make 的输出，
+  **每行同时**写进日志与终端（终端逐行直写；`AutoFlush` 只在支持它的宿主上设置——Windows PowerShell
+  5.1 的 `[Console]::Out` 是 `SyncTextWriter`，直接赋值会抛非终止错误、在终端顶部刷一条红字而构建
+  照常进行；批量写也试过并弃用：读循环阻塞在 `ReadLine` 上时最后几行会被憋住，实测"首行到达"从 0.4 s
+  退化到 1.6 s），`make -n -B` 干跑走同一个读取器且**只进日志**（记录里仍能回答"每个文件是怎么编译的"，
+  也避免 cmd 重定向把 ANSI 字节写进 UTF-8 记录），退出码照常透传。`make clean` 路径本来就是实时的
+  （无重定向），保持不变。
+  实测（合成 2 万行输出）：旧实现 13,851 ms → 新实现 1,585 ms（**−89%**，约 0.7 ms/行 → 0.08 ms/行），
+  记录内容逐字节相同；真实工程上"首行到达"约 0.4 s（构建期间持续滚动）。
+  顺带改进：日志改写为 **UTF-8**（此前由 cmd 按系统代码页写，含中文路径的记录只能靠编辑器猜编码）；
+  `.ps1` 以 UTF-8 BOM 落盘（Windows PowerShell 5.1 对无 BOM 文件按 ANSI 解码，非 ASCII 路径会读错）。
+  生成逻辑抽到纯 Node 的 `src/core/taskWrapper.ts`，新增 `tools/wrapper-test.js`：既断言脚本形状
+  （tee、干跑只进记录、退出码、BOM、两个相位 .cmd 的 `cd /d`、`AutoFlush` 的存在性守卫），也用
+  **假 make（先输出一行、sleep 2 秒、再输出）实测"输出在进程结束前就已到达终端"**（首块 ~0.4 s、
+  进程 ~2.8 s 结束），并验证记录内容、干跑不回显、标签只进终端、失败退出码 7 透传、"make 确实在
+  构建目录里运行"，以及**包装脚本的 stderr 必须为空**（PowerShell 的非终止错误只出现在那里，
+  正是它漏掉了 `AutoFlush` 那条红字）。
+- **构建包装自给自足**：tee 脚本开头先重建记录目录（`New-Item -ItemType Directory -Force`）。
+  此前若 `%TEMP%` 清理恰好落在"生成包装"与"启动"之间， StreamWriter 会因找不到路径直接抛错、
+  构建以 exit 2 失败且 make 根本没跑（复审 round9 F2 实测复现）。`tools/wrapper-test.js` 钉住
+  这一行为：内容断言要求 `New-Item` 出现在打开 StreamWriter 之前，功能断言则在生成包装后
+  **真的删掉记录目录**再启动构建（构建照常 exit 0、记录被重建）。
+- **树装饰与排除引擎同口径**（复审 round9 F3）：`exclusionFsPaths`（树装饰/灰色标记）此前仍按
+  已废除的"深度无关基名"语义在链接目录里递归（深度 ≤6）找裸 token 的目标——引擎已改为严格路径
+  语义后，装饰可能把**实际会编译**的文件标成灰色。现在裸 token 只解析链接根下的**直接子项**
+  （CH585 的"裸文件名写在链接根"真实用法不受影响）；`taskWrapper.ts` 的模块头注释也改写为
+  现状实现（逐行直写、干跑走同一读取器）。
+- **工序与工具收尾**：README 写死发布工序为 `npx tsc`（测试产物）→ `node esbuild.js`（发布 bundle）→
+  `npm run package` → `npm run verify`；并把"顺序陷阱"提示里过时的体积锚点（"10KB / ~978KB"，实际约
+  24 KB / 近 1 MB）与仅 git-bash 可用的 `ls -la` 手工自查一并替换为 `npm run verify` 门禁（其体积哨兵
+  会拦截 tsc 产物顶替 bundle 的事故）。`package.json` 新增 `verify` 脚本，指向 `tools/verify-vsix.mjs`
+  （"发布前必跑"从此与文档同名）。
+
+### 修复
+
+- **排除匹配把"裸 token"当基名，导致整个目录被漏编译**：`excluding` 的 token 现在严格按 CDT 语义
+  解析——**相对该 sourceEntry 目录的路径**（裸 token 即该目录下的直接子项）；此前的匹配器额外允许
+  "任意层级的同名匹配"（`endsWith('/' + token)`），于是真实工程 `finger_11_27` 根条目里那个失效的
+  token `lib` 把 `FRFXLL/src/lib`（指纹库 10 个 `.cpp`）整个排除掉了：MRS2 编译它们（其 `obj` 下有
+  `FRFXLL/src/lib/*.o`），MRVC 不编译 → 链接期 `undefined reference to FRFXLLCreateFeatureSetFromRaw /
+  FRFXLLExport / FRFXLLCloseHandle …`，构建失败。修掉基名匹配后：源文件 **57 → 67**，构建 **exit 0**，
+  且产出的 `.hex` 与 MRS2 的构建结果**逐字节相同**（`02416e845fe9d7d4…`；`.elf` 仅因构建路径不同
+  影响调试信息而略有差异）。
+  回归面：对 CH585 / CH587 / CH592 / NFC_DEVELOP / DEVELOP 共 **2,650 个真实工程**做"排除决策
+  前后对比"，**只有 finger_11_27 一个工程的源集合发生变化**（正是被漏编译的那个），其余零变化。
+  新增 7 条断言把语义钉住：嵌套 `FRFXLL/src/lib` 不被裸 token `lib` 误伤、该目录的文件确实被扫描、
+  真实存在于根目录的 `lib/` 仍被该 token 排除、带斜杠的路径 token 照常排除其文件、以及"token 命名
+  的是路径而非基名"的对照。
+
 ## V0.2.4（2026-10-23）
 
 ### 变更

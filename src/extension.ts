@@ -274,7 +274,7 @@ function startExtension(context: vscode.ExtensionContext): void {
   reg('mrvc.generateCMakeList', (item?: { project?: unknown }) => generateCMakeListCmd(store, item));
   reg('mrvc.exportAsCMake', (item?: { project?: unknown }) => exportAsCMakeCmd(store, item));
   // MRS2 showFullBuildOutput: open the recorded full make output of the
-  // active project (written by the build task's Tee-Object)
+  // active project (written by the build wrapper's PowerShell tee script)
   reg('mrvc.createProject', () => createProjectCmd(store));
   reg('mrvc.createStaticLib', () => createStaticLibCmd(store));
   reg('mrvc.showStackUsage', (item?: unknown) => showStackUsageCmd(store, item));

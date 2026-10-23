@@ -168,25 +168,17 @@ export function checkInstallPath(configured: string, expect: 'mrs2' | 'mrs3'): I
 
 /**
  * First valid candidate wins. `configured` comes first so an explicit setting
- * beats the conventional locations; `opts.prefer` picks which generation's
- * defaults are appended (no prefer = MRS2 defaults first, then MRS3 — an
- * existing MRS2 user keeps their install unless the MRS3 path is filled in).
- * `opts.defaults` replaces the built-in list (tests inject hermetic paths).
+ * beats the conventional locations; `opts.defaults` replaces the built-in
+ * conventional list (MRS2 first, then MRS3; tests inject hermetic paths).
  */
 export function locateInstall(
   configured?: string | string[],
-  opts: { prefer?: 'mrs2' | 'mrs3'; defaults?: string[] } = {}
+  opts: { defaults?: string[] } = {}
 ): MrsInstall | null {
   const configuredList = (Array.isArray(configured) ? configured : configured ? [configured] : [])
     .map((p) => p.trim())
     .filter(Boolean);
-  const defaults =
-    opts.defaults ??
-    (opts.prefer === 'mrs2'
-      ? MRS2_DEFAULT_PATHS
-      : opts.prefer === 'mrs3'
-        ? MRS3_DEFAULT_PATHS
-        : [...MRS2_DEFAULT_PATHS, ...MRS3_DEFAULT_PATHS]);
+  const defaults = opts.defaults ?? [...MRS2_DEFAULT_PATHS, ...MRS3_DEFAULT_PATHS];
   const seen = new Set<string>();
   for (const root of [...configuredList, ...defaults]) {
     const key = path.resolve(root).toLowerCase();
@@ -315,9 +307,6 @@ export interface InstallSelection {
   bothValid: boolean;
   mrs2Label: string;
   mrs3Label: string;
-  /** what each non-empty field resolves to (undefined = empty or unusable) */
-  mrs2FieldFlavor?: MrsFlavor;
-  mrs3FieldFlavor?: MrsFlavor;
   /** the configured values (trimmed) — lets a "swap them" action write them
    *  back without re-reading the settings */
   mrs2PathValue: string;
@@ -399,8 +388,6 @@ export function selectInstall(
     bothValid: requested === 'auto' && !!v2 && !!v3,
     mrs2Label: v2?.label ?? flavorLabel('mrs2'),
     mrs3Label: v3?.label ?? flavorLabel('mrs3'),
-    mrs2FieldFlavor: v2?.flavor ?? c2?.foundFlavor,
-    mrs3FieldFlavor: v3?.flavor ?? c3?.foundFlavor,
     mrs2PathValue: raw2,
     mrs3PathValue: raw3,
   };

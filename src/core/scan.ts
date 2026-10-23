@@ -172,10 +172,11 @@ function walk(
     const full = path.join(dir, ent.name);
     const logic = logicPrefix ? `${logicPrefix}/${ent.name}` : ent.name;
     const relPosix = toPosix(path.relative(fsRoot, full));
-    // excluding tokens may be written relative to the walk root (bare file
-    // names, LED-style) or relative to the project root via the logic path
-    // (StdPeriphDriver/CH58x_usbhostClass.c, CH587 EVT style); real-folder
-    // entry tokens apply below that folder's logic prefix (BLE_UART APP)
+    // excluding tokens are matched as paths (CDT semantics, see isExcluded):
+    // against the walk root's relative path and against the logic path (a root
+    // token may spell a project path, StdPeriphDriver/CH58x_usbhostClass.c
+    // CH587 EVT style); a named entry's tokens apply below THAT folder (a
+    // linked folder's tokens are relative to the link's own root)
     let excludedHere = isExcluded(relPosix, excluded) || isExcluded(logic, excluded);
     if (!excludedHere) {
       for (const [base, toks] of logicBases) {
@@ -230,9 +231,14 @@ function isExcluded(relPosix: string, tokens: string[]): boolean {
   for (const t of tokens) {
     if (!t) continue;
     const tok = fold(t);
-    if (hay === tok || hay.startsWith(tok + '/') || hay.endsWith('/' + tok)) {
-      return true;
-    }
+    // CDT excluding semantics: a token is a path relative to the ENTRY's own
+    // folder (a bare token names a direct child of it) — there is NO basename
+    // search anywhere. The token `lib` means `<base>/lib` and must not match
+    // `FRFXLL/src/lib`: matching it dropped a whole library from the build
+    // (finger_11_27 — a stale root token `lib` made MRVC skip FRFXLL/src/lib,
+    // which MRS2 DOES build, and the link then failed on undefined FRFXLL*
+    // references). A basename-style match must never be reintroduced here.
+    if (hay === tok || hay.startsWith(tok + '/')) return true;
   }
   return false;
 }
@@ -348,24 +354,14 @@ export function exclusionFsPaths(cp: Cproject, projectRoot: string): string[] {
     }
   }
   for (const tok of bare) {
-    // bare-name root tokens name content ANYWHERE below a linked folder
-    // (the scanner's suffix matching is depth-agnostic) — walk each link,
-    // bounded, so every location the scanner excludes gets decorated
+    // a bare root token names a DIRECT child of a walk root (isExcluded has no
+    // basename search) — for linked folders that is the link target's own root,
+    // where the scanner matches the same token against the walk-root-relative
+    // path. The old depth-agnostic search here decorated deeper same-named
+    // entries the engine does NOT exclude ("grey in the tree but still builds").
     for (const loc of cp.linkedFolders.values()) {
-      const walk = (dir: string, depth: number): void => {
-        if (depth > 6) return;
-        let entries: fs.Dirent[];
-        try {
-          entries = fs.readdirSync(dir, { withFileTypes: true });
-        } catch {
-          return;
-        }
-        for (const e of entries) {
-          if (e.isDirectory()) walk(path.join(dir, e.name), depth + 1);
-          else if (fold(e.name) === fold(tok)) out.push(path.join(dir, e.name));
-        }
-      };
-      walk(loc, 0);
+      const hit = path.join(loc, tok);
+      if (fs.existsSync(hit)) out.push(hit);
     }
   }
   return out;

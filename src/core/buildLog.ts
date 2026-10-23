@@ -3,6 +3,10 @@
  * tools read the same file: %TEMP%/mrs-cache/<projectName>-<md5(root)>/
  * with buildContentRecord.txt holding the full make output (writeProject-
  * BuildHistoryToTemp / showFullBuildOutput pair in MRS2).
+ *
+ * MD5 is deliberate here: MRS2 derives the same directory name with it, and
+ * this hash is a filename (collision-resistance is irrelevant, no integrity or
+ * security role) — switching to SHA-256 would break the shared layout.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -33,6 +37,37 @@ export function buildWrapperFile(projectRoot: string, kind: 'build' | 'clean' = 
   fs.mkdirSync(dir, { recursive: true });
   const hash = crypto.createHash('md5').update(projectRoot).digest('hex');
   return path.join(dir, `${hash}${kind === 'clean' ? '-clean' : ''}.cmd`);
+}
+
+/**
+ * The PowerShell script the build wrapper launches. It TEES make's output —
+ * every line goes to the terminal AND to the full-output record — instead of
+ * redirecting everything into the record and `type`-ing it afterwards, which
+ * showed nothing until the build had finished. Same hash-named %TEMP% location
+ * and metacharacter rationale as the .cmd launcher; written with a UTF-8 BOM
+ * (encodePowerShellScript) so a non-ASCII path in it survives.
+ */
+export function buildTeeScriptFile(projectRoot: string): string {
+  const dir = path.join(os.tmpdir(), 'mrs-build');
+  fs.mkdirSync(dir, { recursive: true });
+  const hash = crypto.createHash('md5').update(projectRoot).digest('hex');
+  return path.join(dir, `${hash}-tee.ps1`);
+}
+
+/** phase 1 of a build: make with stderr merged (read by the tee script) */
+export function buildMakeCmdFile(projectRoot: string): string {
+  const dir = path.join(os.tmpdir(), 'mrs-build');
+  fs.mkdirSync(dir, { recursive: true });
+  const hash = crypto.createHash('md5').update(projectRoot).digest('hex');
+  return path.join(dir, `${hash}-build.cmd`);
+}
+
+/** phase 2 of a build: the `make -n -B` dry run, appended to the record */
+export function buildDryRunCmdFile(projectRoot: string): string {
+  const dir = path.join(os.tmpdir(), 'mrs-build');
+  fs.mkdirSync(dir, { recursive: true });
+  const hash = crypto.createHash('md5').update(projectRoot).digest('hex');
+  return path.join(dir, `${hash}-dry.cmd`);
 }
 
 /** full-output record for a project (MRS2 buildContentRecord.txt) */

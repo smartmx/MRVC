@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "publisher": "smartmx",
   "license": "MIT",
   "repository": {
@@ -1307,7 +1307,8 @@
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "golden": "node tools/golden-check.mjs",
-    "package": "npx @vscode/vsce package --no-dependencies"
+    "package": "npx @vscode/vsce package --no-dependencies",
+    "verify": "node tools/verify-vsix.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
