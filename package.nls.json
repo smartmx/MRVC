@@ -35,6 +35,7 @@
   "command.mrvc.uiDesigner.title": "WCHGUIDesigner",
   "command.mrvc.hexBinTool.title": "HexBin Studio",
   "command.mrvc.comTransmit.title": "Serial Port Debug Tool",
+  "command.mrvc.wchToolKit.title": "WCH ToolKit (MRS3)",
   "command.mrvc.updateIntellisense.title": "Update IntelliSense Configuration",
   "command.mrvc.switchProjectType.title": "Switch Project Type (C/C++)",
   "command.mrvc.generateCMakeList.title": "Generate CMakeLists File",

@@ -67,3 +67,12 @@ export function comTransmitCmd(): void {
   const tools = resolveTools();
   if (tools) launchTool(tools.comTransmit, 'Serial Port Debug Tool (COMTransmit)');
 }
+
+/** MRS3 only (the menu item is gated on the active install being MRS3; MRS2
+ *  has no WCHToolKit component, so this reports "not found" if ever reached).
+ *  The title is the plain English tool name, like the other six — the menu
+ *  label itself carries the localized text (package.nls*.json). */
+export function wchToolKitCmd(): void {
+  const tools = resolveTools();
+  if (tools) launchTool(tools.wchToolKit, 'WCHToolKit');
+}

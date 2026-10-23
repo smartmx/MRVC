@@ -39,7 +39,9 @@ const vscodeStub = {
   workspace: {
     // mrvc.mrs2InstallPath resolves to a real MRS2 install when one exists
     // on this machine (default C:\MounRiver otherwise) — the chip picker
-    // render path then exercises a live SDK scan where available
+    // render path then exercises a live SDK scan where available. The
+    // extension requires a CONFIGURED install, so the stub models the setting
+    // the way a real settings.json would: a global value that `inspect` reports.
     getConfiguration: () => ({
       get: (k, d) => {
         if (k === 'mrs2InstallPath') {
@@ -49,6 +51,18 @@ const vscodeStub = {
         }
         return d;
       },
+      inspect: (k) => ({
+        key: 'mrvc.' + k,
+        globalValue:
+          k === 'mrs2InstallPath'
+            ? [process.env.MRS2_HOME, 'C:\\MounRiver\\MounRiver_Studio2', 'D:\\MounRiver\\MounRiver_Studio2'].find(
+                (c) => c && fs.existsSync(path.join(c, 'resources', 'app', 'resources', 'win32', 'components', 'WCH', 'manifest.json'))
+              )
+            : undefined,
+        workspaceValue: undefined,
+        workspaceFolderValue: undefined,
+      }),
+      update: async () => {},
     }),
     workspaceFolders: [],
     createFileSystemWatcher: () => ({ onDidChange() { return { dispose() {} }; }, onDidCreate() { return { dispose() {} }; }, onDidDelete() { return { dispose() {} }; }, dispose() {} }),

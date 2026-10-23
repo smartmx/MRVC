@@ -29,7 +29,7 @@ const { setProjectCpp } = require(path.join(outCore, 'projectType.js'));
 const installRoot = process.argv[2];
 const projectDir = process.argv[3];
 if (!installRoot || !projectDir) {
-  console.error('usage: node tools/mrs-install-probe.mjs <installRoot> <projectDir>');
+  console.error('usage: node tools/mrs-install-probe.mjs <installRoot> <projectDir> [cpp]');
   process.exit(2);
 }
 

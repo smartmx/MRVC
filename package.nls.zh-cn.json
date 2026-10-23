@@ -35,6 +35,7 @@
   "command.mrvc.uiDesigner.title": "WCH 界面设计工具",
   "command.mrvc.hexBinTool.title": "HexBin 转换工具",
   "command.mrvc.comTransmit.title": "串口调试工具",
+  "command.mrvc.wchToolKit.title": "WCH 工具集（MRS3）",
   "command.mrvc.updateIntellisense.title": "更新 IntelliSense 配置",
   "command.mrvc.switchProjectType.title": "切换工程类型 (C/C++)",
   "command.mrvc.generateCMakeList.title": "生成 CMakeLists 文件",

@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "publisher": "smartmx",
   "license": "MIT",
   "repository": {
@@ -62,13 +62,13 @@
         "mrvc.mrs2InstallPath": {
           "type": "string",
           "default": "C:\\MounRiver\\MounRiver_Studio2",
-          "description": "MRS2 (MounRiver Studio 2) installation path. Provides the RISC-V toolchain, make, OpenOCD and WCH-LinkUtility used by this extension. Mutually exclusive with mrvc.mrs3InstallPath — only one installation is active at a time (pin the choice with mrvc.mrsVersion). Example: C:\\MounRiver\\MounRiver_Studio2 / MRS2（MounRiver Studio 2）安装路径，提供 RISC-V 工具链、make、OpenOCD 与 WCH-LinkUtility。与 mrvc.mrs3InstallPath 二选一，同一时刻只有一个安装生效（可用 mrvc.mrsVersion 固定）。示例：C:\\MounRiver\\MounRiver_Studio2",
+          "description": "MRS2 (MounRiver Studio 2) installation path. Checked at startup (exists, is a MounRiver installation, ships MounRiver Studio 2.exe) — an invalid path is reported instead of being silently replaced. Mutually exclusive with mrvc.mrs3InstallPath: at least one of the two must be valid or the extension does not start (the MRS version setting picks between them). Example: C:\\MounRiver\\MounRiver_Studio2 / MRS2（MounRiver Studio 2）安装路径。启动时校验（存在、是 MounRiver 安装、带 MounRiver Studio 2.exe）；路径不合法会被明确报告，不会静默改用别处。与 mrvc.mrs3InstallPath 二选一：两者至少有一个有效，否则扩展不启动（用 mrvc.mrsVersion 在两者间选取）。示例：C:\\MounRiver\\MounRiver_Studio2",
           "order": 0
         },
         "mrvc.mrs3InstallPath": {
           "type": "string",
-          "default": "",
-          "description": "MRS3 (MounRiver Studio 3) installation path — mutually exclusive with mrvc.mrs2InstallPath; only one installation is active. Non-empty = MRS3 takes effect (its field is empty by default, so filling it is the deliberate switch; an invalid path falls back to MRS2). Example: C:\\MounRiver\\MounRiver_Studio3 / MRS3（MounRiver Studio 3）安装路径——与 mrvc.mrs2InstallPath 二选一，同一时刻只有一个安装生效。填了即使用 MRS3（该字段默认空，填写即为主动切换；路径无效时自动回退 MRS2）。示例：C:\\MounRiver\\MounRiver_Studio3",
+          "default": "C:\\MounRiver\\MounRiver_Studio3",
+          "description": "MRS3 (MounRiver Studio 3) installation path, checked the same way as mrvc.mrs2InstallPath (must ship MounRiver Studio 3.exe). With both paths valid, mrvc.mrsVersion decides which one is active. Example: C:\\MounRiver\\MounRiver_Studio3 / MRS3（MounRiver Studio 3）安装路径。与 mrvc.mrs2InstallPath 同样的启动校验（必须带 MounRiver Studio 3.exe）。两个路径都有效时由 mrvc.mrsVersion 决定用哪一个。示例：C:\\MounRiver\\MounRiver_Studio3",
           "order": 0
         },
         "mrvc.mrsVersion": {
@@ -79,12 +79,12 @@
             "mrs3"
           ],
           "enumDescriptions": [
-            "Use MRS3 when mrvc.mrs3InstallPath is set, otherwise MRS2 (MRS3 路径非空则用 MRS3，否则 MRS2)",
-            "Force the MounRiver Studio 2 installation (固定使用 MRS2)",
-            "Force the MounRiver Studio 3 installation (固定使用 MRS3)"
+            "Prefer MRS3 when both paths are valid (otherwise the valid one is used) / 两个路径都有效时优先 MRS3（只有一个有效则用那个）",
+            "Prefer the MounRiver Studio 2 installation / 优先使用 MRS2",
+            "Prefer the MounRiver Studio 3 installation / 优先使用 MRS3"
           ],
           "default": "auto",
-          "description": "Which MounRiver installation is active when both paths are configured; a pinned generation never silently falls back to the other one (a missing install is reported as an error). / 两个安装路径都存在时，哪一个生效；固定后不会静默改用另一代次（找不到所固定代次的安装时明确报错）。",
+          "description": "Which MounRiver installation is active when both paths are valid. A preference, not a wall: when the preferred generation has no valid installation the other VALID one is used and reported. / 两个安装路径都有效时用哪一个；这是偏好而非硬性要求——所偏好的代次没有有效安装时会改用另一个有效安装并明确提示。",
           "order": 0
         },
         "mrvc.toolchain": {
@@ -403,6 +403,11 @@
         "category": "MRVC"
       },
       {
+        "command": "mrvc.wchToolKit",
+        "title": "%command.mrvc.wchToolKit.title%",
+        "category": "MRVC"
+      },
+      {
         "command": "mrvc.updateIntellisense",
         "title": "%command.mrvc.updateIntellisense.title%",
         "category": "MRVC"
@@ -652,6 +657,11 @@
           "command": "mrvc.comTransmit",
           "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "5_tools@6"
+        },
+        {
+          "command": "mrvc.wchToolKit",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.mrs3Active",
+          "group": "5_tools@7"
         },
         {
           "command": "mrvc.createProject",

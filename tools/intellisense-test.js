@@ -15,10 +15,25 @@ fs.mkdirSync(WS, { recursive: true });
 // E:/WORK EVT tree — first existing wins
 const PROJ = ['F:/CH585/EVT/V1_2/EXAM/LED', 'E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED', 'E:/WORK/CH585/V1_7/EXAM/LED'].find((p) => fs.existsSync(path.join(p, '.cproject')));
 
+// the extension requires a CONFIGURED, valid installation before it does any
+// work, so the stub models mrvc.mrs2InstallPath the way a real settings.json
+// would (a global value `inspect` reports) — the first existing install wins
+const MRS2_HOME = [process.env.MRS2_HOME, 'C:\\MounRiver\\MounRiver_Studio2', 'D:\\MounRiver\\MounRiver_Studio2'].find(
+  (c) => c && fs.existsSync(path.join(c, 'resources', 'app', 'resources', 'win32', 'components', 'WCH', 'manifest.json'))
+);
 const vscodeStub = {
   workspace: {
     workspaceFolders: [{ uri: { fsPath: WS }, name: 'ws', index: 0 }],
-    getConfiguration: () => ({ get: (_k, d) => d }),
+    getConfiguration: () => ({
+      get: (k, d) => (k === 'mrs2InstallPath' && MRS2_HOME ? MRS2_HOME : d),
+      inspect: (k) => ({
+        key: 'mrvc.' + k,
+        globalValue: k === 'mrs2InstallPath' ? MRS2_HOME : undefined,
+        workspaceValue: undefined,
+        workspaceFolderValue: undefined,
+      }),
+      update: async () => {},
+    }),
   },
   window: {},
   Uri: { file: (f) => ({ fsPath: f }) },

@@ -4,7 +4,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { ProjectStore, MrsProject, MrsSolution, msg } from './vscode/projects';
+import { ProjectStore, MrsProject, MrsSolution, msg, installGate, getInstall, selectMrsInstall } from './vscode/projects';
 import { ProjectTreeProvider, TreeDecorations } from './vscode/tree';
 import { BuildManager } from './vscode/tasks';
 import { flashProject, openLinkUtility, openMrsTerminal } from './vscode/flash';
@@ -32,7 +32,7 @@ import { writeSolution } from './core/solution';
 import { setProjectCpp } from './core/projectType';
 import { SyncPage } from './vscode/syncPage';
 import { MacroBatchPage } from './vscode/macroBatch';
-import { comTransmitCmd, hexBinToolCmd, ispToolCmd, touchkeyToolCmd, uiDesignerCmd } from './vscode/mrsTools';
+import { comTransmitCmd, hexBinToolCmd, ispToolCmd, touchkeyToolCmd, uiDesignerCmd, wchToolKitCmd } from './vscode/mrsTools';
 import { ensureIntellisenseConfig, resolveProjectForFile, switchContext, maybePromptCppTools } from './vscode/intellisense';
 import { addProjectToSolutionCmd, addProjectsByBatchCmd, setBuildOrderCmd, closeSolutionCmd, modifySolutionToolchainCmd, recoverSolutionPath } from './vscode/solutionLife';
 import { generateCMakeListCmd, exportAsCMakeCmd } from './vscode/cmakeExport';
@@ -82,6 +82,37 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
+  // keep the mrvc.mrs3Active context key in sync with the ACTIVE installation:
+  // MRS3-only menu items (WCH Toolkit) hang off it. Registered here — before the
+  // install gate — so it works whether or not the extension started, and picks
+  // up later changes (the gate's adopt button, the mrsVersion pin buttons).
+  const syncActiveFlavor = (): void => {
+    void vscode.commands.executeCommand('setContext', 'mrvc.mrs3Active', selectMrsInstall().install?.flavor === 'mrs3');
+  };
+  syncActiveFlavor();
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (
+        !e.affectsConfiguration('mrvc.mrs2InstallPath') &&
+        !e.affectsConfiguration('mrvc.mrs3InstallPath') &&
+        !e.affectsConfiguration('mrvc.mrsVersion')
+      ) {
+        return;
+      }
+      syncActiveFlavor();
+    })
+  );
+
+  // Startup gate: a configured AND valid MounRiver installation is a
+  // precondition — without one the extension does not start (no tree, no
+  // commands, no watchers). installGate reports the state itself and starts the
+  // extension as soon as the settings are fixed, so no reload is needed.
+  if (!installGate(context, () => startExtension(context))) return;
+  startExtension(context);
+}
+
+/** everything the gate protects: project store, tree, commands, watchers */
+function startExtension(context: vscode.ExtensionContext): void {
   const store = new ProjectStore(context);
   context.subscriptions.push(store);
   store.restoreState();
@@ -311,6 +342,9 @@ export function activate(context: vscode.ExtensionContext): void {
   reg('mrvc.uiDesigner', () => uiDesignerCmd());
   reg('mrvc.hexBinTool', () => hexBinToolCmd());
   reg('mrvc.comTransmit', () => comTransmitCmd());
+  // MRS3-only tool: the menu item is gated on mrvc.mrs3Active (kept in sync with
+  // the active installation below)
+  reg('mrvc.wchToolKit', () => wchToolKitCmd());
   reg('mrvc.generateSolution', async () => {
     const all = store.all;
     if (!all.length) {
@@ -407,6 +441,10 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     })
   );
+
+  // the install notes (an invalid configured path, a pin that had to fall back,
+  // both paths valid) surface once at startup — getInstall() is their entry
+  void getInstall();
 }
 
 export function deactivate(): void {

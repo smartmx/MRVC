@@ -104,6 +104,17 @@ const chlog = file('extension/changelog.md');
 check(!!chlog && chlog.equals(fs.readFileSync(path.join(root, 'CHANGELOG.md'))),
   'vsix changelog.md byte-equals repo CHANGELOG.md');
 
+// The README is the ONE artifact that can not be byte-compared on purpose:
+// vsce rewrites its relative links when packaging (verified on 0.2.3 — the
+// repo's `CHANGELOG.md` link becomes
+// https://github.com/<publisher>/<repo>/blob/HEAD/CHANGELOG.md), so packaged
+// readme.md NEVER equals the repo README.md. Only its presence is checked here;
+// do not "fix" this into a byte comparison.
+check(
+  !!(file('extension/readme.md') ?? file('extension/README.md')),
+  'vsix readme.md is present (content differs by vsce link rewriting: exempt from byte comparison)'
+);
+
 // 5-6. rebuild from source, then compare (graceful FAIL if out/ can't be
 //      produced — e.g. fresh clone without node_modules — never crash)
 const outPath = path.join(root, 'out', 'extension.js');

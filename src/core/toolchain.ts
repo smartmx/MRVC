@@ -100,16 +100,70 @@ export function detectFlavor(root: string): { flavor: MrsFlavor; label: string }
 
 /** the install root ships "MounRiver Studio <N>.exe" — presence-only probe */
 function detectLauncherFlavor(root: string): 'mrs2' | 'mrs3' | null {
-  let names: string[];
-  try {
-    names = fs.readdirSync(root);
-  } catch {
-    return null;
-  }
+  const names = readRootNames(root);
+  if (!names) return null;
   const hit = (n: string): boolean => names.some((f) => f.toLowerCase() === n.toLowerCase());
   if (hit('MounRiver Studio 3.exe')) return 'mrs3';
   if (hit('MounRiver Studio 2.exe')) return 'mrs2';
   return null;
+}
+
+function readRootNames(root: string): string[] | null {
+  try {
+    return fs.readdirSync(root);
+  } catch {
+    return null;
+  }
+}
+
+/** the generation's own launcher program ("MounRiver Studio 2.exe" / "3.exe") */
+export function launcherFileName(gen: 'mrs2' | 'mrs3'): string {
+  return gen === 'mrs3' ? 'MounRiver Studio 3.exe' : 'MounRiver Studio 2.exe';
+}
+
+/** why a configured install path can not be used */
+export type InstallPathProblem =
+  /** the directory does not exist */
+  | 'missing'
+  /** exists, but has no components/WCH/manifest.json — not a MounRiver tree */
+  | 'not-install'
+  /** it IS an installation, but of the OTHER generation */
+  | 'wrong-generation'
+  /** no "MounRiver Studio <N>.exe" — the program (and the version marker) is absent */
+  | 'no-launcher';
+
+export interface InstallPathCheck {
+  /** the configured value (trimmed) */
+  path: string;
+  ok: boolean;
+  install?: MrsInstall;
+  problem?: InstallPathProblem;
+  /** the generation the path itself declares (for the reason message) */
+  foundFlavor?: MrsFlavor;
+}
+
+/**
+ * Validate ONE configured path for ONE generation: the directory must exist, be
+ * a MounRiver installation (the WCH manifest marker), declare that generation
+ * (product.json / launcher name — an unmarked tree can not be verified and
+ * fails here), and ship the launcher program "MounRiver Studio <N>.exe".
+ * This is the startup criterion: the extension starts only when at least one
+ * of the two fields passes it.
+ */
+export function checkInstallPath(configured: string, expect: 'mrs2' | 'mrs3'): InstallPathCheck {
+  const root = configured.trim();
+  if (!fs.existsSync(root)) return { path: root, ok: false, problem: 'missing' };
+  const install = locateInstall(root, { defaults: [] });
+  if (!install) return { path: root, ok: false, problem: 'not-install' };
+  const flavor = install.flavor;
+  if (flavor !== 'unknown' && flavor !== expect) {
+    return { path: root, ok: false, problem: 'wrong-generation', foundFlavor: flavor };
+  }
+  const names = readRootNames(install.root);
+  const wanted = launcherFileName(expect);
+  const hasLauncher = !!names && names.some((f) => f.toLowerCase() === wanted.toLowerCase());
+  if (!hasLauncher) return { path: root, ok: false, problem: 'no-launcher', foundFlavor: flavor };
+  return { path: root, ok: true, install, foundFlavor: flavor };
 }
 
 /**
@@ -118,12 +172,10 @@ function detectLauncherFlavor(root: string): 'mrs2' | 'mrs3' | null {
  * defaults are appended (no prefer = MRS2 defaults first, then MRS3 — an
  * existing MRS2 user keeps their install unless the MRS3 path is filled in).
  * `opts.defaults` replaces the built-in list (tests inject hermetic paths).
- * `opts.expectFlavor` (forced mrvc.mrsVersion) skips candidates of the other
- * generation instead of returning them.
  */
 export function locateInstall(
   configured?: string | string[],
-  opts: { prefer?: 'mrs2' | 'mrs3'; defaults?: string[]; expectFlavor?: 'mrs2' | 'mrs3' } = {}
+  opts: { prefer?: 'mrs2' | 'mrs3'; defaults?: string[] } = {}
 ): MrsInstall | null {
   const configuredList = (Array.isArray(configured) ? configured : configured ? [configured] : [])
     .map((p) => p.trim())
@@ -151,12 +203,6 @@ export function locateInstall(
       candidate = buildInstall(path.dirname(path.dirname(path.dirname(path.dirname(root)))), root);
     }
     if (!candidate) continue;
-    // opts.expectFlavor (forced mrvc.mrsVersion): a candidate of the OTHER
-    // generation is skipped — never silently used. An unmarked install
-    // ("unknown") passes: its generation can not be disproven.
-    if (opts.expectFlavor && candidate.flavor !== 'unknown' && candidate.flavor !== opts.expectFlavor) {
-      continue;
-    }
     return candidate;
   }
   return null;
@@ -230,122 +276,133 @@ function loadToolchains(componentsDir: string): ToolchainInfo[] {
 }
 
 /**
- * How the two install settings (mrvc.mrs2InstallPath / mrvc.mrs3InstallPath)
- * combine into ONE active installation:
- *   mrvc.mrsVersion = mrs2 / mrs3 -> only that GENERATION is considered
- *   auto -> the MRS3 generation wins when it is configured (a deliberate
- *           switch; the MRS3 field is empty by default), otherwise MRS2.
- *           mrvc.mrs2InstallPath has a non-empty default, so its field can
- *           not signal intent — the MRS3 field, being empty by default, can.
- *           A broken MRS3 path falls back to MRS2 (fellBackFromMrs3).
+ * How the two install settings (mrvc.mrs2InstallPath / mrvc.mrs3InstallPath,
+ * both carrying a C:\MounRiver\... default) combine into ONE active
+ * installation.
  *
- * The pin follows the RESOLVED FLAVOUR, not the field slot: with the two
- * values swapped between the fields (a plausible mis-edit), `version: mrs2`
- * must still end up on the MRS2 installation, not on whichever install the
- * "mrs2" slot happens to hold. A field whose value names the other generation
- * is reported (mismatchedFields / swappedFields) so the caller can offer to
- * fix the settings.
+ * Startup criterion: each field is VALIDATED for its own generation — the
+ * directory must exist, be a MounRiver installation, declare that generation
+ * and ship its launcher program ("MounRiver Studio <N>.exe"). At least one
+ * field must pass, otherwise `install` is null and the caller must not start
+ * (the gate asks the user for a correct path); an installation found at a
+ * conventional location is only OFFERED for one-click adoption (`detected`),
+ * never used silently.
+ *
+ * Among the valid fields `mrvc.mrsVersion` picks: mrs2 / mrs3 pin the
+ * generation, auto prefers MRS3 (the newer one). A pin whose generation is not
+ * valid falls back to the other VALID field and is reported (pinnedFellBack),
+ * so the user always knows which installation is active.
  */
 export interface InstallSelection {
   install: MrsInstall | null;
   requested: 'auto' | 'mrs2' | 'mrs3';
-  /** auto only: mrvc.mrs3InstallPath was set but did not resolve */
-  fellBackFromMrs3: boolean;
-  /** auto only: both configured paths resolve AND neither names the other
-   *  generation (otherwise the caller reports the field error instead of
-   *  claiming "two installations are present") */
+  /** every non-empty field, validated for its own generation */
+  checks: InstallFieldCheck[];
+  /** the fields that FAILED validation (reported, never substituted) */
+  failedFields: InstallFieldCheck[];
+  /** both values are empty — nothing to check at all */
+  notConfigured: boolean;
+  /** both fields hold each other's generation (a plausible mis-edit): the gate
+   *  can offer to swap the two values */
+  swappedFields: boolean;
+  /** an installation found at a conventional location — offered for one-click
+   *  adoption when no field is valid, never used by itself (null as soon as a
+   *  field passes validation) */
+  detected: MrsInstall | null;
+  /** the preferred generation is not valid and `install` is the other one */
+  pinnedFellBack?: 'mrs2' | 'mrs3';
+  /** auto only: both fields valid */
   bothValid: boolean;
   mrs2Label: string;
   mrs3Label: string;
-  /** what each non-empty field resolves to (undefined = empty or invalid) */
+  /** what each non-empty field resolves to (undefined = empty or unusable) */
   mrs2FieldFlavor?: MrsFlavor;
   mrs3FieldFlavor?: MrsFlavor;
-  /** every field whose value names the OTHER generation — a mis-edit that is
-   *  reported whether or not the other field is filled (both entries = the
-   *  two values are swapped) */
-  mismatchedFields: ('mrs2InstallPath' | 'mrs3InstallPath')[];
-  /** both fields set and holding each other's value */
-  swappedFields: boolean;
-  /** the pinned generation (mrvc.mrsVersion = mrs2/mrs3) has NO valid
-   *  installation — `install` is null and the caller must report this; a
-   *  pinned generation never silently falls back to the other one */
-  forcedFlavorMissing?: 'mrs2' | 'mrs3';
-  /** canonical label of the pinned generation — NEVER what a field happens to
-   *  point at (a wrong-field value must not put the other name in the note) */
-  forcedFlavorMissingLabel?: string;
   /** the configured values (trimmed) — lets a "swap them" action write them
    *  back without re-reading the settings */
   mrs2PathValue: string;
   mrs3PathValue: string;
 }
 
-/** the policy that turns the three settings into one active install */
+/** one of the two settings, validated for its own generation */
+export interface InstallFieldCheck extends InstallPathCheck {
+  field: 'mrs2InstallPath' | 'mrs3InstallPath';
+  /** the value is the setting's schema default (nothing the user chose): its
+   *  failure is listed in the gate's diagnostics but not warned about at every
+   *  start — a user who only has MRS2 must not be nagged about the MRS3 default */
+  fromDefault?: boolean;
+}
+
+/** the policy that turns the settings into one active install */
 export function selectInstall(
-  opts: { mrs2Path?: string; mrs3Path?: string; version?: string },
+  opts: {
+    mrs2Path?: string;
+    mrs3Path?: string;
+    version?: string;
+    /** the settings' schema defaults: a value equal to its default is a
+     *  suggestion, not a user choice (its failure is not warned about) */
+    mrs2Default?: string;
+    mrs3Default?: string;
+  },
   defaults: { mrs2?: string[]; mrs3?: string[] } = {}
 ): InstallSelection {
-  const mrs2 = (opts.mrs2Path ?? '').trim();
-  const mrs3 = (opts.mrs3Path ?? '').trim();
+  const raw2 = (opts.mrs2Path ?? '').trim();
+  const raw3 = (opts.mrs3Path ?? '').trim();
   const requested: InstallSelection['requested'] =
     opts.version === 'mrs2' || opts.version === 'mrs3' ? opts.version : 'auto';
-  // the configured paths are validated independently, with NO default
-  // fallback: a field only counts when the path it names IS an install (a
-  // silent fallback to a conventional location is "field invalid", which is
-  // exactly what fellBackFromMrs3 / mismatchedFields must report)
-  const v2 = mrs2 ? locateInstall(mrs2, { defaults: [] }) : null;
-  const v3 = mrs3 ? locateInstall(mrs3, { defaults: [] }) : null;
+  const fromDefault = (value: string, dflt?: string): boolean => !!dflt && value === dflt.trim();
+  // each field is validated against its OWN generation, independently
+  const c2: InstallFieldCheck | null = raw2
+    ? { field: 'mrs2InstallPath', fromDefault: fromDefault(raw2, opts.mrs2Default), ...checkInstallPath(raw2, 'mrs2') }
+    : null;
+  const c3: InstallFieldCheck | null = raw3
+    ? { field: 'mrs3InstallPath', fromDefault: fromDefault(raw3, opts.mrs3Default), ...checkInstallPath(raw3, 'mrs3') }
+    : null;
+  const checks = [c2, c3].filter((c): c is InstallFieldCheck => !!c);
+  const failedFields = checks.filter((c) => !c.ok);
+  const notConfigured = checks.length === 0;
+  const v2 = c2?.ok ? c2.install! : null;
+  const v3 = c3?.ok ? c3.install! : null;
+  const swappedFields =
+    !!c2 && !!c3 && c2.problem === 'wrong-generation' && c3.problem === 'wrong-generation' &&
+    c2.foundFlavor === 'mrs3' && c3.foundFlavor === 'mrs2';
 
-  // flavour-first pick: the field named after the generation wins when its
-  // value is not the OTHER generation; otherwise the other field's install is
-  // taken if ITS flavour matches (mis-edited settings still land correctly)
-  const pick = (flavor: 'mrs2' | 'mrs3'): MrsInstall | null => {
-    const primary = flavor === 'mrs2' ? v2 : v3;
-    const secondary = flavor === 'mrs2' ? v3 : v2;
-    const otherFlavor: MrsFlavor = flavor === 'mrs2' ? 'mrs3' : 'mrs2';
-    if (primary && primary.flavor !== otherFlavor) return primary;
-    if (secondary && secondary.flavor === flavor) return secondary;
-    return null;
-  };
-
-  let install: MrsInstall | null;
+  let install: MrsInstall | null = null;
+  let pinnedFellBack: 'mrs2' | 'mrs3' | undefined;
   if (requested === 'mrs2') {
-    // forced: a candidate of the other generation is skipped, never used —
-    // a pinned MRS2 with only an MRS3 install resolves to null (reported
-    // through forcedFlavorMissing) instead of silently building with MRS3
-    install =
-      pick('mrs2') ?? locateInstall(mrs2, { prefer: 'mrs2', defaults: defaults.mrs2, expectFlavor: 'mrs2' });
+    // the pin is a preference: when its generation is not valid the other
+    // VALID field is used and reported
+    install = v2 ?? v3;
+    if (!v2 && v3) pinnedFellBack = 'mrs2';
   } else if (requested === 'mrs3') {
-    install =
-      pick('mrs3') ?? locateInstall(mrs3, { prefer: 'mrs3', defaults: defaults.mrs3, expectFlavor: 'mrs3' });
+    install = v3 ?? v2;
+    if (!v3 && v2) pinnedFellBack = 'mrs3';
   } else {
-    install =
-      pick('mrs3') ??
-      pick('mrs2') ??
-      locateInstall(undefined, {
+    install = v3 ?? v2; // auto prefers MRS3
+  }
+  // only when no field is valid: look at the conventional locations, merely to
+  // OFFER them (the caller asks the user before adopting)
+  const detected = install
+    ? null
+    : locateInstall(undefined, {
         defaults: [...(defaults.mrs2 ?? MRS2_DEFAULT_PATHS), ...(defaults.mrs3 ?? MRS3_DEFAULT_PATHS)],
       });
-  }
-  // per-field diagnosis, independent of what the OTHER field holds
-  const mismatchedFields: ('mrs2InstallPath' | 'mrs3InstallPath')[] = [];
-  if (v2 && v2.flavor === 'mrs3') mismatchedFields.push('mrs2InstallPath');
-  if (v3 && v3.flavor === 'mrs2') mismatchedFields.push('mrs3InstallPath');
-  const swappedFields = mismatchedFields.length === 2;
   return {
     install,
     requested,
-    fellBackFromMrs3: requested === 'auto' && !!mrs3 && !v3 && !!install,
-    bothValid: requested === 'auto' && !!v2 && !!v3 && mismatchedFields.length === 0,
+    checks,
+    failedFields,
+    notConfigured,
+    swappedFields,
+    detected,
+    pinnedFellBack,
+    bothValid: requested === 'auto' && !!v2 && !!v3,
     mrs2Label: v2?.label ?? flavorLabel('mrs2'),
     mrs3Label: v3?.label ?? flavorLabel('mrs3'),
-    mrs2FieldFlavor: v2?.flavor,
-    mrs3FieldFlavor: v3?.flavor,
-    mismatchedFields,
-    swappedFields,
-    forcedFlavorMissing: requested !== 'auto' && !install ? requested : undefined,
-    forcedFlavorMissingLabel:
-      requested !== 'auto' && !install ? flavorLabel(requested === 'mrs2' ? 'mrs2' : 'mrs3') : undefined,
-    mrs2PathValue: mrs2,
-    mrs3PathValue: mrs3,
+    mrs2FieldFlavor: v2?.flavor ?? c2?.foundFlavor,
+    mrs3FieldFlavor: v3?.flavor ?? c3?.foundFlavor,
+    mrs2PathValue: raw2,
+    mrs3PathValue: raw3,
   };
 }
 

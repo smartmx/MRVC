@@ -9,7 +9,7 @@ import { Cproject } from '../core/cproject';
 import { MrsProjectFile, readProjectFile, linkedFolderMap } from '../core/projectFile';
 import { migrateLegacyCppNature } from '../core/projectType';
 import { readTemplate, TemplateData } from '../core/templateFile';
-import { selectInstall, InstallSelection, flavorLabel, mergeCustomToolchains, CustomToolchain, MrsInstall, selectToolchain, ToolchainInfo } from '../core/toolchain';
+import { selectInstall, InstallSelection, InstallFieldCheck, flavorLabel, mergeCustomToolchains, CustomToolchain, MrsInstall, selectToolchain, ToolchainInfo } from '../core/toolchain';
 import { findProjectRoots } from '../core/discover';
 import { parseSolution } from '../core/solution';
 import { t } from '../core/i18n';
@@ -545,21 +545,34 @@ export function msg(e: unknown): string {
 /** one resolved install per settings combination — selectInstall re-reads
  *  product.json/manifests on every call and getInstall has ~14 callers */
 let installCache: { key: string; selection: InstallSelection } | null = null;
-/** install-choice notes fire once per window session */
+/** install-choice notes fire once per settings state */
 const installNotesShown = new Set<string>();
+/** startup gate: the config listener that starts the extension once the paths
+ *  are fixed, and the state the gate last prompted for */
+let gateListener: vscode.Disposable | null = null;
+let gatePrompted: string | null = null;
 /** legacy C++ nature repaired once per project per session */
 const cppNatureMigrated = new Set<string>();
 
 /** the active installation, per the mrvc.mrs2InstallPath /
- *  mrvc.mrs3InstallPath / mrvc.mrsVersion settings (policy in selectInstall) */
+ *  mrvc.mrs3InstallPath / mrvc.mrsVersion settings (policy in selectInstall).
+ *  Both fields carry a C:\MounRiver\... default, so the decision needs no
+ *  "did the user set it" bookkeeping: each value is validated as it is. */
 export function selectMrsInstall(): InstallSelection {
   const cfg = vscode.workspace.getConfiguration('mrvc');
   const mrs2 = cfg.get<string>('mrs2InstallPath', '');
   const mrs3 = cfg.get<string>('mrs3InstallPath', '');
   const version = cfg.get<string>('mrsVersion', 'auto');
-  const key = mrs2 + '|' + mrs3 + '|' + version;
+  // the schema defaults tell a suggestion apart from a user choice: a missing
+  // default path is normal (warn only about values the user picked)
+  const mrs2Default = cfg.inspect<string>('mrs2InstallPath')?.defaultValue;
+  const mrs3Default = cfg.inspect<string>('mrs3InstallPath')?.defaultValue;
+  const key = [mrs2, mrs3, version, mrs2Default, mrs3Default].join('|');
   if (installCache?.key !== key) {
-    installCache = { key, selection: selectInstall({ mrs2Path: mrs2, mrs3Path: mrs3, version }) };
+    installCache = {
+      key,
+      selection: selectInstall({ mrs2Path: mrs2, mrs3Path: mrs3, version, mrs2Default, mrs3Default }),
+    };
   }
   return installCache.selection;
 }
@@ -576,68 +589,113 @@ export function getInstall(): MrsInstall | null {
   return mergeCustomToolchains(selection.install, custom);
 }
 
-/** make the either-or install choice visible: a path in the wrong field, an
- *  invalid MRS3 path falling back to MRS2, and the both-valid case (with
- *  buttons that pin mrvc.mrsVersion) — each at most once per session */
+/** why a field failed validation, as a short phrase for the messages */
+function fieldProblemText(check: InstallFieldCheck): string {
+  switch (check.problem) {
+    case 'missing':
+      return t('installReasonMissing');
+    case 'not-install':
+      return t('installReasonNotInstall');
+    case 'wrong-generation':
+      return t('installReasonWrongGeneration', check.foundFlavor ? flavorLabel(check.foundFlavor as 'mrs2' | 'mrs3') : '?');
+    case 'no-launcher':
+      return t('installReasonNoLauncher', check.field === 'mrs3InstallPath' ? '3' : '2');
+    default:
+      return '';
+  }
+}
+
+/** `mrvc.mrs2InstallPath = <path> —— <reason>` per failed field */
+function failedFieldsText(sel: InstallSelection): string {
+  return sel.failedFields.map((f) => 'mrvc.' + f.field + ' = ' + f.path + ' — ' + fieldProblemText(f)).join('\n');
+}
+
+/** startup gate: without a VALID installation in one of the two fields the
+ *  extension does not start (no tree, no commands, no watchers). Returns true
+ *  when the caller may start; otherwise it reports the state — each checked
+ *  field with the reason it failed — and, as soon as the settings are fixed,
+ *  calls `onReady` itself, so no window reload is needed. A conventional-
+ *  location install (`detected`) is only OFFERED for one-click adoption. */
+export function installGate(context: vscode.ExtensionContext, onReady: () => void): boolean {
+  const sel = selectMrsInstall();
+  if (sel.install) return true;
+  const stateKey = JSON.stringify([sel.notConfigured, sel.checks, sel.detected?.root ?? '']);
+  if (gatePrompted !== stateKey) {
+    gatePrompted = stateKey;
+    const openBtn = t('installOpenSettings');
+    const useLabel = sel.detected ? t('installUseDetected', sel.detected.label) : undefined;
+    const swapLabel = sel.swappedFields ? t('installSwapValues') : undefined;
+    const flavorText = (field: 'mrs2InstallPath' | 'mrs3InstallPath'): string => {
+      const found = sel.checks.find((c) => c.field === field)?.foundFlavor;
+      return found && found !== 'unknown' ? flavorLabel(found as 'mrs2' | 'mrs3') : '?';
+    };
+    const body =
+      (sel.notConfigured ? t('installGateNotConfigured') : t('installGateNoInstall', failedFieldsText(sel))) +
+      // name the swapped case explicitly: the two values sit in each other's field
+      (sel.swappedFields ? ' ' + t('installSwappedFields', flavorText('mrs2InstallPath'), flavorText('mrs3InstallPath')) : '');
+    const buttons = [openBtn, ...(useLabel ? [useLabel] : []), ...(swapLabel ? [swapLabel] : [])];
+    void vscode.window.showErrorMessage(body, ...buttons).then((pick) => {
+      if (pick === openBtn) {
+        void vscode.commands.executeCommand('workbench.action.openSettings', 'mrvc.mrs2InstallPath mrvc.mrs3InstallPath');
+      } else if (useLabel && pick === useLabel && sel.detected) {
+        // adopt the detected install into the field of its own generation
+        void updateMrsSetting(sel.detected.flavor === 'mrs3' ? 'mrs3InstallPath' : 'mrs2InstallPath', sel.detected.root);
+      } else if (swapLabel && pick === swapLabel) {
+        // the two values sit in each other's field — exchange them
+        void updateMrsSetting('mrs2InstallPath', sel.mrs3PathValue);
+        void updateMrsSetting('mrs3InstallPath', sel.mrs2PathValue);
+      }
+    });
+  }
+  if (!gateListener) {
+    gateListener = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (
+        !e.affectsConfiguration('mrvc.mrs2InstallPath') &&
+        !e.affectsConfiguration('mrvc.mrs3InstallPath') &&
+        !e.affectsConfiguration('mrvc.mrsVersion')
+      ) {
+        return;
+      }
+      if (!selectMrsInstall().install) return;
+      gateListener?.dispose();
+      gateListener = null;
+      gatePrompted = null;
+      void vscode.window.showInformationMessage(t('installGateStarted'));
+      onReady();
+    });
+    context.subscriptions.push(gateListener);
+  }
+  return false;
+}
+
+/** make the install decision visible: a field that failed validation (the other
+ *  valid one is used), a preference that had to fall back, and the both-valid
+ *  case (with buttons that pin mrvc.mrsVersion) — each at most once per state */
 function announceInstallNotes(sel: InstallSelection): void {
   const once = (kind: string): boolean => {
     if (installNotesShown.has(kind)) return false;
     installNotesShown.add(kind);
     return true;
   };
-  // a pinned generation (mrvc.mrsVersion) that resolved to nothing: report it
-  // loudly — the active install is null on purpose (MRS2 must never be
-  // silently used when MRS3 is pinned, and vice versa)
-  if (sel.forcedFlavorMissing && once('forced')) {
-    const req = sel.forcedFlavorMissing;
-    // canonical generation label — the field's own resolved label would name
-    // the OTHER generation here (that is exactly why nothing was found)
-    const label = sel.forcedFlavorMissingLabel ?? flavorLabel(req);
-    const field = req === 'mrs2' ? 'mrvc.mrs2InstallPath' : 'mrvc.mrs3InstallPath';
-    const fieldFlavor = req === 'mrs2' ? sel.mrs2FieldFlavor : sel.mrs3FieldFlavor;
-    const otherLabel = req === 'mrs2' ? sel.mrs3Label : sel.mrs2Label;
-    let msg = t('installForcedMissing', label);
-    if (fieldFlavor && fieldFlavor !== 'unknown' && fieldFlavor !== req) {
-      msg += ' ' + t('installForcedWrongField', field, otherLabel);
-    }
-    void vscode.window.showWarningMessage(msg);
-    return;
-  }
   const install = sel.install;
+  // no active install at all: the startup gate owns that report
   if (!install) return;
-  if (sel.swappedFields && once('swapped')) {
-    const swapBtn = t('installSwapValues');
-    void vscode.window
-      .showWarningMessage(t('installSwappedFields', sel.mrs2Label, sel.mrs3Label), swapBtn)
-      .then((pick) => {
-        if (pick !== swapBtn) return;
-        void updateMrsSetting('mrs2InstallPath', sel.mrs3PathValue);
-        void updateMrsSetting('mrs3InstallPath', sel.mrs2PathValue);
-      });
-  }
-  // a field holding the other generation's path (the swapped case above is
-  // reported by the swap note instead)
-  if (!sel.swappedFields && sel.mismatchedFields.length && once('mismatch')) {
-    const from = sel.mismatchedFields[0];
-    const to = from === 'mrs2InstallPath' ? 'mrs3InstallPath' : 'mrs2InstallPath';
-    const label = from === 'mrs2InstallPath' ? sel.mrs2Label : sel.mrs3Label;
-    const targetValue = to === 'mrs2InstallPath' ? sel.mrs2PathValue : sel.mrs3PathValue;
-    const body = t('installWrongField', label, to);
-    if (targetValue) {
-      // the target field already holds something — advise, do not offer a
-      // move that would clobber it
-      void vscode.window.showWarningMessage(body);
-    } else {
-      const moveBtn = t('installMoveValue');
-      void vscode.window.showWarningMessage(body, moveBtn).then((pick) => {
-        if (pick !== moveBtn) return;
-        void updateMrsSetting(to, from === 'mrs2InstallPath' ? sel.mrs2PathValue : sel.mrs3PathValue);
-        void updateMrsSetting(from, '');
-      });
+  // fields that failed validation: named per field, never substituted. A field
+  // still holding the schema default is not warned about — a user who only has
+  // MRS2 must not be nagged about the MRS3 default path on every start
+  const worthReporting = sel.failedFields.filter((f) => !f.fromDefault);
+  if (worthReporting.length) {
+    if (once('failed:' + worthReporting.map((f) => f.field + '=' + f.path).join('|'))) {
+      void vscode.window.showWarningMessage(
+        worthReporting
+          .map((f) => t('installFieldIgnored', 'mrvc.' + f.field, f.path, fieldProblemText(f)))
+          .join('\n')
+      );
     }
   }
-  if (sel.fellBackFromMrs3 && once('fallback')) {
-    void vscode.window.showWarningMessage(t('installFallback', 'mrs3InstallPath', install.label));
+  // the preferred generation is not valid and the other VALID install is used
+  if (sel.pinnedFellBack && once('pinned-fell-back')) {
+    void vscode.window.showWarningMessage(t('installPinnedFallbackFrom', flavorLabel(sel.pinnedFellBack), install.label));
   }
   if (sel.bothValid && once('both')) {
     const pin3 = t('installPinMRS3');

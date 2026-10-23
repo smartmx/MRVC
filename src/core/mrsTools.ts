@@ -1,6 +1,6 @@
 /**
- * MRS2 Tools launcher paths (pure Node) — resolves the external tools that
- * MRS2's Tools menu starts. Two layouts, matching MRS2:
+ * MRS Tools launcher paths (pure Node) — resolves the external tools that
+ * MRS2/MRS3's Tools menu starts. Two layouts, matching MRS:
  *   component layout: <win32>/components/WCH/Others/<comp>/default/<exe>
  *   flat others layout: <win32>/others/<dir>/<exe>
  */
@@ -15,6 +15,10 @@ export interface MrsTools {
   uiDesigner: string;
   hexBinStudio: string;
   comTransmit: string;
+  /** MRS3-only: the WCH ToolKit launcher (component WCHToolKit). MRS2 ships no
+   *  such component, so this resolves to '' there — and the menu item, gated on
+   *  the ACTIVE installation being MRS3, is not offered at all. */
+  wchToolKit: string;
 }
 
 /** resolve every tool executable; empty string = that component is missing */
@@ -32,5 +36,6 @@ export function resolveMrsTools(install: MrsInstall): MrsTools {
     uiDesigner: tool(wchOthers, path.join('WCHGUIDesigner', 'default', 'WCHGUIDesigner.exe')),
     hexBinStudio: tool(othersFlat, path.join('HexBinStudio', 'HexBinStudio.exe')),
     comTransmit: tool(othersFlat, path.join('COMTransmit', 'COMTransmit.exe')),
+    wchToolKit: tool(wchOthers, path.join('WCHToolKit', 'default', 'WCHToolKit.exe')),
   };
 }

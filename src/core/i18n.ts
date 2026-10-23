@@ -72,27 +72,41 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     en: 'No MounRiver Studio installation found — point "mrvc.mrs2InstallPath" (MRS2) or "mrvc.mrs3InstallPath" (MRS3) at your install folder.',
     'zh-cn': '未找到 MounRiver Studio 安装——请在 "mrvc.mrs2InstallPath"（MRS2）或 "mrvc.mrs3InstallPath"（MRS3）中指定安装文件夹。',
   },
-  installWrongField: {
-    en: 'That path points at a {0} installation — it belongs in "mrvc.{1}", or clear this field.',
-    'zh-cn': '该路径指向的是 {0} 安装——应改填到 "mrvc.{1}"，或清空本字段。',
-  },
-  installMoveValue: { en: 'Move it', 'zh-cn': '更正设置' },
   installSwappedFields: {
     en: 'The two install paths look swapped — "mrvc.mrs2InstallPath" points at {0} and "mrvc.mrs3InstallPath" at {1}.',
     'zh-cn': '两个安装路径看起来填反了："mrvc.mrs2InstallPath" 指向 {0}，"mrvc.mrs3InstallPath" 指向 {1}。',
   },
   installSwapValues: { en: 'Swap them', 'zh-cn': '交换两者' },
-  installForcedMissing: {
-    en: '"mrvc.mrsVersion" pins {0}, but no {0} installation was found — fix the install paths or set mrvc.mrsVersion back to auto.',
-    'zh-cn': '"mrvc.mrsVersion" 固定为 {0}，但未找到 {0} 安装——请检查安装路径，或将 mrvc.mrsVersion 改回 auto。',
+  installGateNotConfigured: {
+    en: 'MRVC did not start: no MounRiver Studio installation path is configured. Set "mrvc.mrs2InstallPath" (MRS2) or "mrvc.mrs3InstallPath" (MRS3) to a valid installation folder.',
+    'zh-cn':
+      'MRVC 未启动：尚未配置 MounRiver Studio 安装路径。请把 "mrvc.mrs2InstallPath"（MRS2）或 "mrvc.mrs3InstallPath"（MRS3）设置为有效的安装文件夹。',
   },
-  installForcedWrongField: {
-    en: '"{0}" points at {1}.',
-    'zh-cn': '"{0}" 指向的是 {1}。',
+  installGateNoInstall: {
+    en: 'MRVC did not start: no valid MounRiver Studio installation was found. {0} Configure a correct install folder in "mrvc.mrs2InstallPath" (MRS2) or "mrvc.mrs3InstallPath" (MRS3).',
+    'zh-cn':
+      'MRVC 未启动：没有检测到有效的 MounRiver Studio 安装。{0} 请把 "mrvc.mrs2InstallPath"（MRS2）或 "mrvc.mrs3InstallPath"（MRS3）配置为正确的安装文件夹。',
   },
-  installFallback: {
-    en: '"mrvc.{0}" does not point to a valid installation — fell back to {1}.',
-    'zh-cn': '"mrvc.{0}" 指向的目录不是有效安装，已回退到 {1}。',
+  installReasonMissing: { en: 'the folder does not exist', 'zh-cn': '文件夹不存在' },
+  installReasonNotInstall: { en: 'not a MounRiver Studio installation', 'zh-cn': '不是 MounRiver 安装目录' },
+  installReasonWrongGeneration: { en: 'it is a {0} installation', 'zh-cn': '该目录是 {0} 的安装' },
+  installReasonNoLauncher: {
+    en: '"MounRiver Studio {0}.exe" is missing there',
+    'zh-cn': '该目录缺少启动程序 "MounRiver Studio {0}.exe"',
+  },
+  installOpenSettings: { en: 'Open settings', 'zh-cn': '打开设置' },
+  installUseDetected: { en: 'Use detected {0}', 'zh-cn': '使用检测到的 {0}' },
+  installGateStarted: {
+    en: 'Installation paths are valid now — MRVC started.',
+    'zh-cn': '安装路径已修正，MRVC 已启动。',
+  },
+  installFieldIgnored: {
+    en: '"{0}" = {1} is unusable ({2}) — ignored, the other installation is used.',
+    'zh-cn': '"{0}" = {1} 不可用（{2}），已忽略（改用另一个有效安装）。',
+  },
+  installPinnedFallbackFrom: {
+    en: '"mrvc.mrsVersion" prefers {0}, but no valid {0} installation exists — using {1} instead.',
+    'zh-cn': '"mrvc.mrsVersion" 偏好 {0}，但没有有效的 {0} 安装——已改用 {1}。',
   },
   installBothValid: {
     en: 'Two MounRiver installations are present — active: {0}. Pin one with "mrvc.mrsVersion".',

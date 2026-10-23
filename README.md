@@ -30,7 +30,7 @@
 | 外部链接文件夹 | 右键工程 → Add Linked Folder：同时更新 `.project`（linkedResources，支持 PARENT-N-PROJECT_LOC）与 `.cproject`（include 路径 + sourceEntries） |
 | **Sync Setting Across Projects** | 树标题栏 `…` 菜单打开专用页面（Properties 同款两级导航树）：123 个可同步编译开关（bool/enum）逐行带**同步选择框**（默认不勾）与值控件（值取自活动工程）；勾选后 Apply 批量写入全部工程（C++ 选项自动跳过 C 工程并计数、可取消、输出频道逐工程 [OK/FAIL] 汇总） |
 | **IntelliSense 自动配置** | 自动生成每个工程的编译数据库（`.vscode/mrvc/cc/`）并维护 `c_cpp_properties.json`——c 文件的宏定义/头文件路径随工程精确解析，无需手动配置 includePath；**工程树点选工程即切换分析上下文**（cpptools 多数据库数组，≥1.23.5） |
-| MRS Tools 工具集 | 树标题栏 `…` 菜单 → Tools 组（对齐 MRS2 Tools 菜单）：一键拉起 WCH-LinkUtility / WCH In-System Programmer (WchIspStudio) / WCH Touchkey Calibrate Tool / WCHGUIDesigner / HexBin Studio / Serial Port Debug Tool (COMTransmit)，分离进程启动 |
+| MRS Tools 工具集 | 树标题栏 `…` 菜单 → Tools 组（对齐 MRS2 Tools 菜单）：一键拉起 WCH-LinkUtility / WCH In-System Programmer (WchIspStudio) / WCH Touchkey Calibrate Tool / WCHGUIDesigner / HexBin Studio / Serial Port Debug Tool (COMTransmit)，分离进程启动；**当前生效的安装是 MRS3 时**（MRS2 没有该组件）额外多一项 **WCH 工具集（MRS3）** = WCHToolKit.exe |
 | WCH-LinkUtility | 命令面板 **Open WCH-LinkUtility**：直接拉起 MRS2 自带的 GUI 下载器（调试器模式切换/固件升级等深度操作）；也已归入 `…` 菜单 Tools 组 |
 | MRS 命令终端 | 预置工具链/make/OpenOCD 的 PATH |
 | 工具链选择 | `auto`（读 `.cproject` rvGcc/前缀）或强制 GCC8/GCC12/GCC15，均从 `sub_manifest.json` 动态解析 |
@@ -61,10 +61,14 @@ npm run package      # 生成 mrvc-<version>.vsix（@vscode/vsce，--no-dependen
 > MRVC 不自带工具链，而是复用 MounRiver 安装目录中的 RISC-V 工具链（GCC8/12/15）、make、
 > OpenOCD、WCH-LinkUtility 与芯片库组件——没有 MounRiver Studio 就无法编译/下载。
 
-1. 在设置里搜索 `mrvc`，填 **MRS2 Install Path**（`mrvc.mrs2InstallPath`，默认
-   `C:\MounRiver\MounRiver_Studio2`）**或** **MRS3 Install Path**（`mrvc.mrs3InstallPath`）——
-   两个路径**二选一，同一时刻只有一个安装生效**：MRS3 路径非空则使用 MRS3，否则使用 MRS2；
-   都装了可用 `mrvc.mrsVersion`（auto/mrs2/mrs3）显式固定。构建输出首行会打印当前生效的安装。
+1. 安装路径默认 `C:\MounRiver\MounRiver_Studio2`（**MRS2 Install Path**）与
+   `C:\MounRiver\MounRiver_Studio3`（**MRS3 Install Path**）。启动时**逐个校验**：目录存在、
+   是 MounRiver 安装、且代次正确（该代次的启动程序 `MounRiver Studio 2.exe` / `MounRiver Studio 3.exe`
+   就在安装根目录下）。**至少一个通过才启动**；两个都不通过则**扩展不启动**，弹出提示逐条列出
+   失败的字段与原因（不存在／不是安装／代次不符／缺启动程序），可用 **[打开设置]** 或
+   **[使用检测到的 <安装>]** 一键修正（填反了会给 **[交换两者]**）——修正后**自动启动，无需重载窗口**。
+   两个路径都有效时用 `mrvc.mrsVersion`（auto 优先 MRS3）选择偏好；所偏好的代次没有有效安装时
+   会改用另一个有效安装并明确提示。构建输出首行会打印当前生效的安装。
 2. 命令面板 `MRVC: Open MRS Project / Solution`：选 `.wvproj`/`.wvsln` 文件，或用 VSCode 自带的
    文件 → 打开文件夹 直接打开 EVT/EXAM 目录（扩展自动发现全部工程）。
 3. `F7` 编译；产物在工程 `obj/`（或 .cproject 配置名对应目录）。

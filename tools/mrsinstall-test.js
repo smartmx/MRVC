@@ -2,11 +2,11 @@
  * MRS2 / MRS3 installation selection tests (pure Node, hermetic).
  *
  * Covers: flavour probing (product.json mrsVersion / branding / launcher exe),
- * the two install settings (mrvc.mrs2InstallPath / mrvc.mrs3InstallPath)
- * combining into ONE active install under the mrvc.mrsVersion policy, the
- * win32-dir form of a configured path, and the "dead MRS3 path falls back to
- * MRS2" / "path sits in the wrong field" reports. Fake install trees live in
- * .scratch — the real installations are never touched.
+ * the start-up VALIDATION of the two install settings (exists / is an install /
+ * right generation / ships the launcher exe), the mrvc.mrsVersion preference
+ * over the valid fields (with the fallback report), and the win32-dir form of
+ * a configured path. Fake install trees live in .scratch — the real
+ * installations are never touched.
  */
 const fs = require('fs');
 const path = require('path');
@@ -17,7 +17,15 @@ const check = (name, cond) => {
   if (!cond) failures++;
 };
 
-const { detectFlavor, locateInstall, selectInstall, MRS2_DEFAULT_PATHS, MRS3_DEFAULT_PATHS } = require('../out/core/toolchain.js');
+const {
+  detectFlavor,
+  locateInstall,
+  checkInstallPath,
+  launcherFileName,
+  selectInstall,
+  MRS2_DEFAULT_PATHS,
+  MRS3_DEFAULT_PATHS,
+} = require('../out/core/toolchain.js');
 
 const ROOT = path.join(__dirname, '..', '.scratch', 'mrsinstall');
 fs.rmSync(ROOT, { recursive: true, force: true });
@@ -32,7 +40,8 @@ function inside(root, target) {
 }
 
 /** minimal fake install — locateInstall only probes the WCH manifest marker;
- *  the flavour markers are product.json / the launcher name */
+ *  the flavour markers are product.json / the launcher name. A usable install
+ *  also ships "MounRiver Studio <N>.exe" (the start-up validation requires it). */
 function fakeInstall(name, opts = {}) {
   const root = inside(ROOT, name);
   const win32 = inside(root, path.join('resources', 'app', 'resources', 'win32'));
@@ -45,13 +54,18 @@ function fakeInstall(name, opts = {}) {
       JSON.stringify({ nameShort: 'MounRiver Studio ' + gen, mrsVersion: gen + '.0.0' })
     );
   }
+  if (!opts.noLauncher) {
+    const gen = opts.flavor === 'mrs3' ? '3' : '2';
+    fs.writeFileSync(inside(root, launcherFileName(gen === '3' ? 'mrs3' : 'mrs2')), '');
+  }
   if (opts.launcher) fs.writeFileSync(inside(root, opts.launcher), '');
   return { root, win32 };
 }
 
 const inst2 = fakeInstall('fake-mrs2', { flavor: 'mrs2' });
 const inst3 = fakeInstall('fake-mrs3', { flavor: 'mrs3' });
-const instUnknown = fakeInstall('fake-unknown', { noProduct: true });
+const instUnknown = fakeInstall('fake-unknown', { noProduct: true, noLauncher: true });
+const instNoLauncher = fakeInstall('fake-noexe', { flavor: 'mrs2', noLauncher: true });
 const instLauncher = fakeInstall('fake-launcher2', { noProduct: true, launcher: 'MounRiver Studio 2.exe' });
 const MISSING = path.join(ROOT, 'does-not-exist');
 // hermetic defaults: the real C:\MounRiver\... paths must never leak in
@@ -92,112 +106,109 @@ const HERM = { mrs2: [], mrs3: [] };
   check('locate: win32 form keeps the flavour (probe runs on the real root)', !!win32Form && win32Form.flavor === 'mrs3');
 }
 
-// 3. selectInstall: the either-or policy over the two settings
+// 3a. checkInstallPath: the start-up criterion for ONE field
+{
+  const ok2 = checkInstallPath(inst2.root, 'mrs2');
+  check('check: a genuine MRS2 tree passes', ok2.ok === true && ok2.install.flavor === 'mrs2');
+  const ok3 = checkInstallPath(inst3.root, 'mrs3');
+  check('check: a genuine MRS3 tree passes', ok3.ok === true && ok3.install.flavor === 'mrs3');
+
+  const missing = checkInstallPath(MISSING, 'mrs2');
+  check('check: a non-existent folder -> "missing"', !missing.ok && missing.problem === 'missing');
+  const plainDir = checkInstallPath(ROOT, 'mrs2');
+  check('check: a folder that is not an install -> "not-install"', !plainDir.ok && plainDir.problem === 'not-install');
+
+  const wrong = checkInstallPath(inst3.root, 'mrs2');
+  check(
+    'check: an MRS3 tree in the MRS2 field -> "wrong-generation" + the found flavour',
+    !wrong.ok && wrong.problem === 'wrong-generation' && wrong.foundFlavor === 'mrs3'
+  );
+  const noExe = checkInstallPath(instNoLauncher.root, 'mrs2');
+  check('check: an install without the launcher exe -> "no-launcher"', !noExe.ok && noExe.problem === 'no-launcher');
+  const unmarked = checkInstallPath(instUnknown.root, 'mrs2');
+  check('check: an unmarked tree can not be verified -> rejected', !unmarked.ok && unmarked.problem === 'no-launcher');
+
+  const win32Form = checkInstallPath(inst2.win32, 'mrs2');
+  check('check: the win32-dir form is accepted too', win32Form.ok === true && win32Form.install.root === inst2.root);
+  const padded = checkInstallPath('  ' + inst2.root + '  ', 'mrs2');
+  check('check: the value is trimmed', padded.ok === true);
+}
+
+// 3b. selectInstall: validate both fields, then pick with the preference
 {
   const only2 = selectInstall({ mrs2Path: inst2.root }, HERM);
-  check('select: mrs2 only -> mrs2 active, nothing flagged', !!only2.install && only2.install.flavor === 'mrs2' && !only2.bothValid && !only2.fellBackFromMrs3);
+  check(
+    'select: a valid MRS2 path activates MRS2, nothing flagged',
+    !!only2.install && only2.install.flavor === 'mrs2' && !only2.bothValid &&
+      only2.failedFields.length === 0 && only2.pinnedFellBack === undefined && !only2.notConfigured
+  );
+  const only3 = selectInstall({ mrs3Path: inst3.root }, HERM);
+  check('select: a valid MRS3 path activates MRS3', !!only3.install && only3.install.flavor === 'mrs3');
 
+  // one field invalid, the other valid: the valid one is used and the failure
+  // is reported per field (never substituted)
+  const mixed = selectInstall({ mrs2Path: MISSING, mrs3Path: inst3.root }, HERM);
+  check('select: valid + invalid -> the valid install is used', !!mixed.install && mixed.install.flavor === 'mrs3');
+  check(
+    'select: ... the failing field and its reason are reported',
+    mixed.failedFields.length === 1 && mixed.failedFields[0].field === 'mrs2InstallPath' && mixed.failedFields[0].problem === 'missing'
+  );
+  check('select: ... and no adoption offer is made while a field resolves', mixed.detected === null);
+
+  // the preference (mrvc.mrsVersion) over the VALID fields
   const both = selectInstall({ mrs2Path: inst2.root, mrs3Path: inst3.root }, HERM);
-  check('select: both set (auto) -> MRS3 active', !!both.install && both.install.flavor === 'mrs3');
-  check('select: both set (auto) -> bothValid reported', both.bothValid === true);
-  check('select: both set (auto) -> labels for the note', both.mrs2Label === 'MounRiver Studio 2' && both.mrs3Label === 'MounRiver Studio 3');
-
+  check('select: auto with both valid -> MRS3 active', !!both.install && both.install.flavor === 'mrs3');
+  check('select: auto with both valid -> bothValid reported', both.bothValid === true);
+  check('select: auto with both valid -> labels for the note', both.mrs2Label === 'MounRiver Studio 2' && both.mrs3Label === 'MounRiver Studio 3');
   const pinned2 = selectInstall({ mrs2Path: inst2.root, mrs3Path: inst3.root, version: 'mrs2' }, HERM);
-  check('select: version=mrs2 ignores a valid MRS3 path', !!pinned2.install && pinned2.install.flavor === 'mrs2' && !pinned2.bothValid);
+  check('select: version=mrs2 -> MRS2 active', !!pinned2.install && pinned2.install.flavor === 'mrs2');
+  check('select: a satisfied preference never falls back', pinned2.pinnedFellBack === undefined && pinned2.bothValid === false);
+  const pinned3 = selectInstall({ mrs2Path: inst2.root, mrs3Path: inst3.root, version: 'mrs3' }, HERM);
+  check('select: version=mrs3 -> MRS3 active', !!pinned3.install && pinned3.install.flavor === 'mrs3');
 
-  const pinned3 = selectInstall({ mrs2Path: inst2.root, version: 'mrs3' }, { mrs2: [], mrs3: [inst3.root] });
-  check('select: version=mrs3 uses the MRS3 convention when its field is empty', !!pinned3.install && pinned3.install.flavor === 'mrs3');
-  check('select: a satisfied pin reports nothing missing', pinned3.forcedFlavorMissing === undefined && pinned3.forcedFlavorMissingLabel === undefined);
+  // the preference is not a wall: its generation invalid -> the other VALID one
+  const pref3by2 = selectInstall({ mrs2Path: inst2.root, mrs3Path: MISSING, version: 'mrs3' }, HERM);
+  check('select: version=mrs3 with an invalid MRS3 value -> MRS2 used', !!pref3by2.install && pref3by2.install.flavor === 'mrs2');
+  check('select: ... and the fallback is reported', pref3by2.pinnedFellBack === 'mrs3');
+  check('select: ... with the invalid field still reported', pref3by2.failedFields.length === 1 && pref3by2.failedFields[0].field === 'mrs3InstallPath');
+  const pref2by3 = selectInstall({ mrs2Path: MISSING, mrs3Path: inst3.root, version: 'mrs2' }, HERM);
+  check('select: version=mrs2 with an invalid MRS2 value -> MRS3 used', !!pref2by3.install && pref2by3.install.flavor === 'mrs3' && pref2by3.pinnedFellBack === 'mrs2');
 
-  const fallback = selectInstall({ mrs2Path: inst2.root, mrs3Path: MISSING }, HERM);
-  check('select: dead MRS3 path falls back to MRS2', !!fallback.install && fallback.install.flavor === 'mrs2');
-  check('select: the fallback is reported, not "both valid"', fallback.fellBackFromMrs3 === true && fallback.bothValid === false);
-
-  const mismatch = selectInstall({ mrs2Path: inst3.root }, HERM);
-  check('select: an MRS3 dir in the MRS2 field still resolves (flavour wins)', !!mismatch.install && mismatch.install.flavor === 'mrs3');
-  check('select: ... and reports the mismatched field', mismatch.mismatchedFields.join() === 'mrs2InstallPath');
-
-  const mismatch2 = selectInstall({ mrs3Path: inst2.root }, HERM);
-  check('select: an MRS2 dir in the MRS3 field -> mrs3InstallPath flagged', mismatch2.mismatchedFields.join() === 'mrs3InstallPath');
-
-  // round-9 P3: the diagnosis must fire even when BOTH fields are filled —
-  // "two installations present" would be wrong (both point at MRS2)
-  const misFilled = selectInstall({ mrs2Path: inst2.root, mrs3Path: inst2.root }, HERM);
-  check('select: MRS2 value in the MRS3 field -> mismatched even while both filled', misFilled.mismatchedFields.join() === 'mrs3InstallPath');
-  check('select: ... and the misleading "two installations" note is suppressed', misFilled.bothValid === false);
-  check('select: ... the active install is still the MRS2 one', !!misFilled.install && misFilled.install.flavor === 'mrs2');
-
-  // values swapped between the two fields (a plausible mis-edit): the pin and
-  // auto must follow the RESOLVED FLAVOUR, not the field slot (round-8 P2)
+  // both values swapped between the fields: nothing is valid, the gate can
+  // offer to exchange them
   const swapped = selectInstall({ mrs2Path: inst3.root, mrs3Path: inst2.root }, HERM);
-  check('select: swapped fields -> both flagged, swap reported', swapped.swappedFields === true && swapped.mismatchedFields.length === 2);
-  check('select: swapped fields -> no "two installations" note', swapped.bothValid === false);
-  check('select: swapped fields (auto) -> MRS3 flavour active', !!swapped.install && swapped.install.flavor === 'mrs3');
-  const swappedPin2 = selectInstall({ mrs2Path: inst3.root, mrs3Path: inst2.root, version: 'mrs2' }, HERM);
-  check('select: swapped + version=mrs2 -> MRS2 installation (flavour, not slot)', !!swappedPin2.install && swappedPin2.install.flavor === 'mrs2');
-  const swappedPin3 = selectInstall({ mrs2Path: inst3.root, mrs3Path: inst2.root, version: 'mrs3' }, HERM);
-  check(
-    'select: swapped + version=mrs3 -> MRS3 installation, nothing missing',
-    !!swappedPin3.install && swappedPin3.install.flavor === 'mrs3' && swappedPin3.forcedFlavorMissing === undefined
-  );
+  check('select: swapped values -> no active install', swapped.install === null);
+  check('select: swapped values -> both fields flagged wrong-generation', swapped.failedFields.length === 2);
+  check('select: swapped values -> swappedFields set for the swap action', swapped.swappedFields === true);
+  check('select: swapped values -> path values exposed for that action', swapped.mrs2PathValue === inst3.root && swapped.mrs3PathValue === inst2.root);
+  // one field holding the other generation is NOT "swapped" (nothing to swap)
+  const wrongOne = selectInstall({ mrs2Path: inst3.root }, HERM);
+  check('select: a single wrong-generation value is not a swap', wrongOne.swappedFields === false && wrongOne.install === null);
 
-  // forced generation must NEVER come from the other generation's install
-  // (round-8 follow-up: mrsVersion=mrs3 + an MRS2 value in the MRS3 field)
-  const forcedWrong3 = selectInstall({ mrs3Path: inst2.root, version: 'mrs3' }, HERM);
-  check('select: version=mrs3 with only an MRS2 path -> NO install (never silent)', forcedWrong3.install === null);
-  check('select: ... forcedFlavorMissing reported', forcedWrong3.forcedFlavorMissing === 'mrs3');
-  check('select: ... the field flavour is still reported for the note', forcedWrong3.mrs3FieldFlavor === 'mrs2');
-  // round-9 P3: the note must name the PINNED generation — the field's own
-  // label here is "MounRiver Studio 2" and contradicted the pinned MRS3
-  check(
-    'select: ... the note names the pinned generation, not the field value',
-    forcedWrong3.forcedFlavorMissingLabel === 'MounRiver Studio 3'
-  );
-
-  const forcedWrong2 = selectInstall({ mrs2Path: inst3.root, version: 'mrs2' }, HERM);
-  check(
-    'select: version=mrs2 with only an MRS3 path -> NO install',
-    forcedWrong2.install === null && forcedWrong2.forcedFlavorMissing === 'mrs2'
-  );
-  check(
-    'select: ... pinned label is MRS2 even though the field points at MRS3',
-    forcedWrong2.forcedFlavorMissingLabel === 'MounRiver Studio 2'
-  );
-
-  // the pinned generation may still be rescued by its own CONVENTIONAL location
-  const forcedRescued = selectInstall({ mrs2Path: inst3.root, version: 'mrs2' }, { mrs2: [inst2.root], mrs3: [] });
-  check('select: version=mrs2 skips the MRS3 value and uses the MRS2 convention', !!forcedRescued.install && forcedRescued.install.flavor === 'mrs2');
-  check('select: ... with nothing reported missing', forcedRescued.forcedFlavorMissing === undefined);
-
-  // an unmarked install can not be disproven -> a pinned generation accepts it
-  const forcedUnknown = selectInstall({ mrs2Path: instUnknown.root, version: 'mrs2' }, HERM);
-  check('select: version=mrs2 accepts an unmarked install in its own field', !!forcedUnknown.install && forcedUnknown.install.flavor === 'unknown');
-
-  // auto stays permissive: it reports what it picked, it does not error out
-  const autoWrong = selectInstall({ mrs3Path: inst2.root }, HERM);
-  check('select: auto with an MRS2 value in the MRS3 field uses it (no pin, no error)', !!autoWrong.install && autoWrong.install.flavor === 'mrs2' && autoWrong.forcedFlavorMissing === undefined);
-  check('select: swapped -> path values exposed for the swap action', swapped.mrs2PathValue === inst3.root && swapped.mrs3PathValue === inst2.root);
-
-  const normal = selectInstall({ mrs2Path: inst2.root, mrs3Path: inst3.root }, HERM);
-  check('select: normal both-filled -> no swap, no mismatch', normal.swappedFields === false && normal.mismatchedFields.length === 0);
-  check('select: normal both-filled -> two installations note allowed', normal.bothValid === true);
-  check('select: field flavours reported for diagnostics', normal.mrs2FieldFlavor === 'mrs2' && normal.mrs3FieldFlavor === 'mrs3');
-
-  // pinned generation finds a misplaced value even when its own field is empty
-  const pinnedFromOtherField = selectInstall({ mrs3Path: inst2.root, version: 'mrs2' }, HERM);
-  check('select: version=mrs2 finds an MRS2 value sitting in the MRS3 field', !!pinnedFromOtherField.install && pinnedFromOtherField.install.flavor === 'mrs2');
-
+  // nothing valid: the conventional locations are only OFFERED
   const none = selectInstall({ mrs2Path: MISSING, mrs3Path: MISSING }, HERM);
   check('select: nothing valid -> no active install', none.install === null);
+  check('select: nothing valid -> both fields reported', none.failedFields.length === 2 && none.notConfigured === false);
+  check('select: nothing valid + no convention -> nothing to offer', none.detected === null);
 
-  const defaulted = selectInstall({}, { mrs2: [MISSING], mrs3: [inst3.root] });
-  check('select: conventional MRS3 location found when nothing is configured', !!defaulted.install && defaulted.install.flavor === 'mrs3');
+  const offered = selectInstall({ mrs2Path: MISSING, mrs3Path: MISSING }, { mrs2: [MISSING], mrs3: [inst3.root] });
+  check('select: ... the MRS3 convention is only OFFERED (detected)', offered.install === null && !!offered.detected && offered.detected.flavor === 'mrs3');
+  const offered2 = selectInstall({ mrs2Path: MISSING, mrs3Path: MISSING }, { mrs2: [inst2.root], mrs3: [inst3.root] });
+  check('select: ... the scan keeps MRS2 first for the offer', !!offered2.detected && offered2.detected.flavor === 'mrs2');
 
-  const mrs2First = selectInstall({}, { mrs2: [inst2.root], mrs3: [inst3.root] });
-  check('select: auto keeps MRS2 when nothing is configured (no silent switch)', !!mrs2First.install && mrs2First.install.flavor === 'mrs2');
+  const notConf = selectInstall({}, { mrs2: [inst2.root], mrs3: [] });
+  check('select: empty values -> notConfigured', notConf.install === null && notConf.notConfigured === true && notConf.failedFields.length === 0);
+  check('select: ... with the found install offered', !!notConf.detected && notConf.detected.root === inst2.root);
 
   const trimmed = selectInstall({ mrs2Path: '  ' + inst2.root + '  ' }, HERM);
   check('select: configured paths are trimmed', !!trimmed.install && trimmed.install.flavor === 'mrs2');
+
+  // a value equal to the setting's schema default is a suggestion, not a user
+  // choice: its failure is flagged (fromDefault) so the caller can stay quiet
+  const byDefault = selectInstall({ mrs2Path: MISSING, mrs2Default: MISSING, mrs3Path: inst3.root }, HERM);
+  check('select: a failing schema-default value is marked as such', byDefault.failedFields[0].fromDefault === true);
+  const userValue = selectInstall({ mrs2Path: MISSING, mrs2Default: inst2.root, mrs3Path: inst3.root }, HERM);
+  check('select: a user value that fails is not a default', userValue.failedFields[0].fromDefault === false);
 
   check(
     'defaults: conventional lists name Studio2 / Studio3',
