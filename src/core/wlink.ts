@@ -1,17 +1,27 @@
 /**
  * WCH-Link operations bridge (pure Node).
  *
- * MRS2 drives the Download Settings hardware operations (read protection,
- * chip ID query, memory assign, ...) through in-process FFI on its
- * McuCompilerDll.dll. MRVC runs inside a VSCode extension host which cannot
- * load that DLL in-process, so each operation is generated as a small
- * PowerShell script (Add-Type P/Invoke, same stdcall exports MRS2 binds with
- * koffi) and executed by an out-of-process Windows PowerShell. Results come
- * back as one JSON line.
+ * MRS drives the Download Settings hardware operations (read protection,
+ * chip ID query, memory assign, ...) through FFI into the CommunicationLib
+ * native library — same MRSFunc_* / McuCompiler_* export family on every
+ * OS: Windows "McuCompilerDll.dll", Linux "libmcuupdate.so", macOS
+ * "libmcuupdate.dylib". MRS's own mrs-vscode extension binds them
+ * IN-PROCESS with koffi; MRVC mirrors that mechanism per platform:
  *
- * The host bitness must MATCH the DLL: MRS2 ships a 32-bit McuCompilerDll
- * (32-bit SysWOW64 PowerShell), the MRS3 beta a 64-bit one (64-bit
- * PowerShell) — same 106 exports, only the machine type differs.
+ *   Windows  a generated PowerShell script (Add-Type P/Invoke) run
+ *            out-of-process — the 0.2.x path, byte-identical. Out of
+ *            process because MRS2's DLL is 32-bit and cannot load into the
+ *            64-bit extension host at all.
+ *   POSIX    in-process koffi FFI (koffi ships as a real dependency with
+ *            linux_x64 + darwin_arm64 prebuilds; MRS3's POSIX IDEs are
+ *            x64/arm64 respectively). Native-width libraries load fine
+ *            in-process — exactly what MRS itself does.
+ *
+ * All 9 exports the ops need exist under the same names in the Linux/macOS
+ * libraries (verified from libmcuupdate.so's .dynstr: QueryRProtect,
+ * EnableRProtect, DisableRProtect, DisableDbgInterface, GetLinkedMCUID,
+ * GetMemType, SetMemType, ClearCodeFlash as MRSFunc_, SetTargetChip as
+ * McuCompiler_), so the signature table is shared verbatim.
  */
 import * as fs from 'fs';
 import * as os from 'os';
@@ -64,9 +74,25 @@ export interface CommLib {
   usbDll: string;
 }
 
-/** CommunicationLib/default + load.wcfg -> { mcudll, libdll } */
-export function resolveCommLib(install: MrsInstall): CommLib | null {
-  const dir = path.join(install.resourcesWin32, 'components', 'WCH', 'Others', 'CommunicationLib', 'default');
+/** the CommunicationLib native library file name for the host OS — the same
+ *  MRSFunc_* export family ships as PE/SO/dylib (platform param is a test
+ *  seam: resolvers are exercised for linux/darwin shapes on any host) */
+export function mcuLibFileName(platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'darwin') return 'libmcuupdate.dylib';
+  if (platform === 'win32') return 'McuCompilerDll.dll';
+  return 'libmcuupdate.so';
+}
+
+/** CommunicationLib/default + load.wcfg -> { mcudll, libdll }. Windows reads
+ *  MRS's load.wcfg (mcudll=/libdll= entries); POSIX ships no load.wcfg — the
+ *  libmcuupdate.* name is fixed by the MRS packages, so it resolves directly. */
+export function resolveCommLib(install: MrsInstall, platform: NodeJS.Platform = process.platform): CommLib | null {
+  const dir = path.join(install.resourcesDir, 'components', 'WCH', 'Others', 'CommunicationLib', 'default');
+  if (platform !== 'win32') {
+    const mcu = path.join(dir, mcuLibFileName(platform));
+    if (!fs.existsSync(mcu)) return null;
+    return { dir, mcuDll: mcu, usbDll: '' };
+  }
   const wcfg = path.join(dir, 'load.wcfg');
   try {
     let mcuDll = '';
@@ -80,6 +106,20 @@ export function resolveCommLib(install: MrsInstall): CommLib | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The koffi surface MRVC uses. koffi ships as a real dependency (static
+ * `require('koffi')` — the user's Mimosa rule forbids runtime-path requires)
+ * with linux_x64 + darwin_arm64 prebuilds packaged for the POSIX bridge;
+ * MRS's own extension binds the same library family in-process with koffi,
+ * so this mirrors the vendor mechanism exactly.
+ */
+interface KoffiLib {
+  func(name: string, retType: string, argTypes: string[]): (...args: number[]) => number;
+}
+interface KoffiLike {
+  load(path: string): KoffiLib;
 }
 
 export type WlinkOp =
@@ -202,8 +242,144 @@ export interface WlinkResult {
   error?: string;
 }
 
-/** run one operation through the bitness-matched PowerShell bridge */
+/** koffi.load with a sibling-preload fallback: the CommunicationLib directory
+ *  holds libusb/hidapi next to libmcuupdate, and plain dlopen does not search
+ *  the loading library's own directory for DT_NEEDED entries */
+function loadMcuLib(koffi: KoffiLike, libPath: string): KoffiLib {
+  try {
+    return koffi.load(libPath);
+  } catch (first) {
+    const dir = path.dirname(libPath);
+    const base = path.basename(libPath);
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (f === base || !f.startsWith('lib')) continue;
+        if (!f.includes('.so') && !f.includes('.dylib')) continue;
+        try {
+          koffi.load(path.join(dir, f));
+        } catch {
+          // a sibling that fails to load may simply not be needed — skip
+        }
+      }
+      return koffi.load(libPath);
+    } catch (retry) {
+      // report the ORIGINAL failure (the retry's dependency-chain noise hides it)
+      throw first instanceof Error ? first : new Error(String(first));
+    }
+  }
+}
+
+/**
+ * POSIX transport: IN-PROCESS koffi FFI — the same mechanism MRS's own
+ * mrs-vscode extension uses, against the same CommunicationLib library
+ * (libmcuupdate.so/.dylib). Sync FFI calls; the 200 ms settle gap between
+ * Set and Query for the RPT toggles is the one await. `koffiModule` is a
+ * test seam: undefined = the real require('koffi'), null = simulate a
+ * missing dependency, an object = a scripted fake.
+ */
+export async function runWlinkOpPosix(
+  install: MrsInstall,
+  op: WlinkOp,
+  args: WlinkArgs,
+  koffiModule?: KoffiLike | null,
+  /** test seam: the host the POSIX path runs on (production = process.platform;
+   *  tests on a Windows machine pass 'linux' to exercise the POSIX resolvers) */
+  platform: NodeJS.Platform = process.platform
+): Promise<WlinkResult> {
+  const commLib = resolveCommLib(install, platform);
+  if (!commLib) {
+    return {
+      op,
+      ok: false,
+      error: `WCH CommunicationLib (${mcuLibFileName(platform)}) not found under the MounRiver installation`,
+    };
+  }
+  let koffi: KoffiLike;
+  if (koffiModule !== undefined) {
+    if (!koffiModule) {
+      return { op, ok: false, error: 'the koffi dependency is missing from this MRVC installation' };
+    }
+    koffi = koffiModule;
+  } else {
+    // two static literals: the dev repo resolves koffi from node_modules, the
+    // installed extension from the shipped vendor-ffi copy (vsce cannot
+    // re-include a negated node_modules subtree, so the runtime lives there)
+    try {
+      koffi = require('koffi') as KoffiLike;
+    } catch {
+      try {
+        koffi = require('../vendor-ffi/node_modules/koffi') as KoffiLike;
+      } catch {
+        return { op, ok: false, error: 'the koffi dependency is missing from this MRVC installation' };
+      }
+    }
+  }
+  try {
+    const lib = loadMcuLib(koffi, commLib.mcuDll);
+    const bind = (name: string, n: number) => lib.func(name, 'int', Array(n).fill('int'));
+    const SetTargetChip = bind('McuCompiler_SetTargetChip', 2);
+    const QueryRProtect = bind('MRSFunc_QueryRProtect', 2);
+    const EnableRProtect = bind('MRSFunc_EnableRProtect', 2);
+    const DisableRProtect = bind('MRSFunc_DisableRProtect', 2);
+    const DisableDbgInterface = bind('MRSFunc_DisableDbgInterface', 2);
+    const GetLinkedMCUID = bind('MRSFunc_GetLinkedMCUID', 0);
+    const GetMemType = bind('MRSFunc_GetMemType', 2);
+    const SetMemType = bind('MRSFunc_SetMemType', 3);
+    const ClearCodeFlash = bind('MRSFunc_ClearCodeFlash', 3);
+    // same call sequence as the Windows P/Invoke script: SetTargetChip first
+    // for everything except the raw chip-id query
+    if (op !== 'queryMcuId') SetTargetChip(args.chipId, args.dbgMode);
+    let ok = false;
+    let result: number | undefined;
+    switch (op) {
+      case 'queryMcuId':
+        result = GetLinkedMCUID();
+        break;
+      case 'queryRpt':
+        result = QueryRProtect(args.chipId, args.clkSpeed);
+        break;
+      case 'enableRpt':
+        EnableRProtect(args.chipId, args.clkSpeed);
+        await new Promise((res) => setTimeout(res, 200));
+        result = QueryRProtect(args.chipId, args.clkSpeed);
+        ok = result === 3;
+        break;
+      case 'disableRpt':
+        DisableRProtect(args.chipId, args.clkSpeed);
+        await new Promise((res) => setTimeout(res, 200));
+        result = QueryRProtect(args.chipId, args.clkSpeed);
+        ok = result === 4;
+        break;
+      case 'disableDbg':
+        result = DisableDbgInterface(args.chipId, args.clkSpeed);
+        break;
+      case 'clearCodeFlash':
+        result = ClearCodeFlash(args.chipId, args.clkSpeed, args.eraseMode ?? 0);
+        ok = result === 0;
+        break;
+      case 'getMemType':
+        result = GetMemType(args.chipId, args.clkSpeed);
+        break;
+      case 'setMemType':
+        result = SetMemType(args.chipId, args.clkSpeed, args.memVal ?? 0);
+        ok = result === 0;
+        break;
+      default:
+        throw new Error(`unknown wlink op: ${op}`);
+    }
+    return { op, ok, result };
+  } catch (e) {
+    return { op, ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** run one operation through the platform bridge: Windows PowerShell P/Invoke
+ *  (the 32-bit MRS2 DLL cannot load into the 64-bit extension host), POSIX
+ *  in-process koffi against the install's own libmcuupdate */
 export function runWlinkOp(install: MrsInstall, op: WlinkOp, args: WlinkArgs): Promise<WlinkResult> {
+  if (process.platform !== 'win32') {
+    return runWlinkOpPosix(install, op, args);
+  }
   const commLib = resolveCommLib(install);
   if (!commLib || !fs.existsSync(commLib.mcuDll)) {
     return Promise.resolve({ op, ok: false, error: 'WCH CommunicationLib (McuCompilerDll.dll) not found under the MounRiver installation' });

@@ -12,7 +12,7 @@ const check = (name, cond) => {
   if (!cond) failures++;
 };
 
-const { sdkRoot, scanTemplates, createProjectFromTemplate, normalizeParentDirInput } = require('../out/core/newProject.js');
+const { sdkRoot, scanTemplates, createProjectFromTemplate, normalizeParentDirInput, extractZipArchivePosix } = require('../out/core/newProject.js');
 const { chipDbRoot } = require('../out/core/chipdb.js');
 const { Cproject } = require('../out/core/cproject.js');
 const { scanSources } = require('../out/core/scan.js');
@@ -153,6 +153,60 @@ check('normalize: doubled separator -> root', normalizeParentDirInput('C:\\\\') 
 check('normalize: plain path trimmed', normalizeParentDirInput('F:/MyProjects/') === 'F:/MyProjects');
 check('normalize: plain path untouched', normalizeParentDirInput('F:\\MyProjects') === 'F:\\MyProjects');
 check('normalize: whitespace trimmed', normalizeParentDirInput('  F:\\x  ') === 'F:\\x');
+
+// 7. POSIX template extraction (extractZipArchivePosix) — run the real
+// system unzip when one exists; the fallback-to-bsdtar / no-tool paths
+// degrade accordingly. The zip fixture is built with PowerShell (host is
+// win32) so the bytes are a genuine zip either way.
+{
+  const PZ = path.join(WS, 'posix-zip');
+  fs.mkdirSync(path.join(PZ, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(PZ, 'src', 'main.c'), 'int main(void) { return 0; }\n');
+  fs.writeFileSync(path.join(PZ, 'README'), 'fixture\n');
+  const zip = path.join(WS, 'posix-fixture.zip');
+  // python zipfile writes forward-slash entries AND keeps arcnames (the CLI
+  // form -m zipfile -c stores basenames only; PowerShell's Compress-Archive
+  // writes backslash ones, which Info-ZIP unzip refuses — neither is a shape
+  // any real POSIX-side template zip would have)
+  const pySrc = `import zipfile; zf = zipfile.ZipFile(${JSON.stringify(zip)}, 'w'); zf.write('src/main.c', 'src/main.c'); zf.write('README', 'README'); zf.close()`;
+  require('child_process').execFileSync('python', ['-c', pySrc], { cwd: PZ, stdio: 'pipe', timeout: 60000 });
+  const hasUnzip = (() => {
+    try {
+      require('child_process').execFileSync('unzip', ['-v'], { stdio: 'pipe' });
+      return true;
+    } catch (e) {
+      return (e && e.code) !== 'ENOENT';
+    }
+  })();
+  const dest = path.join(WS, 'posix-out');
+  fs.mkdirSync(dest, { recursive: true });
+  if (hasUnzip) {
+    extractZipArchivePosix(zip, dest);
+    check('posix extract: unzip run extracts the zip (main.c present)', fs.existsSync(path.join(dest, 'src', 'main.c')) && fs.readFileSync(path.join(dest, 'README'), 'utf-8') === 'fixture\n');
+  } else {
+    let threw = '';
+    try {
+      extractZipArchivePosix(zip, dest);
+    } catch (e) {
+      threw = e instanceof Error ? e.message : String(e);
+    }
+    check('posix extract: no unzip tool -> clear guidance error', threw.includes('no unzip tool available'));
+  }
+  // a broken zip must fail loudly (unzip exits non-zero, not ENOENT)
+  const broken = path.join(WS, 'broken-posix.zip');
+  fs.writeFileSync(broken, 'PK\x03\x04 not really a zip');
+  const bdest = path.join(WS, 'posix-broken');
+  fs.mkdirSync(bdest, { recursive: true });
+  let brokenMsg = '';
+  if (hasUnzip) {
+    try {
+      extractZipArchivePosix(broken, bdest);
+    } catch (e) {
+      brokenMsg = e instanceof Error ? e.message : String(e);
+    }
+    check(`posix extract: a broken zip fails loudly (${JSON.stringify(brokenMsg.slice(0, 40))})`, brokenMsg.includes('unzip failed'));
+  }
+}
 
 fs.rmSync(WS, { recursive: true, force: true });
 console.log(failures ? `\n${failures} FAILURES` : '\nall newproject tests passed');

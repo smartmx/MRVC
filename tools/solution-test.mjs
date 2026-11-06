@@ -14,7 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const outCore = path.join(here, '..', 'out', 'core');
 
 const { findSolutionFiles, findProjectRoots } = require(path.join(outCore, 'discover.js'));
-const { parseSolution, writeSolution, appendSolutionMembers, recordBuildOrder, solutionCandidates } = require(path.join(outCore, 'solution.js'));
+const { parseSolution, writeSolution, appendSolutionMembers, recordBuildOrder, solutionCandidates, toolchainLinesFor } = require(path.join(outCore, 'solution.js'));
 const { Cproject } = require(path.join(outCore, 'cproject.js'));
 const { scanSources } = require(path.join(outCore, 'scan.js'));
 
@@ -35,6 +35,27 @@ const check = (name, cond) => {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
   if (!cond) failures++;
 };
+
+// the .wvsln toolchain hint lines: Windows spelling is byte-pinned (0.2.x
+// output), POSIX gets the forward-slash, suffix-less form (round14 §3.2)
+{
+  const win = toolchainLinesFor('win32');
+  const winOk =
+    JSON.stringify(win) ===
+    JSON.stringify([
+      '-arm:${eclipse_home}\\toolchain\\arm-none-eabi-gcc\\bin',
+      '-build:${eclipse_home}\\toolchain\\Build Tools\\bin',
+      '-openocd name:openocd.exe',
+      '-openocd path:${eclipse_home}\\toolchain\\OpenOCD\\bin',
+      '-rv:${eclipse_home}\\toolchain\\RISC-V Embedded GCC\\bin',
+    ]);
+  check('wvsln toolchain lines: win32 spelling unchanged (byte-pinned)', winOk);
+  const posix = toolchainLinesFor('linux');
+  check(
+    'wvsln toolchain lines: POSIX uses forward slashes and no .exe suffix',
+    posix.length === 5 && !posix.some((l) => l.includes('\\') || l.includes('.exe')) && posix[2] === '-openocd name:openocd'
+  );
+}
 
 // ---------- 1. discovery ----------
 const slnFiles = findSolutionFiles(H417);

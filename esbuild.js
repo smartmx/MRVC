@@ -9,7 +9,10 @@ const options = {
   entryPoints: [path.join(__dirname, 'src', 'extension.ts')],
   bundle: true,
   outfile: path.join(__dirname, 'out', 'extension.js'),
-  external: ['vscode'],
+  // koffi stays external: a native module cannot be bundled. The vsix ships
+  // the runtime at vendor-ffi/node_modules/koffi (see .vscodeignore); the
+  // wildcard keeps esbuild from bundling that relative require as source.
+  external: ['vscode', 'koffi', '*vendor-ffi'],
   format: 'cjs',
   platform: 'node',
   target: 'node16',

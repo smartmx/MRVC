@@ -11,7 +11,22 @@ import { clearOutputDir, removeOutputDir } from '../core/output';
 import { t } from '../core/i18n';
 import { buildRecordFile } from '../core/buildLog';
 import { writeBuildTaskWrapper, writeCleanTaskWrapper } from '../core/taskWrapper';
+import { resolveMakeExe } from '../core/toolchain';
 import { downloadProject } from './flash';
+
+/**
+ * Launch a generated wrapper. Windows runs the .cmd directly (VSCode's
+ * ProcessExecution shells it); POSIX runs the .sh through bash — the script
+ * is generated under the temp dir and never exec-bit'd into a lookup path,
+ * and /bin/bash exists on every supported Linux and macOS (the script itself
+ * is plain bash: PIPESTATUS for make's exit code, tee for the live record).
+ */
+function wrapperExecution(wrapper: string, envPath: string): vscode.ProcessExecution {
+  if (process.platform === 'win32') {
+    return new vscode.ProcessExecution(wrapper, [], { env: { PATH: envPath } });
+  }
+  return new vscode.ProcessExecution('/bin/bash', [wrapper], { env: { PATH: envPath } });
+}
 
 export type BuildKind = 'build' | 'rebuild' | 'clean';
 
@@ -213,7 +228,7 @@ export class BuildManager {
     let install: ReturnType<typeof getInstall> = null;
     if (opts.needsMake) {
       install = getInstall();
-      if (!install || !fs.existsSync(path.join(install.makeBin, 'make.exe'))) {
+      if (!install || !resolveMakeExe(install)) {
         vscode.window.showErrorMessage(t('makeNotFound', install?.makeBin ?? '?'));
         return;
       }
@@ -345,12 +360,9 @@ export class BuildManager {
         { type: 'mrvc-clean-all' },
         'MRVC: Clean All',
         'MRVC',
-        new vscode.ProcessExecution(
-          this.writeCleanWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe'), buildMakeArgs('clean', 1, buildVerbosity()).slice(0, -1), install.label),
-          [],
-          {
-            env: { PATH: `${install.makeBin};${process.env['PATH'] ?? ''}` },
-          }
+        wrapperExecution(
+          this.writeCleanWrapper(p.root, p.buildDir, resolveMakeExe(install), buildMakeArgs('clean', 1, buildVerbosity()).slice(0, -1), install.label),
+          [install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter)
         ),
         []
       );
@@ -416,14 +428,12 @@ export class BuildManager {
         if (e.execution !== exec) return;
         finish(e.exitCode);
       });
-      const wrapper = this.writeBuildWrapper(p.root, p.buildDir, path.join(install.makeBin, 'make.exe'), buildMakeArgs('build', jobs, buildVerbosity()), buildRecordFile(p.root), install.label);
+      const wrapper = this.writeBuildWrapper(p.root, p.buildDir, resolveMakeExe(install), buildMakeArgs('build', jobs, buildVerbosity()), buildRecordFile(p.root), install.label);
       const task = new vscode.Task(
         { type: 'mrvc-build-all' },
         'MRVC: Build All',
         'MRVC',
-        new vscode.ProcessExecution(wrapper, [], {
-          env: { PATH: `${toolchainBinDir};${install.makeBin};${process.env['PATH'] ?? ''}` },
-        }),
+        wrapperExecution(wrapper, [toolchainBinDir, install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter)),
         ['$mrvcgcc']
       );
       task.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
@@ -470,7 +480,8 @@ export class BuildManager {
       vscode.window.showErrorMessage(t('noToolchainFound'));
       return;
     }
-    if (!install || !fs.existsSync(path.join(install.makeBin, 'make.exe'))) {
+    const makeExe = resolveMakeExe(install);
+    if (!install || !makeExe) {
       vscode.window.showErrorMessage(t('makeNotFound', install?.makeBin ?? '?'));
       return;
     }
@@ -498,9 +509,8 @@ export class BuildManager {
     // from here on a make may run: hold the guard until its process ends
     this.building.set(buildKey, {});
 
-    const envPath = [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].join(path.delimiter);
+    const envPath = [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter);
     const target = kind === 'clean' ? 'MRVC: clean' : kind === 'rebuild' ? 'MRVC: rebuild' : 'MRVC: build';
-    const makeExe = path.join(install.makeBin, 'make.exe');
     // verbosity flags for the clean wrappers (build/clean target stripped —
     // the wrapper appends its own)
     const cleanFlags = buildMakeArgs('clean', jobs, buildVerbosity()).slice(0, -1);
@@ -508,13 +518,10 @@ export class BuildManager {
       kind === 'clean'
         ? // a clean must not trample the last build's record — run make via
           // the clean wrapper (no record writes, same metacharacter safety)
-          new vscode.ProcessExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags, install.label), [], {
-            env: { PATH: envPath },
-          })
-        : new vscode.ProcessExecution(
+          wrapperExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags, install.label), envPath)
+        : wrapperExecution(
             this.writeBuildWrapper(project.root, project.buildDir, makeExe, makeArgs, buildRecordFile(project.root), install.label),
-            [],
-            { env: { PATH: envPath } }
+            envPath
           );
     const task = new vscode.Task(
       { type: 'mrvc-build', task: target, project: project.projectName },
@@ -533,9 +540,7 @@ export class BuildManager {
         { type: 'mrvc-clean', project: project.projectName },
         `MRVC: clean - ${project.projectName}`,
         'MRVC',
-        new vscode.ProcessExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags, install.label), [], {
-          env: { PATH: envPath },
-        }),
+        wrapperExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags, install.label), envPath),
         []
       );
       cleanTask.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };

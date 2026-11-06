@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "publisher": "smartmx",
   "license": "MIT",
   "repository": {
@@ -12,7 +12,7 @@
   "engines": {
     "vscode": "^1.80.0"
   },
-  "extensionPack": [
+  "extensionDependencies": [
     "ms-vscode.cpptools-extension-pack",
     "koalamer.labeled-bookmarks",
     "MS-CEINTL.vscode-language-pack-zh-hans",
@@ -61,14 +61,20 @@
         },
         "mrvc.mrs2InstallPath": {
           "type": "string",
-          "default": "C:\\MounRiver\\MounRiver_Studio2",
-          "description": "MRS2 (MounRiver Studio 2) installation path. Checked at startup (exists, is a MounRiver installation, ships MounRiver Studio 2.exe) — an invalid path is reported instead of being silently replaced. Mutually exclusive with mrvc.mrs3InstallPath: at least one of the two must be valid or the extension does not start (the MRS version setting picks between them). Example: C:\\MounRiver\\MounRiver_Studio2 / MRS2（MounRiver Studio 2）安装路径。启动时校验（存在、是 MounRiver 安装、带 MounRiver Studio 2.exe）；路径不合法会被明确报告，不会静默改用别处。与 mrvc.mrs3InstallPath 二选一：两者至少有一个有效，否则扩展不启动（用 mrvc.mrsVersion 在两者间选取）。示例：C:\\MounRiver\\MounRiver_Studio2",
+          "default": "",
+          "description": "MRS2 (MounRiver Studio 2) IDE installation path, validated at startup (exists, is a MounRiver installation, ships its launcher: \"MounRiver Studio 2.exe\" on Windows, \"mounriver-studio 2\" on Linux, Contents/MacOS/Electron in the .app on macOS) — an invalid path is reported instead of being silently replaced. Empty = probe the platform's conventional locations (Windows: C:\\MounRiver\\MounRiver_Studio2). / MRS2（MounRiver Studio 2）IDE 安装路径。启动时校验（存在、是 MounRiver 安装、带对应平台的启动程序：Windows 为 \"MounRiver Studio 2.exe\"，Linux 为 \"mounriver-studio 2\"，macOS 为 .app 内的 Contents/MacOS/Electron）；路径不合法会被明确报告，不会静默改用别处。留空则探测本平台惯例位置（Windows：C:\\MounRiver\\MounRiver_Studio2）。",
           "order": 0
         },
         "mrvc.mrs3InstallPath": {
           "type": "string",
-          "default": "C:\\MounRiver\\MounRiver_Studio3",
-          "description": "MRS3 (MounRiver Studio 3) installation path, checked the same way as mrvc.mrs2InstallPath (must ship MounRiver Studio 3.exe). With both paths valid, mrvc.mrsVersion decides which one is active. Example: C:\\MounRiver\\MounRiver_Studio3 / MRS3（MounRiver Studio 3）安装路径。与 mrvc.mrs2InstallPath 同样的启动校验（必须带 MounRiver Studio 3.exe）。两个路径都有效时由 mrvc.mrsVersion 决定用哪一个。示例：C:\\MounRiver\\MounRiver_Studio3",
+          "default": "",
+          "description": "MRS3 (MounRiver Studio 3) IDE installation path, validated the same way as mrvc.mrs2InstallPath (launcher \"MounRiver Studio 3.exe\" / \"mounriver-studio 3\" / the .app's Electron). Empty = probe the conventional locations (Windows: C:\\MounRiver\\MounRiver_Studio3; Linux: /usr/share/MRS3/MRS-linux-x64 from the .deb; macOS: /Applications/MounRiver Studio 3.app). With both IDE paths valid, mrvc.mrsVersion decides which one is active. / MRS3（MounRiver Studio 3）IDE 安装路径，校验方式同 mrvc.mrs2InstallPath。留空则探测惯例位置（Windows：C:\\MounRiver\\MounRiver_Studio3；Linux：.deb 安装的 /usr/share/MRS3/MRS-linux-x64；macOS：/Applications/MounRiver Studio 3.app）。两个 IDE 路径都有效时由 mrvc.mrsVersion 决定用哪一个。",
+          "order": 0
+        },
+        "mrvc.toolchainOnlyPath": {
+          "type": "string",
+          "default": "",
+          "description": "Standalone MRS toolchain root — the folder that directly contains Toolchain/ and OpenOCD/ (an unpacked MRS_Toolchain_* package; no IDE). Validated at startup like the install paths (manifest + a RISC-V gcc; on Linux/macOS the binaries' CPU arch must match this machine). Usable alone (e.g. macOS x64, or a Linux box without the IDE) or alongside the IDE paths; it ships no make, so the system make from PATH is used. / 纯工具链根目录——直接包含 Toolchain/ 与 OpenOCD/ 的文件夹（MRS_Toolchain_* 解包后的内容，无 IDE）。启动时与安装路径同样校验（清单 + 能解析出 RISC-V gcc；Linux/macOS 还校验二进制架构与本机一致）。可单独使用（如 macOS x64、无 IDE 的 Linux），也可与 IDE 路径并存；不带 make，使用系统 PATH 中的 make。",
           "order": 0
         },
         "mrvc.mrsVersion": {
@@ -84,7 +90,7 @@
             "Prefer the MounRiver Studio 3 installation / 优先使用 MRS3"
           ],
           "default": "auto",
-          "description": "Which MounRiver installation is active when both paths are valid. A preference, not a wall: when the preferred generation has no valid installation the other VALID one is used and reported. / 两个安装路径都有效时用哪一个；这是偏好而非硬性要求——所偏好的代次没有有效安装时会改用另一个有效安装并明确提示。",
+          "description": "Which MounRiver installation is active when several are valid (IDE paths and a standalone toolchain). A preference, not a wall: mrs2 prefers the MRS2 IDE, then the standalone toolchain, then MRS3; mrs3 prefers MRS3, then MRS2, then the standalone toolchain; auto prefers MRS3 → MRS2 → standalone. The fallback is always reported. / 多个安装（IDE 路径与纯工具链）同时有效时用哪一个；这是偏好而非硬性要求——mrs2 依次偏好 MRS2 IDE、纯工具链、MRS3；mrs3 依次偏好 MRS3、MRS2、纯工具链；auto 依次偏好 MRS3 → MRS2 → 纯工具链。回退时一定会明确提示。",
           "order": 0
         },
         "mrvc.toolchain": {

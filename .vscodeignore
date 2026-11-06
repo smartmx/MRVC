@@ -15,3 +15,32 @@ chatgpt/**
 **/tsconfig.json
 
 buildlogs/
+
+# vendor-ffi ships the koffi runtime for the POSIX hardware bridge — prune it
+# to the JS entry + the linux_x64/darwin_arm64 prebuilds (vsce does not support
+# negation, so everything unwanted is listed instead)
+vendor-ffi/package.json
+vendor-ffi/package-lock.json
+vendor-ffi/node_modules/.package-lock.json
+**/.mimosa/**
+vendor-ffi/node_modules/koffi/CHANGELOG.md
+vendor-ffi/node_modules/koffi/README.md
+vendor-ffi/node_modules/koffi/cnoke.cjs
+vendor-ffi/node_modules/koffi/doc/**
+vendor-ffi/node_modules/koffi/src/**
+vendor-ffi/node_modules/koffi/vendor/**
+vendor-ffi/node_modules/koffi/build/koffi/darwin_x64/**
+vendor-ffi/node_modules/koffi/build/koffi/freebsd_arm64/**
+vendor-ffi/node_modules/koffi/build/koffi/freebsd_ia32/**
+vendor-ffi/node_modules/koffi/build/koffi/freebsd_x64/**
+vendor-ffi/node_modules/koffi/build/koffi/linux_arm64/**
+vendor-ffi/node_modules/koffi/build/koffi/linux_armhf/**
+vendor-ffi/node_modules/koffi/build/koffi/linux_ia32/**
+vendor-ffi/node_modules/koffi/build/koffi/linux_loong64/**
+vendor-ffi/node_modules/koffi/build/koffi/linux_riscv64d/**
+vendor-ffi/node_modules/koffi/build/koffi/musl_x64/**
+vendor-ffi/node_modules/koffi/build/koffi/openbsd_ia32/**
+vendor-ffi/node_modules/koffi/build/koffi/openbsd_x64/**
+vendor-ffi/node_modules/koffi/build/koffi/win32_arm64/**
+vendor-ffi/node_modules/koffi/build/koffi/win32_ia32/**
+vendor-ffi/node_modules/koffi/build/koffi/win32_x64/**

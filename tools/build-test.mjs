@@ -16,7 +16,7 @@ const outCore = path.join(here, '..', 'out', 'core');
 
 const { Cproject } = require(path.join(outCore, 'cproject.js'));
 const { generateMakefiles } = require(path.join(outCore, 'makefile.js'));
-const { locateInstall, selectToolchain } = require(path.join(outCore, 'toolchain.js'));
+const { locateInstall, selectToolchain, resolveMakeExe } = require(path.join(outCore, 'toolchain.js'));
 
 const projectDir = process.argv[2];
 if (!projectDir) {
@@ -39,9 +39,17 @@ const gen = generateMakefiles(cp, tc);
 console.log(`[mrs2] generated ${gen.files.length} makefile fragments, ${gen.sourceCount} sources, dirs: ${gen.dirs.join(', ')}`);
 
 const args = process.argv[3] === 'clean' ? ['clean'] : ['-j8', 'all'];
-const proc = spawnSync(path.join(install.makeBin, 'make.exe'), args, {
+const makeExe = resolveMakeExe(install);
+if (!makeExe) {
+  console.error('make not found (bundled or on PATH)');
+  process.exit(2);
+}
+const proc = spawnSync(makeExe, args, {
   cwd: path.join(projectDir, cp.configName),
-  env: { ...process.env, PATH: `${path.join(tc.dir, 'bin')};${install.makeBin};${process.env.PATH ?? ''}` },
+  env: {
+    ...process.env,
+    PATH: [path.join(tc.dir, 'bin'), install.makeBin, process.env.PATH ?? ''].filter(Boolean).join(path.delimiter),
+  },
   encoding: 'utf-8',
   shell: false,
 });

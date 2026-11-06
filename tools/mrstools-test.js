@@ -24,12 +24,13 @@ const MRS2_ROOT =
 const WIN32 = MRS2_ROOT ? `${MRS2_ROOT}/resources/app/resources/win32` : 'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32';
 const asInstall = (root, win32) => ({
   root,
-  resourcesWin32: win32.replace(/\//g, '\\'),
+  resourcesDir: win32.replace(/\//g, '\\'),
+  kind: 'ide',
   components: '',
   makeBin: '',
   openocdExe: '',
   openocdCfg: '',
-  linkUtilityExe: path.join(win32, 'components', 'WCH', 'Others', 'SWDTool', 'default', 'WCH-LinkUtility.exe'),
+  linkUtilityExe: process.platform === 'win32' ? path.join(win32, 'components', 'WCH', 'Others', 'SWDTool', 'default', 'WCH-LinkUtility.exe') : '',
   toolchains: [],
 });
 
@@ -84,7 +85,7 @@ if (MRS3_ROOT) {
 
 // missing installation -> all empty, no throw
 const empty = resolveMrsTools({
-  root: '', resourcesWin32: 'Z:/no/such/dir', components: '', makeBin: '', openocdExe: '', openocdCfg: '', linkUtilityExe: '', toolchains: [],
+  root: '', resourcesDir: 'Z:/no/such/dir', kind: 'ide', components: '', makeBin: '', openocdExe: '', openocdCfg: '', linkUtilityExe: '', toolchains: [],
 });
 check('missing installation degrades to empty paths', Object.values(empty).every((v) => v === ''));
 

@@ -30,14 +30,14 @@ export interface SdkTemplates {
   series: Map<string, Map<string, TemplateChip[]>>;
 }
 
-/** the SDK component dir inside an MRS2 install (MRS2 findAllSDKOrigin) */
-export function sdkRoot(resourcesWin32: string): string {
-  return path.join(resourcesWin32, 'components', 'WCH', 'SDK', 'default');
+/** the SDK component dir inside an MRS install (MRS2 findAllSDKOrigin) */
+export function sdkRoot(resourcesDir: string): string {
+  return path.join(resourcesDir, 'components', 'WCH', 'SDK', 'default');
 }
 
 /** enumerate every template zip MRS2's wizard would offer */
-export function scanTemplates(resourcesWin32: string): SdkTemplates {
-  const root = sdkRoot(resourcesWin32);
+export function scanTemplates(resourcesDir: string): SdkTemplates {
+  const root = sdkRoot(resourcesDir);
   const out: SdkTemplates = { arch: 'RISC-V', series: new Map() };
   for (const arch of ['RISC-V', 'ARM']) {
     const archDir = path.join(root, arch);
@@ -128,6 +128,35 @@ export function normalizeParentDirInput(raw: string): string {
   return v.replace(/[\\/]+$/, '');
 }
 
+/**
+ * POSIX template extraction: system `unzip` first (macOS ships it; most
+ * distros have it), falling back to `bsdtar` (macOS's native tar reads zip;
+ * libarchive-based Linux builds too — GNU tar does NOT). Windows keeps its
+ * inline Expand-Archive path in createProjectFromTemplate, byte-identical
+ * to 0.2.x. Pure argv arrays — no shell string is ever composed.
+ */
+export function extractZipArchivePosix(zip: string, dest: string): void {
+  try {
+    execFileSync('unzip', ['-o', zip, '-d', dest], { stdio: 'pipe', timeout: 120000 });
+    return;
+  } catch (e) {
+    // ENOENT = the tool is not installed — fall through to bsdtar. Any other
+    // failure (broken zip etc.) is real and reported immediately.
+    if ((e as { code?: string }).code !== 'ENOENT') {
+      throw new Error(`unzip failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  try {
+    execFileSync('bsdtar', ['-xf', zip, '-C', dest], { stdio: 'pipe', timeout: 120000 });
+    return;
+  } catch (e) {
+    if ((e as { code?: string }).code !== 'ENOENT') {
+      throw new Error(`bsdtar failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  throw new Error('no unzip tool available (both unzip and bsdtar missing) — install "unzip" and retry');
+}
+
 export function createProjectFromTemplate(template: TemplateChip, opts: CreateProjectOptions): CreateProjectResult {
   const name = opts.projectName.trim();
   // PowerShell metacharacters are rejected in addition to filesystem-illegal
@@ -159,30 +188,46 @@ export function createProjectFromTemplate(template: TemplateChip, opts: CreatePr
   // "already exists"
   if (!fs.existsSync(zip)) throw new Error(`Template zip not found: ${zip}`);
   fs.mkdirSync(projectRoot, { recursive: true });
-  const psLit = (s: string) => `'${s.replace(/'/g, "''")}'`;
-  try {
-    // -ErrorAction Stop + exit 1: Windows PowerShell 5.1 reports archive
-    // errors (broken zip, locked file) as NON-terminating and still exits 0
-    // — without this the extraction failure would be silently swallowed
-    // and creation would "succeed" with an empty project folder
-    execFileSync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-Command',
-        `try { Expand-Archive -LiteralPath ${psLit(zip)} -DestinationPath ${psLit(projectRoot)} -Force -ErrorAction Stop } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`,
-      ],
-      { stdio: 'pipe', timeout: 120000 }
-    );
-  } catch (e) {
-    // the half-extracted folder would block every retry ("already exists")
-    // and never shows up in the project tree — best-effort remove it
+  if (process.platform !== 'win32') {
+    // POSIX: system unzip (macOS ships it; most distros have it), bsdtar as
+    // the fallback — see extractZipArchivePosix. The half-extracted folder
+    // would block every retry ("already exists") just like on Windows.
     try {
-      fs.rmSync(projectRoot, { recursive: true, force: true });
-    } catch {
-      // keep the partial dir rather than masking the extraction error
+      extractZipArchivePosix(zip, projectRoot);
+    } catch (e) {
+      try {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      } catch {
+        // keep the partial dir rather than masking the extraction error
+      }
+      throw new Error(`Template extraction failed: ${e instanceof Error ? e.message : String(e)}`);
     }
-    throw new Error(`Template extraction failed: ${e instanceof Error ? e.message : String(e)}`);
+  } else {
+    const psLit = (s: string) => `'${s.replace(/'/g, "''")}'`;
+    try {
+      // -ErrorAction Stop + exit 1: Windows PowerShell 5.1 reports archive
+      // errors (broken zip, locked file) as NON-terminating and still exits 0
+      // — without this the extraction failure would be silently swallowed
+      // and creation would "succeed" with an empty project folder
+      execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-Command',
+          `try { Expand-Archive -LiteralPath ${psLit(zip)} -DestinationPath ${psLit(projectRoot)} -Force -ErrorAction Stop } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`,
+        ],
+        { stdio: 'pipe', timeout: 120000 }
+      );
+    } catch (e) {
+      // the half-extracted folder would block every retry ("already exists")
+      // and never shows up in the project tree — best-effort remove it
+      try {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      } catch {
+        // keep the partial dir rather than masking the extraction error
+      }
+      throw new Error(`Template extraction failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   // static-library creation (MRS2 createStaticLib semantics): flip the

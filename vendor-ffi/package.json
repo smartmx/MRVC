@@ -1,0 +1,8 @@
+{
+  "name": "mrvc-vendor-ffi",
+  "private": true,
+  "dependencies": {
+    "koffi": "2.12.1"
+  },
+  "description": "FFI runtime shipped inside the vsix (the POSIX WCH-Link hardware bridge). koffi is installed here — NOT in the root node_modules — because vsce's .vscodeignore cannot re-include a negated subtree, so this directory is shipped whole (pruned by .vscodeignore to the JS entry + the linux_x64/darwin_arm64 prebuilds)."
+}

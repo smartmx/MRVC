@@ -82,14 +82,14 @@ const ARGS = { chipId: 6, clkSpeed: 1, dbgMode: 0 };
     : 'C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH';
   if (fs.existsSync(path.join(WCH, 'Others', 'CommunicationLib'))) {
     const win32 = `${MRS2_ROOT}/resources/app/resources/win32`;
-    const lib = resolveCommLib({ resourcesWin32: win32, root: '', components: '', makeBin: '', openocdExe: '', openocdCfg: '', linkUtilityExe: '', toolchains: [] });
+    const lib = resolveCommLib({ resourcesDir: win32, kind: 'ide', root: '', components: '', makeBin: '', openocdExe: '', openocdCfg: '', linkUtilityExe: '', toolchains: [] });
     check('commLib: resolved from the real installation', !!lib && /McuCompilerDll\.dll$/i.test(lib.mcuDll));
     check('commLib: DLL actually exists on disk', !!lib && fs.existsSync(lib.mcuDll));
     check('commLib: 32-bit bridge exists (SysWOW64 PowerShell)', fs.existsSync(OP_LOGIC_PATH));
   } else {
     console.log('SKIP  real CommunicationLib (MRS2 not present)');
   }
-  check('commLib: missing dir -> null', resolveCommLib({ resourcesWin32: 'Z:/no/such', root: '', components: '', makeBin: '', openocdExe: '', openocdCfg: '', linkUtilityExe: '', toolchains: [] }) === null);
+  check('commLib: missing dir -> null', resolveCommLib({ resourcesDir: 'Z:/no/such', kind: 'ide', root: '', components: '', makeBin: '', openocdExe: '', openocdCfg: '', linkUtilityExe: '', toolchains: [] }) === null);
 }
 
 // 3. result wording for the Operation Record
@@ -144,6 +144,132 @@ const ARGS = { chipId: 6, clkSpeed: 1, dbgMode: 0 };
     console.log('SKIP  MRS3 beta install (not present)');
   }
   fs.rmSync(scratch, { recursive: true, force: true });
+}
+
+// ---- POSIX transport: in-process koffi FFI (fake koffi module — the real
+// one needs the vendor library and real hardware, validated on Linux/macOS
+// physical machines; here we pin the SEQUENCE, the ok codes and the resolvers)
+const { runWlinkOpPosix, mcuLibFileName } = require(path.join(outCore, 'wlink.js'));
+
+// every path this helper writes must stay inside the scratch root
+const PROOT = path.join(DEVELOP_DIR, '.scratch', 'wlink-posix');
+fs.rmSync(PROOT, { recursive: true, force: true });
+function inside(root, target) {
+  const resolved = path.resolve(root, target);
+  if (resolved !== path.resolve(root) && !resolved.startsWith(path.resolve(root) + path.sep)) {
+    throw new Error('refusing to write outside the scratch root: ' + target);
+  }
+  return resolved;
+}
+/** fake MRS install whose CommunicationLib/default carries the POSIX library —
+ *  one resources dir PER VARIANT (a shared dir would let the darwin fixture's
+ *  isolation wipe the .so an earlier fixture installed) */
+function posixInstall(libName) {
+  const res = inside(PROOT, 'res-' + (libName ?? 'none'));
+  const dir = inside(PROOT, path.join('res-' + (libName ?? 'none'), 'components', 'WCH', 'Others', 'CommunicationLib', 'default'));
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  if (libName) fs.writeFileSync(inside(PROOT, path.join('res-' + (libName ?? 'none'), 'components', 'WCH', 'Others', 'CommunicationLib', 'default', libName)), 'binary');
+  return { root: PROOT, resourcesDir: res, kind: 'ide', components: path.join(res, 'components', 'WCH'), makeBin: '', openocdExe: '', openocdCfg: '', linkUtilityExe: '', toolchains: [], flavor: 'mrs3', label: 'MounRiver Studio 3' };
+}
+/** scripted koffi: records every func call, returns per-export values */
+function fakeKoffi(results, opts = {}) {
+  const calls = [];
+  const loads = [];
+  const mod = {
+    calls,
+    loads,
+    load(p) {
+      loads.push(p);
+      if (opts.throwOnFirstLoad && loads.length === 1) throw new Error('dlopen failed: simulated missing dependency');
+      return {
+        func: (name, ret, argn) => (...a) => {
+          calls.push([name, ...a]);
+          const v = results[name];
+          return typeof v === 'function' ? v(a) : (v ?? 0);
+        },
+      };
+    },
+  };
+  return mod;
+}
+const INS = posixInstall('libmcuupdate.so');
+const ARGS7 = { chipId: 7, clkSpeed: 1, dbgMode: 0 };
+
+try {
+  // 1. library-name mapping + POSIX resolveCommLib (no load.wcfg on POSIX)
+  check('mcuLib: win/linux/darwin names', mcuLibFileName('win32') === 'McuCompilerDll.dll' && mcuLibFileName('linux') === 'libmcuupdate.so' && mcuLibFileName('darwin') === 'libmcuupdate.dylib');
+  const linComm = resolveCommLib(INS, 'linux');
+  check('commLib posix: resolves libmcuupdate.so directly (no wcfg needed)', !!linComm && linComm.mcuDll.endsWith('libmcuupdate.so') && linComm.usbDll === '');
+  const macInstall = posixInstall('libmcuupdate.dylib');
+  const macComm = resolveCommLib(macInstall, 'darwin');
+  check('commLib posix: darwin resolves the dylib', !!macComm && macComm.mcuDll.endsWith('libmcuupdate.dylib'));
+  check('commLib posix: missing library -> null', resolveCommLib(posixInstall(null), 'linux') === null);
+
+  // 2. op sequences against the fake koffi (names/args/ok codes)
+  {
+    const k = fakeKoffi({ MRSFunc_QueryRProtect: 3, McuCompiler_SetTargetChip: 0 });
+    const r = await runWlinkOpPosix(INS, 'queryRpt', ARGS7, k, 'linux');
+    check('posix queryRpt: result 3, ok=false (3 needs the enable flow)', r.op === 'queryRpt' && r.result === 3 && r.ok === false);
+    check(
+      'posix queryRpt: SetTargetChip first, then the query (chipId, clkSpeed)',
+      JSON.stringify(k.calls) === JSON.stringify([['McuCompiler_SetTargetChip', 7, 0], ['MRSFunc_QueryRProtect', 7, 1]])
+    );
+    check('posix queryRpt: describeResult wording matches the Windows contract', describeResult('queryRpt', r) === 'Code-Protect is Enable');
+  }
+  {
+    const k = fakeKoffi({ MRSFunc_EnableRProtect: 0, MRSFunc_QueryRProtect: 3 });
+    const r = await runWlinkOpPosix(INS, 'enableRpt', ARGS7, k, 'linux');
+    check('posix enableRpt: query returns 3 -> ok=true', r.ok === true && r.result === 3);
+    check('posix enableRpt: Set, Enable, then the settle-query', k.calls.map((c) => c[0]).join(',') === 'McuCompiler_SetTargetChip,MRSFunc_EnableRProtect,MRSFunc_QueryRProtect');
+  }
+  {
+    const k = fakeKoffi({ MRSFunc_DisableRProtect: 0, MRSFunc_QueryRProtect: 4 });
+    const r = await runWlinkOpPosix(INS, 'disableRpt', ARGS7, k, 'linux');
+    check('posix disableRpt: query returns 4 -> ok=true', r.ok === true && r.result === 4);
+  }
+  {
+    const k = fakeKoffi({ MRSFunc_ClearCodeFlash: 0 });
+    const r = await runWlinkOpPosix(INS, 'clearCodeFlash', { ...ARGS7, eraseMode: 1 }, k, 'linux');
+    check('posix clearCodeFlash: eraseMode passes through (chip, clk, mode), 0 -> ok', k.calls[1][0] === 'MRSFunc_ClearCodeFlash' && k.calls[1][3] === 1 && r.ok === true);
+  }
+  {
+    const k = fakeKoffi({ MRSFunc_SetMemType: 0 });
+    const r = await runWlinkOpPosix(INS, 'setMemType', { ...ARGS7, memVal: 5 }, k, 'linux');
+    check('posix setMemType: memVal passes through, 0 -> ok', k.calls[1][3] === 5 && r.ok === true);
+  }
+  {
+    const k = fakeKoffi({ MRSFunc_GetLinkedMCUID: 307 });
+    const r = await runWlinkOpPosix(INS, 'queryMcuId', ARGS7, k, 'linux');
+    check('posix queryMcuId: NO SetTargetChip, zero-arg call, id wording', k.calls.length === 1 && k.calls[0][0] === 'MRSFunc_GetLinkedMCUID' && r.result === 307 && describeResult('queryMcuId', r).includes('chip id: 307'));
+  }
+  {
+    const k = fakeKoffi({ MRSFunc_DisableDbgInterface: 3 });
+    const r = await runWlinkOpPosix(INS, 'disableDbg', ARGS7, k, 'linux');
+    check('posix disableDbg: code 3 -> "does not support" wording', describeResult('disableDbg', r).includes('does not support'));
+  }
+
+  // 3. degradation paths
+  {
+    const r = await runWlinkOpPosix(posixInstall(null), 'queryRpt', ARGS7, fakeKoffi({}), 'linux');
+    check('posix: missing CommunicationLib -> named error', !r.ok && r.error.includes('libmcuupdate.so'));
+    const r2 = await runWlinkOpPosix(INS, 'queryRpt', ARGS7, null, 'linux');
+    check('posix: missing koffi dependency -> named error', !r2.ok && r2.error.includes('koffi dependency is missing'));
+  }
+  {
+    // dlopen fails once -> sibling preloads then the retry succeeds
+    const k = fakeKoffi({ MRSFunc_QueryRProtect: 4 }, { throwOnFirstLoad: true });
+    const r = await runWlinkOpPosix(INS, 'queryRpt', ARGS7, k, 'linux');
+    check('posix: a failed first dlopen retries after sibling preloads', r.ok === false && r.result === 4 && k.loads.length === 2);
+  }
+  {
+    // an FFI-level throw lands in error, never throws out
+    const k = fakeKoffi({ McuCompiler_SetTargetChip: () => { throw new Error('USB device gone'); } });
+    const r = await runWlinkOpPosix(INS, 'queryRpt', ARGS7, k, 'linux');
+    check('posix: a throwing export becomes an error result', !r.ok && r.error.includes('USB device gone'));
+  }
+} finally {
+  fs.rmSync(PROOT, { recursive: true, force: true });
 }
 
 console.log(failures ? `\n${failures} FAILURES` : '\nall wlink tests passed');

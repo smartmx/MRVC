@@ -95,6 +95,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (
         !e.affectsConfiguration('mrvc.mrs2InstallPath') &&
         !e.affectsConfiguration('mrvc.mrs3InstallPath') &&
+        !e.affectsConfiguration('mrvc.toolchainOnlyPath') &&
         !e.affectsConfiguration('mrvc.mrsVersion')
       ) {
         return;

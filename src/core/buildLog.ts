@@ -70,6 +70,21 @@ export function buildDryRunCmdFile(projectRoot: string): string {
   return path.join(dir, `${hash}-dry.cmd`);
 }
 
+/**
+ * POSIX twin of the whole Windows chain (launcher + tee + phase .cmds): a
+ * single bash script. `tee` gives the per-line live terminal and the record
+ * in one step, the dry run appends byte-transparently (no code page exists
+ * to mistranslate), and bash's PIPESTATUS carries make's exit code through
+ * the pipe. Same hash-named temp location and metacharacter rationale as
+ * the .cmd files (the script quotes every path itself).
+ */
+export function buildPosixWrapperFile(projectRoot: string, kind: 'build' | 'clean' = 'build'): string {
+  const dir = path.join(os.tmpdir(), 'mrs-build');
+  fs.mkdirSync(dir, { recursive: true });
+  const hash = crypto.createHash('md5').update(projectRoot).digest('hex');
+  return path.join(dir, `${hash}${kind === 'clean' ? '-clean' : ''}.sh`);
+}
+
 /** full-output record for a project (MRS2 buildContentRecord.txt) */
 export function buildRecordFile(projectRoot: string): string {
   return path.join(buildWorkDir(projectRoot), 'buildContentRecord.txt');

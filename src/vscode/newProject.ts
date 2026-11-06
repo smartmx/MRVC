@@ -90,7 +90,7 @@ async function runWizard(store: ProjectStore, artifactType: 'exe' | 'lib'): Prom
   }
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: t('newProjectScanning'), cancellable: false },
-    () => Promise.resolve(scanTemplates(install.resourcesWin32))
+    () => Promise.resolve(scanTemplates(install.resourcesDir))
   ).then((db) => pickTemplate(db))
     .then(async (template) => {
       if (!template) return;

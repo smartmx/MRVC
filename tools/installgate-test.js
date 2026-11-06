@@ -1,47 +1,88 @@
 /*
- * Install gate: the extension starts only when at least one of the two install
- * paths passes validation (exists, is a MounRiver installation, right
- * generation, ships "MounRiver Studio <N>.exe"). Otherwise it does not start,
- * reports each checked field with the reason, and starts as soon as the
- * settings are fixed — no window reload. Stubs vscode (mutable settings store,
- * captured messages) and drives installGate() directly.
+ * Install gate: the extension starts only when at least one install setting
+ * (MRS2 IDE / MRS3 IDE / standalone toolchain) passes validation. Otherwise it
+ * does not start, reports each checked field with the reason, and starts as
+ * soon as the settings are fixed — no window reload. Stubs vscode (mutable
+ * settings store, captured messages) and drives installGate() directly.
+ *
+ * Sections 1-5 run with the host platform forced to 'linux' so the machine's
+ * real conventional locations (C:\MounRiver\...) can never leak into a
+ * zero-config test; the adoption section runs on the real host, where the
+ * conventional scan may find the machine's own install (SKIP elsewhere).
  */
 const Module = require('module');
 const path = require('path');
 const fs = require('fs');
 
+const { setHostPlatformForTests } = require('../out/core/toolchain.js');
+const REAL_HOST = process.platform;
+
 const ROOT = path.join(__dirname, '..', '.scratch', 'installgate');
 fs.rmSync(ROOT, { recursive: true, force: true });
 
 /** every path this helper writes must stay inside ROOT */
-function inside(target) {
-  const resolved = path.resolve(ROOT, target);
-  if (resolved !== path.resolve(ROOT) && !resolved.startsWith(path.resolve(ROOT) + path.sep)) {
+function inside(root, target) {
+  const resolved = path.resolve(root, target);
+  if (resolved !== path.resolve(root) && !resolved.startsWith(path.resolve(root) + path.sep)) {
     throw new Error('refusing to write outside the scratch root: ' + target);
   }
   return resolved;
 }
 
-/** minimal fake install with its launcher program (valid per the new check) */
-function fakeInstall(name, gen) {
-  const root = inside(name);
-  const win32 = path.join(root, 'resources', 'app', 'resources', 'win32');
-  fs.mkdirSync(path.join(win32, 'components', 'WCH'), { recursive: true });
-  fs.writeFileSync(path.join(win32, 'components', 'WCH', 'manifest.json'), '{}');
+/** minimal fake IDE install for a host platform (linux/win32 shapes) */
+function fakeInstall(name, gen, hostPlatform = 'linux') {
+  const rootName = hostPlatform === 'darwin' ? name + '.app' : name;
+  const root = inside(ROOT, rootName);
+  const appDirName = path.join('resources', 'app');
+  const appDir = inside(ROOT, path.join(rootName, appDirName));
+  const layer = { win32: 'win32', linux: 'linux', darwin: 'darwin' }[hostPlatform] || 'linux';
+  const res = inside(ROOT, path.join(rootName, appDirName, 'resources', layer));
+  fs.mkdirSync(inside(ROOT, path.join(rootName, appDirName, 'resources', layer, 'components', 'WCH')), { recursive: true });
+  fs.writeFileSync(inside(ROOT, path.join(rootName, appDirName, 'resources', layer, 'components', 'WCH', 'manifest.json')), '{}');
   fs.writeFileSync(
-    path.join(root, 'resources', 'app', 'product.json'),
+    inside(ROOT, path.join(rootName, appDirName, 'product.json')),
     JSON.stringify({ nameShort: 'MounRiver Studio ' + gen, mrsVersion: gen + '.0.0' })
   );
-  fs.writeFileSync(path.join(root, 'MounRiver Studio ' + gen + '.exe'), '');
+  if (hostPlatform === 'win32') {
+    fs.writeFileSync(inside(ROOT, path.join(rootName, 'MounRiver Studio ' + gen + '.exe')), '');
+  } else {
+    fs.writeFileSync(inside(ROOT, path.join(rootName, 'mounriver-studio ' + gen)), '');
+  }
   return root;
 }
-const INST2 = fakeInstall('fake-mrs2', '2');
-const INST3 = fakeInstall('fake-mrs3', '3');
-const BAD = inside('nope');
-const BAD2 = inside('nope2');
-const BAD3 = inside('nope3');
+
+/** minimal standalone toolchain root (arch-agnostic: no gcc bytes) */
+function fakeStandalone(name) {
+  const root = inside(ROOT, name);
+  const bin = inside(ROOT, path.join(name, 'Toolchain', 'RISC-V Embedded GCC', 'bin'));
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(
+    inside(ROOT, path.join(name, 'Toolchain', 'sub_manifest.json')),
+    JSON.stringify({
+      details: [
+        {
+          name: 'GCC8',
+          type: 'RISC-V',
+          path: './RISC-V Embedded GCC',
+          compiler_c_executable: { folder: './bin', name: 'riscv-none-embed-gcc' },
+        },
+      ],
+    })
+  );
+  fs.writeFileSync(inside(ROOT, path.join(name, 'Toolchain', 'RISC-V Embedded GCC', 'bin', 'riscv-none-embed-gcc')), '');
+  fs.mkdirSync(inside(ROOT, path.join(name, 'OpenOCD', 'OpenOCD', 'bin')), { recursive: true });
+  fs.writeFileSync(inside(ROOT, path.join(name, 'OpenOCD', 'OpenOCD', 'bin', 'openocd')), '');
+  return root;
+}
+
+const INST2 = fakeInstall('fake-mrs2', '2', 'linux');
+const INST3 = fakeInstall('fake-mrs3', '3', 'linux');
+const TCFIX = fakeStandalone('fake-tc');
+const BAD = inside(ROOT, 'nope');
+const BAD2 = inside(ROOT, 'nope2');
+const BAD3 = inside(ROOT, 'nope3');
 /** the stub's schema default for mrs3InstallPath (a path that does not exist) */
-const DEFAULT3 = inside('default-mrs3');
+const DEFAULT3 = inside(ROOT, 'default-mrs3');
 
 // ---- stub state the test drives ----
 const settings = {};
@@ -71,7 +112,8 @@ const vscodeStub = {
       get: (k, d) => (k in settings ? settings[k] : d),
       inspect: (k) => ({
         key: 'mrvc.' + k,
-        // the schema default tells a suggestion apart from a user choice
+        // the schema default is now EMPTY — the fromDefault machinery is
+        // exercised by injecting a non-existent default for mrs3InstallPath
         defaultValue: k === 'mrs3InstallPath' ? DEFAULT3 : undefined,
         globalValue: settings[k],
         workspaceValue: undefined,
@@ -120,12 +162,19 @@ const flush = () => new Promise((res) => setImmediate(res));
 const last = () => messages[messages.length - 1];
 
 (async () => {
-  // 1. both values empty -> refuse to start, ask for a path
+  // hermetic: no conventional location exists under a linux host on this box
+  setHostPlatformForTests('linux');
+
+  // 1. every field empty -> refuse to start, ask for a path
   check('gate: no path at all -> no start', installGate(context, onReady) === false && started === 0);
   check('gate: ... an error prompt is shown', messages.length === 1 && messages[0].kind === 'error');
   check(
     'gate: ... the prompt says the extension did not start and why',
-    /did not start/.test(messages[0].text) && /no MounRiver Studio installation path is configured/.test(messages[0].text)
+    /did not start/.test(messages[0].text) && /no MounRiver installation path is configured/.test(messages[0].text)
+  );
+  check(
+    'gate: ... and names all three settings (incl. the standalone toolchain)',
+    /mrvc\.mrs2InstallPath/.test(messages[0].text) && /mrvc\.mrs3InstallPath/.test(messages[0].text) && /mrvc\.toolchainOnlyPath/.test(messages[0].text)
   );
   check('gate: ... offers to open the settings', messages[0].buttons[0] === 'Open settings');
 
@@ -145,11 +194,23 @@ const last = () => messages[messages.length - 1];
   check('gate: ... and reports the start', messages.some((m) => m.kind === 'info' && /MRVC started/.test(m.text)));
   check('gate: ... afterwards the gate passes', installGate(context, onReady) === true && started === 1);
 
+  // 3b. the standalone toolchain root alone also opens the gate
+  settings.mrs2InstallPath = '';
+  settings.mrs3InstallPath = '';
+  settings.toolchainOnlyPath = TCFIX;
+  check('gate: a standalone toolchain root alone starts the extension', installGate(context, onReady) === true && started === 1);
+  settings.toolchainOnlyPath = BAD3;
+  check('gate: ... an invalid one does not', installGate(context, onReady) === false && started === 1);
+  settings.toolchainOnlyPath = TCFIX;
+  fireConfig('toolchainOnlyPath');
+  check('gate: ... fixing mrvc.toolchainOnlyPath starts it live', started === 2);
+
   // 4. a wrong-generation value in the OTHER field does not block the start:
   //    the valid field is used and the failure is reported as a warning
+  settings.toolchainOnlyPath = '';
   settings.mrs2InstallPath = INST2;
   settings.mrs3InstallPath = INST2;
-  check('gate: a valid field starts the extension despite the other one failing', installGate(context, onReady) === true && started === 1);
+  check('gate: a valid field starts the extension despite the other one failing', installGate(context, onReady) === true && started === 2);
   {
     const before = messages.length;
     void getInstall();
@@ -164,7 +225,7 @@ const last = () => messages[messages.length - 1];
   //    to exchange them; that fix starts the extension
   settings.mrs2InstallPath = INST3;
   settings.mrs3InstallPath = INST2;
-  check('gate: swapped values -> no start', installGate(context, onReady) === false && started === 1);
+  check('gate: swapped values -> no start', installGate(context, onReady) === false && started === 2);
   const swapped = last();
   const swapBtn = swapped.buttons.find((b) => b === 'Swap them');
   check('gate: ... the prompt offers the swap', !!swapBtn);
@@ -177,11 +238,14 @@ const last = () => messages[messages.length - 1];
     await flush();
     check('gate: ... swapping writes both fields exchanged', settings.mrs2InstallPath === INST2 && settings.mrs3InstallPath === INST3);
     fireConfig('mrs2InstallPath');
-    check('gate: ... and that starts the extension', started === 2);
+    check('gate: ... and that starts the extension', started === 3);
   }
 
-  // 6. adopting a detected conventional install (only when this machine has one)
-  settings.mrs2InstallPath = INST2;
+  // 6. back to the real host: schema-default silence + adopting a detected
+  //    conventional install (only when this machine has one)
+  setHostPlatformForTests(REAL_HOST);
+  const WIN2 = fakeInstall('fake-win2', '2', 'win32');
+  settings.mrs2InstallPath = WIN2;
   settings.mrs3InstallPath = DEFAULT3; // the schema default, and it does not exist
   {
     const before = messages.length;
@@ -193,19 +257,76 @@ const last = () => messages[messages.length - 1];
   }
   settings.mrs2InstallPath = BAD2;
   settings.mrs3InstallPath = BAD2;
-  check('gate: two unusable paths -> no start', installGate(context, onReady) === false && started === 2);
+  check('gate: two unusable paths -> no start', installGate(context, onReady) === false && started === 3);
   const promo = last();
-  const useBtn = promo.buttons.find((b) => /^Use detected /.test(b));
+  const useBtn = (promo.buttons || []).find((b) => /^Use detected /.test(b));
   if (useBtn) {
     promo.reply(useBtn);
     await flush();
     check('gate: adopting the detected install writes a real path', settings.mrs2InstallPath !== BAD2 && fs.existsSync(settings.mrs2InstallPath));
     fireConfig('mrs2InstallPath');
-    check('gate: ... and that starts the extension', started === 3);
+    check('gate: ... and that starts the extension', started === 4);
   } else {
     console.log('SKIP  gate: no conventional installation on this machine to adopt');
   }
 
+  // 7. POSIX per-toolchain arch gate on MrsProject.toolchain (round20 §5.4):
+  // the UI glue warns on EVERY mismatched call and returns null; the native
+  // toolchain passes through untouched
+  setHostPlatformForTests('linux');
+  {
+    const HOSTA = process.arch === 'arm64' ? 'arm64' : 'x64';
+    const OTHERA = HOSTA === 'arm64' ? 'x64' : 'arm64';
+    const elfBytes = (arch) => {
+      const b = Buffer.alloc(24);
+      b[0] = 0x7f; b[1] = 0x45; b[2] = 0x4c; b[3] = 0x46; // \x7fELF
+      b.writeUInt16LE(arch === 'arm64' ? 0xb7 : 0x3e, 18); // e_machine
+      return b;
+    };
+    // minimal project fixture (same shape rename-test uses)
+    const projRoot = inside(ROOT, 'arch-proj');
+    fs.mkdirSync(path.join(projRoot, 'src'), { recursive: true });
+    fs.writeFileSync(
+      inside(ROOT, 'arch-proj/.project'),
+      '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>ArchProj</name></projectDescription>'
+    );
+    fs.writeFileSync(
+      inside(ROOT, 'arch-proj/.cproject'),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="c" name="obj" artifactName="${ProjName}">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry flags="VALUE_WORKSPACE_PATH" name=""/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+    );
+    // fake install: two toolchains with distinct binary arches (mac V2.4 shape)
+    const mkTc = (name, dirName, gccName, arch) => {
+      const bin = inside(ROOT, 'tc-' + dirName + '/bin');
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(inside(ROOT, 'tc-' + dirName + '/bin/' + gccName), elfBytes(arch));
+      return {
+        name,
+        dir: inside(ROOT, 'tc-' + dirName),
+        compilerC: inside(ROOT, 'tc-' + dirName + '/bin/' + gccName),
+        compilerCpp: '', linkerC: '', linkerCpp: '', debugger: '', objcopy: '', objdump: '', size: '', prefix: '',
+      };
+    };
+    const archInst = {
+      root: ROOT, resourcesDir: '', kind: 'ide', components: '', makeBin: '',
+      openocdExe: '', openocdCfg: '', linkUtilityExe: '',
+      toolchains: [
+        mkTc('GCC12', 'gcc12', 'riscv-wch-elf-gcc', OTHERA),
+        mkTc('GCC8', 'gcc8', 'riscv-none-embed-gcc', HOSTA),
+      ],
+      flavor: 'mrs3', label: 'MounRiver Studio 3',
+    };
+    const { MrsProject } = require('../out/vscode/projects.js');
+    const proj = new MrsProject(projRoot);
+    const archWarns = () => messages.filter((m) => m.kind === 'warn' && m.text.includes(HOSTA)).length;
+    const r1 = proj.toolchain(archInst, 'GCC12');
+    check('arch gate: mismatched selection -> null + warned', r1 === null && archWarns() === 1);
+    const r2 = proj.toolchain(archInst, 'GCC12');
+    check('arch gate: EVERY mismatched call warns again (no silent retries)', r2 === null && archWarns() === 2);
+    const r3 = proj.toolchain(archInst, 'GCC8');
+    check('arch gate: the native toolchain passes through untouched', !!r3 && r3.name === 'GCC8');
+  }
+
+  setHostPlatformForTests(REAL_HOST);
   console.log(failures ? `\n${failures} FAILURES` : '\nall install-gate tests passed');
   fs.rmSync(ROOT, { recursive: true, force: true });
   process.exit(failures ? 1 : 0);

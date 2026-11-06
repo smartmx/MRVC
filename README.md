@@ -2,7 +2,7 @@
 
 一个 VSCode 扩展（插件名 **MRVC**），直接打开/配置/编译/**下载烧录** WCH（南京沁恒）MRS / MounRiver 工程，
 无需 MRS2 IDE 本体（仅复用其安装目录中的工具链与工具组件）。
-**当前仅支持 Windows**（Linux/macOS 暂不支持）。
+**三平台可用：Windows / Linux / macOS**（0.2.6 起；边界：POSIX 的下载/烧录与硬件操作通道已实现但未实测——OpenOCD 与 libmcuupdate FFI 路径都在位，需实体机验证）。
 活动栏视图名为 "Project Explorer"；命令 ID 与设置键统一为 `mrvc.*`（V0.1.7 起，原 `mrs2.*` 历史前缀已退役——自定义快捷键需同步更新）。
 扩展 ID 自 V0.1.7 起为 `smartmx.mrvc`（publisher 由 `mrvc` 更名为 `smartmx`）：装过旧 `mrvc.mrvc` 的用户升级时需**先卸载旧扩展**再安装新版——两者是相互独立、不会自动互相覆盖的扩展。
 
@@ -10,7 +10,7 @@
 
 | 功能 | 说明 |
 |---|---|
-| 打开 MRS 工程 | 与 MRS 一致：以 `工程名.wvproj` 为工程标记（发现/打开入口），`.project` 作为老工程兜底；随后解析 `.project` / `.cproject` / `.template` 获取全部配置。**Open MRS Project / Solution 为 MRS2 同款文件对话框**（右下角文件类型下拉：`.wvproj` / `.wvsln` / 全部文件），选中后在**新 VSCode 窗口**打开：选 `.wvproj`/`.project` → 打开其所在目录并自动发现；选 `.wvsln` → 生成同名 `.code-workspace` 并在新窗口加载 solution；**打开整个 EVT/EXAM 目录用 VSCode 自带的 文件 → 打开文件夹**（扩展自动递归发现全部工程：最深 6 层嵌套）。**自动修复打包残留**：EVT 工程的链接文件夹若指向打包机器的绝对路径（如 `E:/.../EXAM/SRC`），首次打开时自动按"最近祖先+尾段"定位真实目录并回写为可移植的 `PARENT-N-PROJECT_LOC` 形式（与 MRS2 的 rewriteLinkedFolders 行为一致；MRS1 风格的 `<location>` 自动转换为 `<locationURI>`） |
+| 打开 MRS 工程 | 与 MRS 一致：以 `工程名.wvproj` 为工程标记（发现/打开入口），`.project` 作为老工程兜底；随后解析 `.project` / `.cproject` / `.template` 获取全部配置。**Open MRS Project / Solution 为 MRS2 同款文件对话框**（右下角文件类型下拉：`.wvproj` / `.wvsln` / 全部文件），选中后在**新 VSCode 窗口**打开：选 `.wvproj`/`.project` → 打开其所在目录并自动发现；选 `.wvsln` → 生成同名 `.code-workspace` 并在新窗口加载 solution；**打开整个 EVT/EXAM 目录用 VSCode 自带的 文件 → 打开文件夹**（扩展自动递归发现全部工程：最深 8 层嵌套）。**自动修复打包残留**：EVT 工程的链接文件夹若指向打包机器的绝对路径（如 `E:/.../EXAM/SRC`），首次打开时自动按"最近祖先+尾段"定位真实目录并回写为可移植的 `PARENT-N-PROJECT_LOC` 形式（与 MRS2 的 rewriteLinkedFolders 行为一致；MRS1 风格的 `<location>` 自动转换为 `<locationURI>`） |
 | Solution（工程组） | 支持 MRS 新增的 `.wvsln` 解决方案：**仅当显式打开 `.wvsln` 文件时启用**——Open MRS Project / Solution 选中该文件后，生成同名 `.code-workspace` 并在**新 VSCode 窗口**打开，激活时自动加载 solution；树中显示为 solution 节点，成员工程按 MRS2 的 `BuildOrder=` 行（缺省按文件行序）排列、每个成员都是完整工程节点。解析兼容 MRS2 的宽松语法；生成的 solution 与 MRS2 完全兼容 |
 | 生成 Solution | 树标题栏 `…` 菜单 → **Generate Solution From All Projects**：把当前已发现的全部工程生成一个 solution 并立即出现在树顶，MRS2 可直接打开 |
 | 工程树 | 活动栏 MRVC 容器内的 "Project Explorer"：标题栏 4 个按钮（**Open Mrs Project**（文件对话框）/ **Open Mrs Folder**（只选目录）/ 折叠全部 / **刷新**——外部改名/新增/删除的工程会被自动识别与清理）。工程 → 链接文件夹（蓝色名称）/ 实体目录 / **根级源文件** / 编译输出目录（红色）。树只显示扫描到的工程本身，不列工程目录之外的散落文件。**源文件自动刷新**：工作区与每个工程内的源文件新建/删除/改名即时反映到树（400ms 防抖），配置文件有专属监听 |
@@ -22,7 +22,7 @@
 | **静态栈分析** | 设置 `mrvc.build.analysis` 开启后构建自动注入 `-fstack-usage` / `-fdump-rtl-expand`；**Static Stack Usage** / **Function Call Analysis** 命令生成分析报告（开源方案替代 MRS2 闭源解析器） |
 | 新建工程向导 | `…` 菜单 → **新建 MounRiver 工程 / 静态库**：扫描 MRS2 SDK 模板（系列 → RTOS → 器件三步选择）→ 工程名 → **位置（可键入任意新路径自动创建，或点浏览按钮选择；默认上次创建目录）**，创建完成提示可一键在新窗口打开；renameProject 全套联动，MRS2 无损打开 |
 | 下载烧录 | 工程行内 **Flash 按钮** / 右键 **Download**：通过 MRS2 的 OpenOCD 下载 `obj/` 产物（hex/bin，地址取自 `.template` 的 Address，双核工程自动选 `wch-dual-core.cfg`；`.template` 勾选 **Erase All** 时下载前全片擦除）；输出进任务终端，失败弹提示 |
-| Download Settings | 属性页 → Download → Download Settings（镜像 MRS2）：**读保护状态查询 / 使能 / 解除**、**调试保护**、**Linked MCU Type 查询**、**Erase Code Flash**（By Pin NRST / By Power off）、**MCU Memory Assign**（Query/Apply）、**Operation Record** 操作日志；右侧完整编辑下载参数（MCU Type / Memory Type / Program Address / Debug Interface Mode / CLK Speed / Target File / Main Operations 八项），全部写回 `.template`（MRS2 无损打开）。硬件操作经系统 32 位 PowerShell P/Invoke 调用 MRS2 的 McuCompilerDll.dll，零新增依赖；芯片 ID 与能力开关自动来自芯片库，不支持的选项按芯片自动灰显 |
+| Download Settings | 属性页 → Download → Download Settings（镜像 MRS2）：**读保护状态查询 / 使能 / 解除**、**调试保护**、**Linked MCU Type 查询**、**Erase Code Flash**（By Pin NRST / By Power off）、**MCU Memory Assign**（Query/Apply）、**Operation Record** 操作日志；右侧完整编辑下载参数（MCU Type / Memory Type / Program Address / Debug Interface Mode / CLK Speed / Target File / Main Operations 八项），全部写回 `.template`（MRS2 无损打开）。硬件操作桥：Windows 走系统 32 位 PowerShell P/Invoke 调 McuCompilerDll.dll（MRS2 的 DLL 是 32 位，须进程外桥接）；Linux/macOS 进程内 koffi FFI 调 CommunicationLib 的 `libmcuupdate.so/.dylib`——与 MRS 自家扩展同款机制、同族 `MRSFunc_*` 导出；芯片 ID 与能力开关自动来自芯片库，不支持的选项按芯片自动灰显 |
 | 芯片选择器 | 属性页 → General → Chip / Target：MRS2 同款 "Target MCU Type" 选择器——系列树（RISC-V/ARM 分组）→ 型号列表 → 信息区；数据实时扫描 MRS2 的 SDK 组件目录（40+ 系列），选中后自动填充 Series / MCU / Mcu Type / Address 并写回 `.template`；SDK 缺失时回退文本编辑 |
 | Build Steps / Build Artifact | 属性页 → C/C++ Build 分组：**Build Steps**（Pre/Post-build 的 Command 与 Description，进 makefile）；**Build Artifact**（Artifact Type：Executable/Static Library；Artifact name 按 MRS 变量形式显示 `${ProjName}`；Artifact extension；Output prefix——产物名前缀与自定义扩展名在生成的 makefile 中生效） |
 | Switch Project Type (C/C++) | 工程右键一键切换工程类型：写 `.project` 的 CDT C++ nature（`org.eclipse.cdt.core.ccnature`——与 MRS2 的判定键一致；旧版 MRVC 写入的假 ID 会在工程加载时自动规范化），**切到 C++ 时同时把 C 选项整组镜像进 C++ 选项集**（值/列表按原写法逐项复制、元数据按 CDT/MRS2 原生形态补齐，另补 C++ 编译器的 `<inputType>`），因此 C++ 属性页显隐、`.cpp` 源扫描、makefile 生成与 MRS2 打开后的构建都联动正确。**范围**：只处理 `.cproject` 的第一个配置（多配置工程的其余配置不镜像）；切回 C 会移除转换新增的 `<inputType>`，镜像的 C++ 选项值保留（与 MRS2 的 C++ 工程两套选项并存的形态一致） |
@@ -30,8 +30,8 @@
 | 外部链接文件夹 | 右键工程 → Add Linked Folder：同时更新 `.project`（linkedResources，支持 PARENT-N-PROJECT_LOC）与 `.cproject`（include 路径 + sourceEntries） |
 | **Sync Setting Across Projects** | 树标题栏 `…` 菜单打开专用页面（Properties 同款两级导航树）：123 个可同步编译开关（bool/enum）逐行带**同步选择框**（默认不勾）与值控件（值取自活动工程）；勾选后 Apply 批量写入全部工程（C++ 选项自动跳过 C 工程并计数、可取消、输出频道逐工程 [OK/FAIL] 汇总） |
 | **IntelliSense 自动配置** | 自动生成每个工程的编译数据库（`.vscode/mrvc/cc/`）并维护 `c_cpp_properties.json`——c 文件的宏定义/头文件路径随工程精确解析，无需手动配置 includePath；**工程树点选工程即切换分析上下文**（cpptools 多数据库数组，≥1.23.5） |
-| MRS Tools 工具集 | 树标题栏 `…` 菜单 → Tools 组（对齐 MRS2 Tools 菜单）：一键拉起 WCH-LinkUtility / WCH In-System Programmer (WchIspStudio) / WCH Touchkey Calibrate Tool / WCHGUIDesigner / HexBin Studio / Serial Port Debug Tool (COMTransmit)，分离进程启动；**当前生效的安装是 MRS3 时**（MRS2 没有该组件）额外多一项 **WCH 工具集（MRS3）** = WCHToolKit.exe |
-| WCH-LinkUtility | 命令面板 **Open WCH-LinkUtility**：直接拉起 MRS2 自带的 GUI 下载器（调试器模式切换/固件升级等深度操作）；也已归入 `…` 菜单 Tools 组 |
+| MRS Tools 工具集 | **（仅 Windows 安装提供——Linux/macOS 的 MRS 不带这些 GUI 工具）** 树标题栏 `…` 菜单 → Tools 组（对齐 MRS2 Tools 菜单）：一键拉起 WCH-LinkUtility / WCH In-System Programmer (WchIspStudio) / WCH Touchkey Calibrate Tool / WCHGUIDesigner / HexBin Studio / Serial Port Debug Tool (COMTransmit)，分离进程启动；**当前生效的安装是 MRS3 时**（MRS2 没有该组件）额外多一项 **WCH 工具集（MRS3）** = WCHToolKit.exe |
+| WCH-LinkUtility | **（仅 Windows 安装提供）** 命令面板 **Open WCH-LinkUtility**：直接拉起 MRS2 自带的 GUI 下载器（调试器模式切换/固件升级等深度操作）；也已归入 `…` 菜单 Tools 组 |
 | MRS 命令终端 | 预置工具链/make/OpenOCD 的 PATH |
 | 工具链选择 | `auto`（读 `.cproject` rvGcc/前缀）或强制 GCC8/GCC12/GCC15，均从 `sub_manifest.json` 动态解析 |
 
@@ -57,23 +57,34 @@ npm run package      # 生成 mrvc-<version>.vsix（@vscode/vsce，--no-dependen
 
 ## 使用
 
-> **前置条件：需要先安装 [MounRiver Studio](https://www.mounriver.com/) Windows 版——MRS2 或 MRS3 均可**。
-> MRVC 不自带工具链，而是复用 MounRiver 安装目录中的 RISC-V 工具链（GCC8/12/15）、make、
-> OpenOCD、WCH-LinkUtility 与芯片库组件——没有 MounRiver Studio 就无法编译/下载。
+> **前置条件：一个 MounRiver 安装或一份纯工具链**（[mounriver.com](https://www.mounriver.com/)）。
+> MRVC 不自带工具链，而是复用 MounRiver 的 RISC-V 工具链（GCC8/12/15）、make、OpenOCD 与芯片库组件。
+> **Windows**：MRS2 / MRS3 IDE（装在 `C:\MounRiver\...` 可零配置自动探测）；**Linux**：MRS3 IDE
+> （.deb 装到 `/usr/share/MRS3/MRS-linux-x64` 自动探测；tar.xz 解包后手动指定）或纯工具链；**macOS**：
+> MRS3 `.app`（放入 `/Applications` 自动探测；arm64 专用）或纯工具链（Intel Mac 的唯一形态）。
 
-1. 安装路径默认 `C:\MounRiver\MounRiver_Studio2`（**MRS2 Install Path**）与
-   `C:\MounRiver\MounRiver_Studio3`（**MRS3 Install Path**）。启动时**逐个校验**：目录存在、
-   是 MounRiver 安装、且代次正确（该代次的启动程序 `MounRiver Studio 2.exe` / `MounRiver Studio 3.exe`
-   就在安装根目录下）。**至少一个通过才启动**；两个都不通过则**扩展不启动**，弹出提示逐条列出
-   失败的字段与原因（不存在／不是安装／代次不符／缺启动程序），可用 **[打开设置]** 或
-   **[使用检测到的 <安装>]** 一键修正（填反了会给 **[交换两者]**）——修正后**自动启动，无需重载窗口**。
-   两个路径都有效时用 `mrvc.mrsVersion`（auto 优先 MRS3）选择偏好；所偏好的代次没有有效安装时
-   会改用另一个有效安装并明确提示。构建输出首行会打印当前生效的安装。
+1. 三个设置键，启动时**逐个校验**（目录存在、是 MounRiver 安装、代次/启动程序/架构正确），
+   **至少一个通过才启动**；全部失败则**扩展不启动**，弹出提示逐条列出失败字段与原因
+   （不存在／不是安装／代次不符／缺启动程序／架构不匹配），可用 **[打开设置]**、
+   **[使用检测到的 <安装>]** 一键修正（两个 IDE 路径填反了会给 **[交换两者]**）——
+   修正后**自动启动，无需重载窗口**。
+   - **MRS2 Install Path** / **MRS3 Install Path**：IDE 安装根。启动程序按平台识别：
+     Windows `MounRiver Studio N.exe`；Linux `mounriver-studio N`（根目录或 `bin/`，tar 与 .deb 都认）；
+     macOS 指到 `.app`（或其 `Contents/`），代次由 product.json 判定。
+   - **Toolchain Only Path**：纯工具链根——`MRS_Toolchain_*` 解包内容（顶层 `Toolchain/` + `OpenOCD/`，
+     无 IDE、无自带 make，使用系统 PATH 里的 make）。可单独使用，也可与 IDE 路径并存。
+   - 留空 = 按平台探测惯例位置（Windows 零配置行为与 0.2.x 一致）；Linux/macOS 额外校验
+     工具链二进制的 CPU 架构：**任一工具链与本机一致即通过**（全部不匹配才拒绝，如 Intel Mac
+     装 arm64 专用的 macOS MRS3）；混合架构包（mac V2.4）按**实际选用的工具链**判定——选到
+     异构那支会拒绝该次构建并提示改用原生工具链。
+   - 多个安装并存时用 `mrvc.mrsVersion` 选偏好：auto 依次 MRS3 IDE → MRS2 IDE → 纯工具链
+     （mrs2/mrs3 固定各有次序），回退一定明确提示。构建输出首行打印当前生效的安装。
 2. 命令面板 `MRVC: Open MRS Project / Solution`：选 `.wvproj`/`.wvsln` 文件，或用 VSCode 自带的
    文件 → 打开文件夹 直接打开 EVT/EXAM 目录（扩展自动发现全部工程）。
 3. `F7` 编译；产物在工程 `obj/`（或 .cproject 配置名对应目录）。
-4. 接好 WCH-Link 后用工程行内 **Flash** 按钮或右键 **Download** 下载；
-   读保护/芯片查询等深度操作在属性页 → Download → Download Settings。
+4. 接好 WCH-Link 后用工程行内 **Flash** 按钮或右键 **Download** 下载（Linux 需先装 MRS3 包内
+   `beforeinstall/` 的 udev 规则；POSIX 通道未实测）；读保护/芯片查询等深度操作在属性页 →
+   Download → Download Settings（POSIX 走 koffi FFI，未实测）。
 
 ## 开发
 
@@ -110,7 +121,7 @@ npm run package      # @vscode/vsce 打包 .vsix（--no-dependencies）
 - `build-test.mjs <EVT工程路径>` — 真实工具链编译单工程；`build-all.mjs` 全量批跑
 - `print-menus.mjs` — 打印各类树节点右键菜单排序（开发辅助）
 - `verify-vsix.mjs` — 打包产物核对：自动先从 src 重建 bundle，再与 vsix 逐字节断言（manifest/NLS/changelog/bundle/版本号/泄漏）——改源码忘 esbuild、或包被旧产物顶替都会被拦，发布前必跑
-- `mrsinstall-test.js` — 双安装选择策略（代次探测 / 二选一 / 强制代次 / 字段误填与填反 / 回退）
+- `mrsinstall-test.js` — 安装选择策略（win32/linux/darwin 三平台布局 / MRS2·MRS3 IDE + 纯工具链三候选 / 架构门禁 / 零配置采用 / 字段误填与填反 / 回退；经 `setHostPlatformForTests` 在任意宿主上测全平台）
 - `mrs-install-probe.mjs <安装根> <工程> [cpp]` — 钉住指定安装（MRS2 / MRS3）真实构建工程，支持 PARENT-N 链接工程；加 `cpp` 则先做 C→C++ 类型转换再构建（转换功能回归）
 - `sync-to-mrvc.mjs` — develop→MRVC 发布同步（按清单复制 + 逐文件哈希校验；**仅 develop，不入发布仓库**，它操作的是同级 MRVC 克隆）
 
@@ -136,7 +147,7 @@ src/
 │   ├── cproject.ts    # .cproject 类型化模型（按 superClass 读写 option、excluding、Build Steps/Artifact）
 │   ├── templateFile.ts# .template（下载配置；无损重写保留注释空行）
 │   ├── macros.ts      # ${workspace_loc:/...} / ${project}/... 宏 / PARENT-N 解析
-│   ├── toolchain.ts   # MounRiver 安装探测（MRS2/MRS3 flavor + 二选一策略）+ sub_manifest.json 工具链解析
+│   ├── toolchain.ts   # MounRiver 安装探测（MRS2/MRS3 IDE + 纯工具链三候选、Linux/macOS 布局与架构门禁）+ sub_manifest.json 工具链解析
 │   ├── flags.ts       # -march/-mabi/-Os/-I/-T/... 组装（移植自 MRS2 逻辑）
 │   ├── scan.ts        # 源文件扫描（excluding 语义、大小写折叠、装饰映射）
 │   ├── solution.ts    # .wvsln 解析 / 生成（含 BuildOrder）

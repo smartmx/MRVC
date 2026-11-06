@@ -38,6 +38,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     en: 'No RISC-V toolchain found. Check the "mrvc.mrs2InstallPath" / "mrvc.mrs3InstallPath" setting — it must point to your MounRiver Studio installation folder.',
     'zh-cn': '未找到 RISC-V 工具链。请检查 "mrvc.mrs2InstallPath" / "mrvc.mrs3InstallPath" 设置——它必须指向您的 MounRiver Studio 安装文件夹。',
   },
+  toolchainArchMismatch: {
+    en: 'Toolchain "{0}" is built for {1}, but this machine runs {2} — select a native toolchain instead (e.g. GCC12/GCC15 on Apple Silicon with the mac V2.4 package).',
+    'zh-cn': '工具链 "{0}" 是 {1} 架构，本机是 {2}——请改用本机原生的工具链（如 Apple Silicon 上使用 mac V2.4 包时选 GCC12/GCC15）。',
+  },
 
   // batch progress titles (notification popups)
   progressBuildAll: { en: 'MRVC: Build All', 'zh-cn': 'MRVC：构建全部工程' },
@@ -69,8 +73,8 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   noActiveProject: { en: 'No active MRS project.', 'zh-cn': '没有活动 MRS 工程。' },
   pickProject: { en: 'Select project', 'zh-cn': '选择工程' },
   installNotFound: {
-    en: 'No MounRiver Studio installation found — point "mrvc.mrs2InstallPath" (MRS2) or "mrvc.mrs3InstallPath" (MRS3) at your install folder.',
-    'zh-cn': '未找到 MounRiver Studio 安装——请在 "mrvc.mrs2InstallPath"（MRS2）或 "mrvc.mrs3InstallPath"（MRS3）中指定安装文件夹。',
+    en: 'No MounRiver installation found — point "mrvc.mrs2InstallPath" (MRS2 IDE), "mrvc.mrs3InstallPath" (MRS3 IDE) or "mrvc.toolchainOnlyPath" (standalone toolchain) at your folder.',
+    'zh-cn': '未找到 MounRiver 安装——请在 "mrvc.mrs2InstallPath"（MRS2 IDE）、"mrvc.mrs3InstallPath"（MRS3 IDE）或 "mrvc.toolchainOnlyPath"（纯工具链）中指定文件夹。',
   },
   installSwappedFields: {
     en: 'The two install paths look swapped — "mrvc.mrs2InstallPath" points at {0} and "mrvc.mrs3InstallPath" at {1}.',
@@ -78,21 +82,29 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   },
   installSwapValues: { en: 'Swap them', 'zh-cn': '交换两者' },
   installGateNotConfigured: {
-    en: 'MRVC did not start: no MounRiver Studio installation path is configured. Set "mrvc.mrs2InstallPath" (MRS2) or "mrvc.mrs3InstallPath" (MRS3) to a valid installation folder.',
+    en: 'MRVC did not start: no MounRiver installation path is configured. Set "mrvc.mrs2InstallPath" (MRS2 IDE), "mrvc.mrs3InstallPath" (MRS3 IDE) or "mrvc.toolchainOnlyPath" (standalone toolchain) to a valid folder.',
     'zh-cn':
-      'MRVC 未启动：尚未配置 MounRiver Studio 安装路径。请把 "mrvc.mrs2InstallPath"（MRS2）或 "mrvc.mrs3InstallPath"（MRS3）设置为有效的安装文件夹。',
+      'MRVC 未启动：尚未配置 MounRiver 安装路径。请把 "mrvc.mrs2InstallPath"（MRS2 IDE）、"mrvc.mrs3InstallPath"（MRS3 IDE）或 "mrvc.toolchainOnlyPath"（纯工具链）设置为有效的文件夹。',
   },
   installGateNoInstall: {
-    en: 'MRVC did not start: no valid MounRiver Studio installation was found. {0} Configure a correct install folder in "mrvc.mrs2InstallPath" (MRS2) or "mrvc.mrs3InstallPath" (MRS3).',
+    en: 'MRVC did not start: no valid MounRiver installation was found. {0} Configure a correct folder in "mrvc.mrs2InstallPath" (MRS2 IDE), "mrvc.mrs3InstallPath" (MRS3 IDE) or "mrvc.toolchainOnlyPath" (standalone toolchain).',
     'zh-cn':
-      'MRVC 未启动：没有检测到有效的 MounRiver Studio 安装。{0} 请把 "mrvc.mrs2InstallPath"（MRS2）或 "mrvc.mrs3InstallPath"（MRS3）配置为正确的安装文件夹。',
+      'MRVC 未启动：没有检测到有效的 MounRiver 安装。{0} 请把 "mrvc.mrs2InstallPath"（MRS2 IDE）、"mrvc.mrs3InstallPath"（MRS3 IDE）或 "mrvc.toolchainOnlyPath"（纯工具链）配置为正确的文件夹。',
   },
   installReasonMissing: { en: 'the folder does not exist', 'zh-cn': '文件夹不存在' },
   installReasonNotInstall: { en: 'not a MounRiver Studio installation', 'zh-cn': '不是 MounRiver 安装目录' },
+  installReasonNotToolchain: {
+    en: 'not a standalone MRS toolchain root (needs Toolchain/ + OpenOCD/ with a RISC-V gcc)',
+    'zh-cn': '不是纯工具链根目录（需要顶层 Toolchain/ 与 OpenOCD/，且能解析出 RISC-V gcc）',
+  },
   installReasonWrongGeneration: { en: 'it is a {0} installation', 'zh-cn': '该目录是 {0} 的安装' },
   installReasonNoLauncher: {
-    en: '"MounRiver Studio {0}.exe" is missing there',
-    'zh-cn': '该目录缺少启动程序 "MounRiver Studio {0}.exe"',
+    en: 'the launcher program "{0}" is missing there',
+    'zh-cn': '该目录缺少启动程序 "{0}"',
+  },
+  installReasonWrongArch: {
+    en: 'its toolchain binaries are built for {0}, but this machine runs {1}',
+    'zh-cn': '其工具链二进制是 {0} 架构，本机是 {1}',
   },
   installOpenSettings: { en: 'Open settings', 'zh-cn': '打开设置' },
   installUseDetected: { en: 'Use detected {0}', 'zh-cn': '使用检测到的 {0}' },
@@ -114,7 +126,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   },
   installPinMRS2: { en: 'Use MRS2', 'zh-cn': '改用 MRS2' },
   installPinMRS3: { en: 'Use MRS3', 'zh-cn': '改用 MRS3' },
-  makeNotFound: { en: 'make.exe not found under the MounRiver installation ({0})', 'zh-cn': '在 MounRiver 安装目录下未找到 make.exe（{0}）' },
+  makeNotFound: {
+    en: 'make not found — looked for the bundled make under {0} and for a system make on PATH',
+    'zh-cn': '未找到 make——已查找 {0} 下的自带 make 与 PATH 中的系统 make',
+  },
   makefileGenFailed: { en: 'Makefile generation failed: {0}', 'zh-cn': 'Makefile 生成失败：{0}' },
   neverBuilt: { en: 'MRVC: "{0}" has never been built — nothing to clean.', 'zh-cn': 'MRVC：" {0} " 尚未编译过——没有可清理的内容。' },
   rebuildCleanFailed: { en: 'MRVC: rebuild aborted — clean failed (exit {0}).', 'zh-cn': 'MRVC：重建中止——清理失败（退出码 {0}）。' },

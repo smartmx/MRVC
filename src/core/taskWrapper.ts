@@ -31,10 +31,18 @@
  * UTF-8; make's exit code propagates through every layer (a make that cannot
  * launch exits 9009, never a fake success).
  *
- * Clean: a plain .cmd (no record to preserve, make's output stays live).
+ * POSIX (Linux/macOS) twin: a SINGLE bash script per task. `make 2>&1 | tee`
+ * streams every line to the terminal and the record natively per line — the
+ * four Windows hazards (SyncTextWriter AutoFlush, batched-write latency, the
+ * Set-Location cwd trap, cmd's ANSI code-page record) have no POSIX
+ * equivalent — the dry run appends byte-transparently through the same
+ * redirection, and PIPESTATUS carries make's exit code across the pipe.
+ * tasks.ts launches it as `/bin/bash <script>`.
+ *
+ * Clean: a plain .cmd / .sh (no record to preserve, make's output stays live).
  */
 import * as fs from 'fs';
-import { buildWrapperFile, buildTeeScriptFile, buildMakeCmdFile, buildDryRunCmdFile } from './buildLog';
+import { buildWrapperFile, buildTeeScriptFile, buildMakeCmdFile, buildDryRunCmdFile, buildPosixWrapperFile } from './buildLog';
 import { encodeArtifact, encodePowerShellScript } from './platformEncoding';
 
 /** escape a `%` for cmd (`%VAR%` expansion must not eat paths) */
@@ -55,6 +63,11 @@ export function echoSafeLabel(label: string): string {
 /** a PowerShell single-quoted literal (the only quoting that expands nothing) */
 export function psQuote(s: string): string {
   return "'" + s.replace(/'/g, "''") + "'";
+}
+
+/** a POSIX shell single-quoted literal (embedded ' becomes '"'"') */
+export function shQuote(s: string): string {
+  return "'" + s.replace(/'/g, `'\\''`) + "'";
 }
 
 export interface BuildWrapperSpec {
@@ -172,6 +185,52 @@ export function buildLauncherScript(teeScriptPath: string): string {
   );
 }
 
+/** the POSIX build script: one bash file does everything the three Windows
+ *  files do. `make 2>&1 | tee record` streams every line to the terminal AND
+ *  the record natively per line (no AutoFlush/SyncTextWriter concerns — and
+ *  no code page can mistranslate the bytes); the dry run appends through the
+ *  same redirection (byte-transparent), and PIPESTATUS keeps make's exit
+ *  code alive across the pipe. The record directory is (re-)created first:
+ *  same %TEMP%-cleanup immunity as the Windows tee script. */
+export function buildPosixBuildScript(spec: BuildWrapperSpec): string {
+  const label = echoSafeLabel(spec.label ?? '');
+  const make = shQuote(spec.makeExe);
+  return (
+    `#!/usr/bin/env bash\n` +
+    `# MRVC build wrapper (POSIX): live per-line output + full record; the dry\n` +
+    `# run goes into the record only. Exit code = make's (PIPESTATUS).\n` +
+    `record=${shQuote(spec.recordFile)}\n` +
+    `cd ${shQuote(spec.buildDir)} || exit 1\n` +
+    // (re-)create the record directory — a temp cleanup landing between
+    // wrapper generation and launch must not kill the build
+    `mkdir -p "$(dirname "$record")"\n` +
+    (label ? `echo ${shQuote('MRS: ' + label)}\n` : '') +
+    `rm -f "$record"\n` +
+    `${make} ${spec.makeArgs.join(' ')} 2>&1 | tee "$record"\n` +
+    `code=\${PIPESTATUS[0]}\n` +
+    // the record ends with every command the makefile drives — record only
+    `{\n` +
+    `  echo ''\n` +
+    `  echo '===== All Build Commands (dry run: make -n -B) ====='\n` +
+    `  ${make} -n -B all 2>&1\n` +
+    `} >> "$record"\n` +
+    `exit $code\n`
+  );
+}
+
+/** the POSIX clean script: make's output stays live, no record to preserve */
+export function buildPosixCleanScript(spec: { buildDir: string; makeExe: string; args: string[]; label?: string }): string {
+  const label = echoSafeLabel(spec.label ?? '');
+  return (
+    `#!/usr/bin/env bash\n` +
+    `# MRVC clean wrapper (POSIX): live output, no record writes.\n` +
+    `cd ${shQuote(spec.buildDir)} || exit 1\n` +
+    (label ? `echo ${shQuote('MRS: ' + label)}\n` : '') +
+    `${shQuote(spec.makeExe)} ${spec.args.join(' ')}\n` +
+    `exit $?\n`
+  );
+}
+
 /** the plain .cmd used by every clean path (make's output stays live) */
 export function cleanWrapperScript(spec: { buildDir: string; makeExe: string; args: string[]; label?: string }): string {
   const label = echoSafeLabel(spec.label ?? '');
@@ -185,8 +244,19 @@ export function cleanWrapperScript(spec: { buildDir: string; makeExe: string; ar
   );
 }
 
-/** write the build wrapper set (launcher + tee script + phase .cmds); returns the launcher */
+/** write the build wrapper (Windows: launcher + tee script + phase .cmds;
+ *  POSIX: a single bash script); returns the launcher to execute */
 export function writeBuildTaskWrapper(projectRoot: string, spec: BuildWrapperSpec): string {
+  if (process.platform !== 'win32') {
+    const script = buildPosixWrapperFile(projectRoot);
+    fs.writeFileSync(script, Buffer.from(buildPosixBuildScript(spec), 'utf-8'));
+    try {
+      fs.chmodSync(script, 0o755);
+    } catch {
+      // launched via `bash <script>` anyway — the exec bit is a convenience
+    }
+    return script;
+  }
   const launcher = buildWrapperFile(projectRoot);
   const buildCmd = buildMakeCmdFile(projectRoot);
   const dryCmd = buildDryRunCmdFile(projectRoot);
@@ -203,6 +273,16 @@ export function writeCleanTaskWrapper(
   projectRoot: string,
   spec: { buildDir: string; makeExe: string; args: string[]; label?: string }
 ): string {
+  if (process.platform !== 'win32') {
+    const script = buildPosixWrapperFile(projectRoot, 'clean');
+    fs.writeFileSync(script, Buffer.from(buildPosixCleanScript(spec), 'utf-8'));
+    try {
+      fs.chmodSync(script, 0o755);
+    } catch {
+      // launched via `bash <script>` anyway — the exec bit is a convenience
+    }
+    return script;
+  }
   const launcher = buildWrapperFile(projectRoot, 'clean');
   fs.writeFileSync(launcher, encodeArtifact(cleanWrapperScript(spec)));
   return launcher;

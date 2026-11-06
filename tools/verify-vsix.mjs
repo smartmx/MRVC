@@ -153,10 +153,16 @@ check(attr('Version') === pkg.version && attr('Publisher') === pkg.publisher,
   identity ? `v=${attr('Version')} pub=${attr('Publisher')}` : 'Identity element not found');
 check(attr('Id') === pkg.name, 'vsixmanifest Identity Id == package name', attr('Id') || '?');
 
-// 7. leak check
+// 7. leak check — vendor-ffi/node_modules/koffi is the ONE shipped dependency
+//    (the POSIX hardware bridge's FFI prebuilds); anything else leaks
 const leaks = [...zip.keys()].filter((n) =>
-  /^extension\/(docs|tools|src|chatgpt|node_modules|\.scratch|buildlogs)\//.test(n));
-check(leaks.length === 0, 'no source/docs/tools entries leaked', leaks.length ? leaks.join(', ') : `${zip.size} entries`);
+  /^extension\/(docs|tools|src|chatgpt|\.scratch|buildlogs)\//.test(n) ||
+  (/^extension\/node_modules\//.test(n)) ||
+  (/^extension\/vendor-ffi\//.test(n) && !/^extension\/vendor-ffi\/node_modules\/koffi\//.test(n)));
+check(leaks.length === 0, 'no source/docs/tools entries leaked (vendor-ffi ships only the koffi runtime)', leaks.length ? leaks.join(', ') : `${zip.size} entries`);
+check([...zip.keys()].some((n) => n === 'extension/vendor-ffi/node_modules/koffi/index.js'), 'koffi JS entry is packaged');
+const prebuilds = [...zip.keys()].filter((n) => /^extension\/vendor-ffi\/node_modules\/koffi\/build\/koffi\/(linux_x64|darwin_arm64)\/koffi\.node$/.test(n));
+check(prebuilds.length === 2, 'koffi POSIX prebuilds are packaged (linux_x64 + darwin_arm64)', prebuilds.map((n) => n.replace('extension/vendor-ffi/node_modules/koffi/build/koffi/', '')).join(', ') || 'none');
 
 console.log(failed ? `\n${failed} check(s) FAILED` : '\nall vsix verification checks passed');
 process.exit(failed ? 1 : 0);

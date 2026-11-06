@@ -18,7 +18,7 @@ function launchTool(exe: string, title: string): void {
     return;
   }
   if (!exe || !fs.existsSync(exe)) {
-    vscode.window.showErrorMessage(t('mrsToolsNotFound', title, install.resourcesWin32));
+    vscode.window.showErrorMessage(t('mrsToolsNotFound', title, install.resourcesDir));
     return;
   }
   try {

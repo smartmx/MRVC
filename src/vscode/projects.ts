@@ -9,7 +9,7 @@ import { Cproject } from '../core/cproject';
 import { MrsProjectFile, readProjectFile, linkedFolderMap } from '../core/projectFile';
 import { migrateLegacyCppNature } from '../core/projectType';
 import { readTemplate, TemplateData } from '../core/templateFile';
-import { selectInstall, InstallSelection, InstallFieldCheck, flavorLabel, mergeCustomToolchains, CustomToolchain, MrsInstall, selectToolchain, ToolchainInfo } from '../core/toolchain';
+import { selectInstall, InstallSelection, InstallFieldCheck, flavorLabel, launcherFileNames, mergeCustomToolchains, CustomToolchain, MrsInstall, selectToolchain, toolchainArchProblem, ToolchainInfo } from '../core/toolchain';
 import { findProjectRoots } from '../core/discover';
 import { parseSolution } from '../core/solution';
 import { t } from '../core/i18n';
@@ -63,7 +63,22 @@ export class MrsProject {
   }
 
   toolchain(install: MrsInstall | null, request: string): ToolchainInfo | null {
-    return selectToolchain(install, request, this.cproject.rvGccVersion, this.cproject.storedPrefix);
+    const tc = selectToolchain(install, request, this.cproject.rvGccVersion, this.cproject.storedPrefix);
+    if (tc) {
+      // mixed-arch packages (mac V2.4: GCC8 x86_64 + GCC12/15 arm64) pass the
+      // startup gate with their native toolchains; the toolchain this project
+      // actually selected is judged HERE, on EVERY call — toolchain() runs at
+      // user-action frequency (build / flash / terminal / properties page), so
+      // the warning must not silently disappear after the first attempt
+      // (round20 §5.1: a deduped warning left later builds with only the
+      // misleading "no RISC-V toolchain found" message)
+      const problem = toolchainArchProblem(tc);
+      if (problem) {
+        void vscode.window.showWarningMessage(t('toolchainArchMismatch', problem.toolchain, problem.foundArch, problem.hostArch));
+        return null;
+      }
+    }
+    return tc;
   }
 
   /**
@@ -555,23 +570,35 @@ let gatePrompted: string | null = null;
 const cppNatureMigrated = new Set<string>();
 
 /** the active installation, per the mrvc.mrs2InstallPath /
- *  mrvc.mrs3InstallPath / mrvc.mrsVersion settings (policy in selectInstall).
- *  Both fields carry a C:\MounRiver\... default, so the decision needs no
- *  "did the user set it" bookkeeping: each value is validated as it is. */
+ *  mrvc.mrs3InstallPath / mrvc.toolchainOnlyPath / mrvc.mrsVersion settings
+ *  (policy in selectInstall). The schema defaults are empty — with every
+ *  field unset the platform's conventional locations are validated and
+ *  adopted (fromDefault-marked), so zero-config still works without any
+ *  "did the user set it" bookkeeping. */
 export function selectMrsInstall(): InstallSelection {
   const cfg = vscode.workspace.getConfiguration('mrvc');
   const mrs2 = cfg.get<string>('mrs2InstallPath', '');
   const mrs3 = cfg.get<string>('mrs3InstallPath', '');
+  const toolchain = cfg.get<string>('toolchainOnlyPath', '');
   const version = cfg.get<string>('mrsVersion', 'auto');
   // the schema defaults tell a suggestion apart from a user choice: a missing
-  // default path is normal (warn only about values the user picked)
+  // default path is normal (warn only about values the user picked). The
+  // schema defaults are EMPTY since the cross-platform settings — the
+  // per-platform conventional locations are probed inside selectInstall.
   const mrs2Default = cfg.inspect<string>('mrs2InstallPath')?.defaultValue;
   const mrs3Default = cfg.inspect<string>('mrs3InstallPath')?.defaultValue;
-  const key = [mrs2, mrs3, version, mrs2Default, mrs3Default].join('|');
+  const key = [mrs2, mrs3, toolchain, version, mrs2Default, mrs3Default].join('|');
   if (installCache?.key !== key) {
     installCache = {
       key,
-      selection: selectInstall({ mrs2Path: mrs2, mrs3Path: mrs3, version, mrs2Default, mrs3Default }),
+      selection: selectInstall({
+        mrs2Path: mrs2,
+        mrs3Path: mrs3,
+        toolchainPath: toolchain,
+        version,
+        mrs2Default,
+        mrs3Default,
+      }),
     };
   }
   return installCache.selection;
@@ -596,10 +623,16 @@ function fieldProblemText(check: InstallFieldCheck): string {
       return t('installReasonMissing');
     case 'not-install':
       return t('installReasonNotInstall');
+    case 'not-toolchain':
+      return t('installReasonNotToolchain');
     case 'wrong-generation':
       return t('installReasonWrongGeneration', check.foundFlavor ? flavorLabel(check.foundFlavor as 'mrs2' | 'mrs3') : '?');
-    case 'no-launcher':
-      return t('installReasonNoLauncher', check.field === 'mrs3InstallPath' ? '3' : '2');
+    case 'no-launcher': {
+      const gen = check.field === 'mrs3InstallPath' ? 'mrs3' : 'mrs2';
+      return t('installReasonNoLauncher', launcherFileNames(gen)[0]);
+    }
+    case 'wrong-arch':
+      return t('installReasonWrongArch', check.foundArch ?? '?', process.arch);
     default:
       return '';
   }
@@ -636,10 +669,13 @@ export function installGate(context: vscode.ExtensionContext, onReady: () => voi
     const buttons = [openBtn, ...(useLabel ? [useLabel] : []), ...(swapLabel ? [swapLabel] : [])];
     void vscode.window.showErrorMessage(body, ...buttons).then((pick) => {
       if (pick === openBtn) {
-        void vscode.commands.executeCommand('workbench.action.openSettings', 'mrvc.mrs2InstallPath mrvc.mrs3InstallPath');
+        void vscode.commands.executeCommand(
+          'workbench.action.openSettings',
+          'mrvc.mrs2InstallPath mrvc.mrs3InstallPath mrvc.toolchainOnlyPath'
+        );
       } else if (useLabel && pick === useLabel && sel.detected) {
         // adopt the detected install into the field of its own generation
-        void updateMrsSetting(sel.detected.flavor === 'mrs3' ? 'mrs3InstallPath' : 'mrs2InstallPath', sel.detected.root);
+        void updateMrsSetting(detectedFieldKey(sel.detected), sel.detected.root);
       } else if (swapLabel && pick === swapLabel) {
         // the two values sit in each other's field — exchange them
         void updateMrsSetting('mrs2InstallPath', sel.mrs3PathValue);
@@ -652,6 +688,7 @@ export function installGate(context: vscode.ExtensionContext, onReady: () => voi
       if (
         !e.affectsConfiguration('mrvc.mrs2InstallPath') &&
         !e.affectsConfiguration('mrvc.mrs3InstallPath') &&
+        !e.affectsConfiguration('mrvc.toolchainOnlyPath') &&
         !e.affectsConfiguration('mrvc.mrsVersion')
       ) {
         return;
@@ -707,6 +744,13 @@ function announceInstallNotes(sel: InstallSelection): void {
         else if (pick === pin2) void updateMrsSetting('mrsVersion', 'mrs2');
       });
   }
+}
+
+/** which setting key holds an install of this kind (IDE by generation,
+ *  standalone toolchain by its own key) */
+function detectedFieldKey(install: MrsInstall): string {
+  if (install.kind === 'toolchain') return 'toolchainOnlyPath';
+  return install.flavor === 'mrs3' ? 'mrs3InstallPath' : 'mrs2InstallPath';
 }
 
 /** write a setting at the scope the user already used (global by default) */

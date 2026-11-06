@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ProjectStore, getInstall, MrsProject } from './projects';
 import { Cproject } from '../core/cproject';
-import { ToolchainInfo } from '../core/toolchain';
+import { ToolchainInfo, withRealSuffix } from '../core/toolchain';
 import { buildCompileEntries, partitionByReference, contextDatabases, versionAtLeast, CompileCommandEntry } from '../core/intellisense';
 import { t } from '../core/i18n';
 
@@ -637,7 +637,10 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
         intelliSenseMode: 'gcc-x64',
       };
       if (firstTc) {
-        mine.compilerPath = firstTc.compilerC;
+        // the real on-disk spelling: cpptools stats compilerPath, and on
+        // Windows the manifest's bare name has no file behind it (only
+        // name.exe does) — round13 §4.4 / round14 §2.4
+        mine.compilerPath = withRealSuffix(firstTc.compilerC);
         // no cppCompilerPath: cpptools' c_cpp_properties schema rejects that
         // property and flags it in the Problems panel — compilerPath serves
         // both C and C++

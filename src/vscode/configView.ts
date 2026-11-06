@@ -894,7 +894,7 @@ export class ConfigView {
     const chipDb: ChipDb = (() => {
       const install = getInstall();
       if (!install) return { available: false, series: [] };
-      return scanChipDb(chipDbRoot(install.resourcesWin32));
+      return scanChipDb(chipDbRoot(install.resourcesDir));
     })();
 
     const pages = pageDefs.map((p, i) => {

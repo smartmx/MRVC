@@ -1,5 +1,26 @@
 # MRVC 更新日志
 
+## V0.2.6（2026-11-06）
+
+### 变更
+
+- **捆绑语义 `extensionPack` → `extensionDependencies`**：五项扩展（C/C++ 扩展包、书签、中文语言包、Hex 编辑器、Hex 悬停转换）的安装行为不变（装 MRVC 时自动装齐），但**卸载 MRVC 不再连带卸载它们**——`extensionPack` 的市场语义是"套装"（卸载即整套退），与"我只想删 MRVC"的预期相反；改为 `extensionDependencies`（硬依赖）后卸载互不影响，代价是 MRVC 在装期间这些扩展不能被单独卸载（VSCode 对依赖项的规定行为）。
+- **工程/Solution 自动发现的扫描深度 6 → 8 层**：有的用户会把整个大文件夹当工作区打开，工程混在其他文件里埋得更深——8 层在覆盖这类布局与避免扫整盘之间取平衡（工程根仍会截停下潜：CDT 模型不支持嵌套工程）。
+- **跨平台支持（Linux / macOS）**：安装探测、启动门控与构建链路按宿主平台适配（Windows 行为零变化）。
+  - **设置项**：`mrvc.mrs2InstallPath` / `mrvc.mrs3InstallPath` 的默认值改为空——VSCode 的 schema 默认值无法按平台变化，惯例位置改为运行时探测（Windows 仍是 `C:\MounRiver\MounRiver_Studio2|3`，零配置结果与 0.2.x 一致；Linux 认 .deb 的 `/usr/share/MRS3/MRS-linux-x64`，macOS 认 `/Applications/MounRiver Studio 3.app`）。新增 **`mrvc.toolchainOnlyPath`**——纯工具链根目录（`MRS_Toolchain_*` 解包内容：顶层 `Toolchain/` + `OpenOCD/`，无 IDE、无自带 make，使用系统 PATH 中的 make），可单独使用（Intel Mac 只有它可用）也可与 IDE 路径并存。`mrvc.mrsVersion` 偏好语义扩展：mrs2 → MRS2 IDE → 纯工具链 → MRS3；mrs3 → MRS3 → MRS2 → 纯工具链；auto → MRS3 → MRS2 → 纯工具链，回退照旧报告。
+  - **启动器校验按平台**：Windows `MounRiver Studio N.exe`；Linux `mounriver-studio N`（根目录或 `bin/`，覆盖 tar 与 .deb 两种布局）；macOS 接受 `.app`（或其 `Contents/`），校验 `Contents/MacOS/Electron`，代次仍由 product.json 判定。启动门控文案/按钮同步三键化（`mrvc.toolchainOnlyPath` 纳入监听与"打开设置"）。
+  - **架构门禁（Linux/macOS）两级判定**：启动时读各工具链 gcc 的二进制头（ELF `e_machine` / Mach-O `cputype`，universal FAT 直接通过），**只要有任一工具链与本机架构匹配即放行**；全部不匹配才 `wrong-arch` 拒绝（覆盖"arm64 专用 macOS MRS3 装在 Intel Mac"）。混合架构包（mac V2.4：GCC8=x86_64、GCC12/15=arm64）在 Apple Silicon 上不再被整包误拒——**实际选用的工具链在构建时再核一次**（`toolchainArchProblem`），选到异构的那支（如 arm64 上选 GCC8）会得到明确警告并拒绝该次构建，提示改用原生工具链；警告每次选用都会弹出（toolchain() 的调用频度即用户动作——构建/烧录/终端/属性页），不做会话去重以免后续尝试只剩误导性的"未找到工具链"。
+  - **零配置语义**：所有字段为空时按平台惯例位置直接采用（fromDefault 标记，与 0.2.x 的"默认值即建议"体验等价）；字段已配置时惯例位置照旧只作 `detected` 一键采用，绝不静默顶替。
+  - **构建包装 POSIX 分支**：单个 bash 脚本（`make 2>&1 | tee` 逐行实时进终端与记录；干跑 `>>` 追加只进记录——POSIX 重定向字节透明，不存在 Windows 的码页污染；`PIPESTATUS` 保退出码；开头 `mkdir -p` 重建记录目录，对临时目录清理免疫）。Windows 链的四个坑（SyncTextWriter AutoFlush、批量写延迟、Set-Location 不改子进程 cwd、cmd 按 ANSI 写记录）在 POSIX 均无对应物。任务启动 POSIX 走 `/bin/bash <script>`；make 解析改为"自带 make 或系统 PATH 的 make"（纯工具链形态没有自带 make）；两处 PATH 注入的硬编码 `;` 改 `path.delimiter`（Windows 等价）。
+  - **Windows 专属能力按缺席降级**：MRS Tools 六工具与 WCH-LinkUtility 在 Linux/macOS 安装里本就不存在（MRS3 Linux/Mac 只有 CommunicationLib/Firmware_Link/IQMath/WCHAgent），沿用既有缺失降级。
+  - **WCH-Link 硬件操作桥跨平台**（复审 round13-15 链路的收尾）：Download Settings 的读保护/调试保护/芯片 ID/擦除/Memory Assign 现在三平台都可用——Linux/macOS 走**进程内 koffi FFI** 调 CommunicationLib 的 `libmcuupdate.so/.dylib`（与 MRS 自家 mrs-vscode 扩展同款机制；符号表实证 61 个 `MRSFunc_*`/`McuCompiler_*` 导出与 Windows DLL 同族同名，签名表逐字共享）。koffi 作为正式依赖打包（静态 `require('koffi')`，随 vsix 带 linux_x64 + darwin_arm64 预编译件；esbuild external、`verify-vsix` 断言预编译件在包内）；首次 dlopen 失败自动预载同目录 libusb/hidapi 支持库后重试；FFI 抛错一律落为 error 结果。Windows 路径保持 0.2.x 的进程外 PowerShell P/Invoke 逐字节不变（MRS2 32 位 DLL 装不进 64 位扩展宿主）。POSIX 侧待实体机验证。
+  - **新建工程向导支持 POSIX**（复审 round14 §3.1）：模板解压按平台分流——Windows 仍走 PowerShell `Expand-Archive`（行为逐字节不变）；Linux/macOS 走系统 `unzip`（macOS 自带），缺失时回退 `bsdtar`（macOS 原生 tar 能读 zip），两者都没有时给出"安装 unzip"的明确指引。解压调用一律纯参数列表，不拼 shell 串。
+  - **`.wvsln` 工具链提示行按平台生成**（复审 round14 §3.2）：Windows 拼写逐字节不变（反斜杠 + `openocd.exe`）；POSIX 用正斜杠且无 `.exe` 后缀（`${eclipse_home}` 占位符保留，由读取方解析）——此前在 Linux/macOS 上生成的 solution 会写入指向不存在 Windows 路径的提示行。
+  - **IntelliSense 的 `compilerPath` 改写真实文件名**（复审 round13 §4.4 / round14 §2.4）：清单里的编译器名不带 `.exe`——make 配方依赖 CreateProcess 的补全所以必须保持裸名，但 cpptools 会 stat `compilerPath`，Windows 上裸名背后没有文件。现在按平台补全真实拼写（`withRealSuffix`），POSIX 不变；编译数据库的 `command` 仍用裸名（clangd 走 PATH 解析，与 makefile 同一口径）。
+  - 内部接口：`MrsInstall` 增加 `kind: 'ide' | 'toolchain'`，`resourcesWin32` 更名 `resourcesDir`（不再暗示 win32 专属）；`toolchain.ts` 增加 `setHostPlatformForTests` 测试缝。
+- **测试**：`mrsinstall-test` 重写为多平台 fixture（win32/linux/darwin 三形态布局、架构门禁、独立工具链、三候选排名、零配置采用），`installgate-test` 在 linux 假宿主下隔离真机惯例路径并覆盖三键与独立工具链开局，`wrapper-test` 增加 POSIX 脚本形状断言并**经 bash 实跑**（首块 178 ms、进程 2.7 s 结束；记录内容、干跑只进记录、标签只进终端、失败退出码 7 透传全部成立）；`build-test.mjs` 的 make 调用与 PATH 注入平台化。用解包的真实 `MRS_Toolchain_Linux_X64_V240` 树验证：独立形态识别、GCC8/12/15 三工具链解析、linux 宿主架构门禁通过、IDE 字段指向工具链根正确报 `not-install`。
+- **已知边界**：下载/烧录与硬件操作桥的 POSIX 通道已实现但未实测（OpenOCD 与 libmcuupdate FFI 路径都在位，USB 需真机或 usbipd 直通验证）。**POSIX 硬件桥与 MRS 自家实现有一处待真机分辨的差异**：MRS 每次目标操作前会 `SetTargetChip → doUpdate（连接/刷写器件参数）→ 操作`，MRVC 的 POSIX 桥目前只有 SetTargetChip → 操作——若真机上操作整体失败，优先对照 MRS 扩展补 doUpdate 等价导出；macOS 的 MRS3 IDE 为 arm64 专用包（Intel Mac 上无 CommunicationLib，硬件操作会得到明确的"未找到"错误）。
+
 ## V0.2.5（2026-10-23）
 
 ### 变更

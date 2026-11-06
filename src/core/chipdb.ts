@@ -45,9 +45,9 @@ export interface ChipDb {
   series: ChipSeries[];
 }
 
-/** <MRS2 install>/resources/win32/components/WCH/SDK/default */
-export function chipDbRoot(resourcesWin32: string): string {
-  return path.join(resourcesWin32, 'components', 'WCH', 'SDK', 'default');
+/** <MRS install resources dir>/components/WCH/SDK/default */
+export function chipDbRoot(resourcesDir: string): string {
+  return path.join(resourcesDir, 'components', 'WCH', 'SDK', 'default');
 }
 
 export function scanChipDb(sdkDir: string): ChipDb {

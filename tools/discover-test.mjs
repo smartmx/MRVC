@@ -1,6 +1,10 @@
 /**
  * Discovery coverage test: replicate the plugin's project-discovery walk
  * against a tree and diff against the full .cproject enumeration.
+ * Ground truth walks ONE level deeper than the engine under test, so a tree
+ * whose projects sit below the tested depth trips "missed" — that is the
+ * regression signal for the default depth being too small. Exits non-zero
+ * on any missed/extra difference.
  * Usage: node tools/discover-test.mjs [root] [depth]
  */
 import * as fs from 'fs';
@@ -10,16 +14,17 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { findProjectRoots } = require(path.join(here, '..', 'out', 'core', 'discover.js'));
+const { findProjectRoots, DEFAULT_DISCOVERY_DEPTH } = require(path.join(here, '..', 'out', 'core', 'discover.js'));
 
 const root = process.argv[2] ?? ['E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM', 'F:/CH585/EVT/V1_2/EXAM'].find((r) => fs.existsSync(r));
-const depth = Number(process.argv[3] ?? 6);
+const depth = Number(process.argv[3] ?? DEFAULT_DISCOVERY_DEPTH);
 
-// ground truth: every dir with a .wvproj (MRS marker) or .project
+// ground truth: every dir with a .wvproj (MRS marker) or .project, one level
+// beyond the engine's reach (see header)
 const truth = [];
 let noProject = 0;
 (function walk(dir, d) {
-  if (d > 8) return;
+  if (d > depth + 1) return;
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -47,3 +52,4 @@ const extra = found.filter((f) => !truthSet.has(f));
 console.log(`[discover] depth=${depth}: found ${found.length}, truth ${truth.length} (${noProject} without .project), missed ${missed.length}, extra ${extra.length}`);
 for (const m of missed) console.log('  MISSED:', path.relative(root, m).replace(/\\/g, '/'));
 for (const e of extra) console.log('  EXTRA :', path.relative(root, e).replace(/\\/g, '/'));
+if (missed.length || extra.length) process.exit(1);

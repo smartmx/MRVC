@@ -1,8 +1,11 @@
 /**
  * MRS Tools launcher paths (pure Node) — resolves the external tools that
  * MRS2/MRS3's Tools menu starts. Two layouts, matching MRS:
- *   component layout: <win32>/components/WCH/Others/<comp>/default/<exe>
- *   flat others layout: <win32>/others/<dir>/<exe>
+ *   component layout: <res>/components/WCH/Others/<comp>/default/<exe>
+ *   flat others layout: <res>/others/<dir>/<exe>
+ * Every entry is existence-checked: the GUI tools ship only in the Windows
+ * installs, so on Linux/macOS (and for a standalone toolchain root) all of
+ * them resolve to '' and the commands degrade to a not-found message.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -23,8 +26,8 @@ export interface MrsTools {
 
 /** resolve every tool executable; empty string = that component is missing */
 export function resolveMrsTools(install: MrsInstall): MrsTools {
-  const wchOthers = path.join(install.resourcesWin32, 'components', 'WCH', 'Others');
-  const othersFlat = path.join(install.resourcesWin32, 'others');
+  const wchOthers = path.join(install.resourcesDir, 'components', 'WCH', 'Others');
+  const othersFlat = path.join(install.resourcesDir, 'others');
   const tool = (base: string, rel: string): string => {
     const p = path.join(base, rel);
     return fs.existsSync(p) ? p : '';

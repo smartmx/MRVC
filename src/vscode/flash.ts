@@ -222,7 +222,9 @@ export function openMrsTerminal(store: ProjectStore): void {
   const toolDirs: string[] = [];
   const tc = store.active?.toolchain(install, vscode.workspace.getConfiguration('mrvc').get('toolchain', 'auto'));
   if (tc) toolDirs.push(path.join(tc.dir, 'bin'));
-  const envPath = [...toolDirs, install.makeBin, path.dirname(install.openocdExe), process.env['PATH'] ?? ''].join(';');
+  const envPath = [...toolDirs, install.makeBin, path.dirname(install.openocdExe), process.env['PATH'] ?? '']
+    .filter(Boolean)
+    .join(path.delimiter);
   const terminal = vscode.window.createTerminal({
     name: 'MRS Command Line',
     env: { ...process.env, PATH: envPath },

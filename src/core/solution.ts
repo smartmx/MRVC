@@ -66,14 +66,30 @@ export interface ParsedSolution {
 
 const CASE_FOLD = process.platform === 'win32';
 
-/** toolchain lines MRS2 itself writes; `${eclipse_home}` = its install dir */
-const TOOLCHAIN_LINES = [
-  '-arm:${eclipse_home}\\toolchain\\arm-none-eabi-gcc\\bin',
-  '-build:${eclipse_home}\\toolchain\\Build Tools\\bin',
-  '-openocd name:openocd.exe',
-  '-openocd path:${eclipse_home}\\toolchain\\OpenOCD\\bin',
-  '-rv:${eclipse_home}\\toolchain\\RISC-V Embedded GCC\\bin',
-];
+/**
+ * Toolchain lines MRS2 itself writes into a .wvsln; `${eclipse_home}` =
+ * MRS's install dir (resolved by the READER, so the placeholder stays).
+ * Windows keeps the 0.2.x spelling byte-identical (backslashes, openocd.exe);
+ * POSIX gets the forward-slash, suffix-less form its installs actually use.
+ */
+export function toolchainLinesFor(platform: NodeJS.Platform): string[] {
+  if (platform === 'win32') {
+    return [
+      '-arm:${eclipse_home}\\toolchain\\arm-none-eabi-gcc\\bin',
+      '-build:${eclipse_home}\\toolchain\\Build Tools\\bin',
+      '-openocd name:openocd.exe',
+      '-openocd path:${eclipse_home}\\toolchain\\OpenOCD\\bin',
+      '-rv:${eclipse_home}\\toolchain\\RISC-V Embedded GCC\\bin',
+    ];
+  }
+  return [
+    '-arm:${eclipse_home}/toolchain/arm-none-eabi-gcc/bin',
+    '-build:${eclipse_home}/toolchain/Build Tools/bin',
+    '-openocd name:openocd',
+    '-openocd path:${eclipse_home}/toolchain/OpenOCD/bin',
+    '-rv:${eclipse_home}/toolchain/RISC-V Embedded GCC/bin',
+  ];
+}
 
 /**
  * Write a .wvsln grouping the given project roots — the inverse of
@@ -85,7 +101,7 @@ const TOOLCHAIN_LINES = [
  * absolute lines.
  */
 export function writeSolution(file: string, projectRoots: string[], buildOrder?: string[]): void {
-  const lines: string[] = [...TOOLCHAIN_LINES];
+  const lines: string[] = toolchainLinesFor(process.platform);
   // preserve/emit the build order line the parser understands
   if (buildOrder?.length) lines.push(`BuildOrder=${buildOrder.join(',')}`);
   for (const root of projectRoots) {

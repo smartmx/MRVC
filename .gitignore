@@ -1,5 +1,9 @@
 out/
 node_modules/
+# the FFI runtime must be tracked: re-include vendor-ffi/node_modules BEFORE
+# the koffi subtree (git needs the un-ignored DIRECTORY to descend into it)
+!vendor-ffi/node_modules/
+!vendor-ffi/node_modules/koffi/
 .scratch/
 .mimosa/
 buildlogs/
