@@ -33,18 +33,29 @@ import { setProjectCpp } from './core/projectType';
 import { SyncPage } from './vscode/syncPage';
 import { MacroBatchPage } from './vscode/macroBatch';
 import { comTransmitCmd, hexBinToolCmd, ispToolCmd, touchkeyToolCmd, uiDesignerCmd, wchToolKitCmd } from './vscode/mrsTools';
-import { ensureIntellisenseConfig, resolveProjectForFile, switchContext, maybePromptCppTools } from './vscode/intellisense';
+import { ensureIntellisenseConfig, applyCacheOverrides, resolveProjectForFile, switchContext, maybePromptCppTools } from './vscode/intellisense';
 import { addProjectToSolutionCmd, addProjectsByBatchCmd, setBuildOrderCmd, closeSolutionCmd, modifySolutionToolchainCmd, recoverSolutionPath } from './vscode/solutionLife';
 import { generateCMakeListCmd, exportAsCMakeCmd } from './vscode/cmakeExport';
 import { buildRecordFile } from './core/buildLog';
 import { setLanguage, vscodeLanguageIsChinese, t } from './core/i18n';
 import { createProjectCmd, createStaticLibCmd } from './vscode/newProject';
 import { showStackUsageCmd, showCallAnalysisCmd } from './vscode/analysisReport';
+import { cppCacheCandidates, dirSizeBytes, clearCppIntelliSenseCache, isSafeCachePath } from './core/cppCache';
 
 /** V0.1.7 renamed the persisted keys mrs2.* → mrvc.*. One-time migration:
  * copy legacy values the new keys don't have yet, then drop the old keys
  * (both stores — without this, cpptoolsDontAsk would re-prompt and the
  * create-dir memory reset even though the values are still on disk). */
+
+/** surface ensureIntellisenseConfig failures once per message. The activation
+ *  path used to ignore the result entirely, so a broken/unparsable
+ *  settings.json silently disabled the cache-path override (round21 §5.4). */
+const intellisenseErrorsShown = new Set<string>();
+function reportIntellisenseError(error: string | undefined): void {
+  if (!error || intellisenseErrorsShown.has(error)) return;
+  intellisenseErrorsShown.add(error);
+  vscode.window.showWarningMessage(`MRVC: ${error}`);
+}
 function migrateLegacyState(context: vscode.ExtensionContext): void {
   const ws = context.workspaceState;
   for (const [oldKey, newKey] of [
@@ -211,7 +222,7 @@ function startExtension(context: vscode.ExtensionContext): void {
   store.onDidChange(() => {
     if (intellisenseTimer) clearTimeout(intellisenseTimer);
     intellisenseTimer = setTimeout(() => {
-      ensureIntellisenseConfig(store);
+      reportIntellisenseError(ensureIntellisenseConfig(store).error);
       // a config change regenerates the context project's database — refresh
       // the _active.json slot with it so the current context picks up the new
       // parameters (switchContext is content-gated: no-op when unchanged).
@@ -248,6 +259,7 @@ function startExtension(context: vscode.ExtensionContext): void {
 
   reg('mrvc.openProject', () => store.openProject());
   reg('mrvc.openFolder', () => store.openFolder());
+  reg('mrvc.clearIntelliSenseCache', () => void clearIntelliSenseCacheCommand());
   // the Flag commands refresh decorations through this (fileOps cannot
   // reach the decoration provider instance directly)
   reg('mrvc.refreshTreeDecorations', () => updateTreeDecorations());
@@ -421,24 +433,133 @@ function startExtension(context: vscode.ExtensionContext): void {
   reg('mrvc.excludeFromBuild', (item?: unknown) => excludeFromBuild(store, item as never));
   reg('mrvc.includeFromBuild', (item?: unknown) => includeFromBuild(store, item as never));
 
+  // ---- C/C++ IntelliSense (cpptools) cache maintenance ----
+  async function clearIntelliSenseCacheCommand(): Promise<void> {
+    // the user's C_Cpp.intelliSenseCachePath (if set) wins, then the built-in
+    // default — an old default can still hold gigabytes after a custom path
+    // was configured, so both are offered. Runtime-typed (round28 §3.1):
+    // get<T> is compile-time only, a hand-edited non-string value must not
+    // reach the resolver (its .trim() would throw inside the command)
+    const rawConfigured = vscode.workspace.getConfiguration('C_Cpp').get<unknown>('intelliSenseCachePath', '');
+    const configured = typeof rawConfigured === 'string' ? rawConfigured : '';
+    // a hand-edited non-string value (number, boolean, object…) is dropped
+    // below — say so instead of silently falling back to the default path,
+    // which would let the user believe their custom cache was cleaned
+    // (round29 §3.1); explicit null counts as "unset", like VS Code's own UI
+    if (rawConfigured !== '' && rawConfigured != null && typeof rawConfigured !== 'string') {
+      void vscode.window.showWarningMessage(
+        t('cacheClearMalformedPath', Array.isArray(rawConfigured) ? 'array' : typeof rawConfigured)
+      );
+    }
+    const forbidden = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+    // the safety guard runs HERE, before any size walk or dialog: an unsafe
+    // candidate (home ancestor, inside a workspace) is excluded up front
+    // instead of being scanned and only refused at deletion time (round23 §5.3)
+    const existing = cppCacheCandidates(configured || undefined).filter((c) => fs.existsSync(c.path));
+    const safe = existing.filter((c) => isSafeCachePath(c.path, forbidden, c.requireCacheShape));
+    const guarded = existing.filter((c) => !safe.includes(c));
+    if (!safe.length) {
+      if (guarded.length) {
+        // every candidate was refused by the safety guard — say WHY instead
+        // of a misleading "no cache found" (round25 §5.2)
+        vscode.window.showWarningMessage(t('cacheClearAllGuarded', guarded.map((c) => c.path).join('\n')));
+      } else {
+        vscode.window.showInformationMessage(t('cacheClearNone'));
+      }
+      return;
+    }
+    const sized = safe.map((c) => ({ ...c, bytes: dirSizeBytes(c.path) }));
+    const total = sized.reduce((s, x) => s + x.bytes, 0);
+    const okBtn = t('cacheClearConfirm');
+    // a partial guard refusal is stated IN the confirmation: the user must
+    // see that some discovered caches will NOT be touched (round26 §4.4)
+    const guardedNote = guarded.length ? '\n' + t('cacheClearGuardedNote', guarded.map((c) => c.path).join('\n')) : '';
+    const pick = await vscode.window.showWarningMessage(
+      t('cacheClearConfirmDetail', sized.map((s) => `${s.path} (${(s.bytes / 1048576).toFixed(1)} MB, ${s.source})`).join('\n'), (total / 1048576).toFixed(1)) + guardedNote,
+      { modal: true },
+      okBtn
+    );
+    if (pick !== okBtn) return;
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: t('cacheClearProgress') }, async () => {
+      const r = clearCppIntelliSenseCache(sized, forbidden);
+      if (!r.failed.length) {
+        vscode.window.showInformationMessage(t('cacheClearDone', (r.cleared.reduce((s, x) => s + x.bytes, 0) / 1048576).toFixed(1)));
+        return;
+      }
+      // "Reload Window" is offered ONLY for lock-type failures: a running
+      // cpptools holding a PCH open is the one case the extension-host
+      // restart actually finishes the cleanup. TOCTOU content loss, guard
+      // refusals and plain permission errors get their reason shown without
+      // a reload button — reloading would fix none of them (round26 §4.3 /
+      // round29 §3.2; the kind comes from the core classifier)
+      const detail = r.failed.map((f) => `${f.path}: ${f.error}`).join('\n');
+      const reload = t('reloadWindow');
+      const locked = r.failed.some((f) => f.kind === 'locked');
+      void vscode.window
+        .showWarningMessage(t('cacheClearPartial', detail), ...(locked ? [reload] : []))
+        .then((p) => {
+          if (p === reload) void vscode.commands.executeCommand('workbench.action.reloadWindow');
+        });
+    });
+  }
+
+
   // discover projects already inside the workspace (debounced once at start)
   setTimeout(() => {
     void store.discoverInWorkspace().then(() => {
-      ensureIntellisenseConfig(store);
+      reportIntellisenseError(ensureIntellisenseConfig(store).error);
       // the databases are only half of code navigation — make sure the
       // extension that consumes them is present and new enough
       maybePromptCppTools(context, store);
     });
   }, 800);
 
+  // while one of OUR build/clean/flash tasks runs, suspend the watcher-driven
+  // tree refreshes: make's obj/ write storm would otherwise re-render the
+  // tree every debounce window and blink the linked-folder decorations
+  // white↔blue for the whole build; the end handler below does the single
+  // real refresh for the artifacts
+  let buildTasksActive = 0;
+  const isTreeHeavyTask = (type: string): boolean =>
+    type === 'mrvc-build' || type === 'mrvc-build-all' || type === 'mrvc-clean' || type === 'mrvc-clean-all' || type === 'mrvc-flash';
+  context.subscriptions.push(
+    vscode.tasks.onDidStartTaskProcess((e) => {
+      if (isTreeHeavyTask(e.execution.task.definition.type) && ++buildTasksActive === 1) store.suspendTreeRefresh();
+    })
+  );
   // build dir watcher: refresh products after a build finishes (single and
-  // batch tasks alike — artifacts land outside the source-file watcher)
+  // batch tasks alike — artifacts land outside the source-file watcher).
+  // Skipped while another batch member is still running (the final resume's
+  // catch-up refresh covers the batch with ONE render, round22 §5.5).
   context.subscriptions.push(
     vscode.tasks.onDidEndTaskProcess((e) => {
       const t = e.execution.task.definition.type;
-      if (t === 'mrvc-build' || t === 'mrvc-build-all' || t === 'mrvc-clean' || t === 'mrvc-clean-all' || t === 'mrvc-flash') {
-        tree.refresh();
-        ensureIntellisenseConfig(store);
+      if (isTreeHeavyTask(t)) {
+        if (buildTasksActive > 0 && --buildTasksActive === 0) store.resumeTreeRefresh();
+        if (!store.isTreeRefreshSuspended()) tree.refresh();
+        reportIntellisenseError(ensureIntellisenseConfig(store).error);
+      }
+    })
+  );
+
+  // cache settings take effect IMMEDIATELY via the CHEAP override writer
+  // (round22 §5.2 / round23 §5.4) — a full ensureIntellisenseConfig on a big
+  // EVT workspace would stall the host just because a cache setting changed.
+  // The whole callback is guarded: a settings change must NEVER surface as
+  // an unhandled extension-host exception (round25 §5.4).
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (!e.affectsConfiguration('mrvc.intellisense.cachePath') && !e.affectsConfiguration('mrvc.intellisense.cacheSize')) return;
+      try {
+        const r = applyCacheOverrides();
+        if (r.invalidSettings.length) {
+          reportIntellisenseError(t('invalidCacheSettings', r.invalidSettings.join('; ')));
+        }
+        if (r.unreadable.length) {
+          reportIntellisenseError(t('cacheSettingsUnreadable', r.unreadable.join(', ')));
+        }
+      } catch (e2) {
+        reportIntellisenseError(e2 instanceof Error ? e2.message : String(e2));
       }
     })
   );

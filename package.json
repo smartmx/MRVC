@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "publisher": "smartmx",
   "license": "MIT",
   "repository": {
@@ -14,10 +14,7 @@
   },
   "extensionDependencies": [
     "ms-vscode.cpptools-extension-pack",
-    "koalamer.labeled-bookmarks",
-    "MS-CEINTL.vscode-language-pack-zh-hans",
-    "ms-vscode.hexeditor",
-    "maziac.hex-hover-converter"
+    "MS-CEINTL.vscode-language-pack-zh-hans"
   ],
   "categories": [
     "Programming Languages",
@@ -137,6 +134,20 @@
             "description": "Custom toolchain entry."
           },
           "description": "Custom (user-provided) toolchains. Reference by name via mrvc.toolchain — matching is case-insensitive. Custom entries win over the MRS2-installed ones with the same name; prefixes are auto-detected from bin/ when omitted.",
+          "order": 1
+        },
+        "mrvc.intellisense.cachePath": {
+          "type": "string",
+          "default": "",
+          "description": "Automatically write C_Cpp.intelliSenseCachePath into every workspace's .vscode/settings.json (a workspace value overrides the user-level one), so the cpptools ipch cache lands on a drive of your choice instead of filling C:. Use a directory OUTSIDE any opened project folder (e.g. F:\\mrvc-cache); pair with mrvc.intellisense.cacheSize to cap it. Empty = the path key is not written (the size key still is, unless mrvc.intellisense.cacheSize is 0). Clear the cache any time with the MRVC: Clear C/C++ IntelliSense Cache command. / 自动把 C_Cpp.intelliSenseCachePath 写入各工作区的 .vscode/settings.json（工作区值覆盖用户级配置），让 cpptools 的 ipch 缓存落到指定盘符而不是撑满 C 盘。请填写任何已打开工程文件夹之外的目录（如 F:\\mrvc-cache），并建议配合 mrvc.intellisense.cacheSize 限容；留空 = 不写路径键（size 键仍会写入，除非 mrvc.intellisense.cacheSize 填 0）。随时可用 MRVC: Clear C/C++ IntelliSense Cache 命令清缓存。",
+          "order": 1
+        },
+        "mrvc.intellisense.cacheSize": {
+          "type": "number",
+          "default": 5120,
+          "minimum": 0,
+          "multipleOf": 1,
+          "description": "Automatically write C_Cpp.intelliSenseCacheSize into every workspace's .vscode/settings.json (a workspace value overrides the user-level one), pinning the cpptools ipch cache disk cap in MB. Default 5120 — the same value as cpptools' own default — so the cap is pinned explicitly in the workspace regardless of user-side changes. 0 = MRVC never touches this key. Pair with mrvc.intellisense.cachePath to relocate the cache as well. / 自动把 C_Cpp.intelliSenseCacheSize 写入各工作区的 .vscode/settings.json（工作区值覆盖用户级配置），显式固定 cpptools ipch 缓存的磁盘上限（MB）。默认 5120——与 cpptools 通用默认一致，写入工作区后不受用户侧改动影响。0 = MRVC 不触碰此键。可与 mrvc.intellisense.cachePath 搭配搬移缓存位置。",
           "order": 1
         },
         "mrvc.build.analysis": {
@@ -439,6 +450,11 @@
         "category": "MRVC"
       },
       {
+        "command": "mrvc.clearIntelliSenseCache",
+        "title": "%command.mrvc.clearIntelliSenseCache.title%",
+        "category": "MRVC"
+      },
+      {
         "command": "mrvc.createProject",
         "title": "%command.mrvc.createProject.title%",
         "category": "MRVC"
@@ -680,9 +696,14 @@
           "group": "0_new@2"
         },
         {
-          "command": "mrvc.openSettings",
+          "command": "mrvc.clearIntelliSenseCache",
           "when": "view == mrvc.projectExplorer",
           "group": "7_settings@1"
+        },
+        {
+          "command": "mrvc.openSettings",
+          "when": "view == mrvc.projectExplorer",
+          "group": "7_settings@2"
         }
       ],
       "view/item/context": [

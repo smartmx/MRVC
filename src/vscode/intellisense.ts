@@ -257,6 +257,103 @@ function writeIfChanged(file: string, content: string): boolean {
 
 type PropsWrite = 'written' | 'unchanged' | 'unreadable';
 
+const CACHE_PATH_KEY = 'C_Cpp.intelliSenseCachePath';
+const CACHE_SIZE_KEY = 'C_Cpp.intelliSenseCacheSize';
+
+/** one workspace-settings key MRVC manages: the value plus the type a hand
+ *  edit must keep (a path stays a string, a size stays a number) */
+interface WorkspaceSettingWrite {
+  key: string;
+  value: string | number;
+  kind: 'string' | 'number';
+}
+
+/**
+ * Write managed keys into ONE workspace settings.json — preserving
+ * everything else exactly like writePropsFile does for c_cpp_properties.json:
+ * plain-JSON files (and absent ones) re-serialize whole; JSONC files get a
+ * surgical value-span splice so user comments and sibling settings stay
+ * byte-for-byte; unparsable files are never touched. A hand edit that turned
+ * a managed key into the wrong type is respected by leaving the file alone —
+ * never overwrite what we do not understand. MRVC only writes when the
+ * corresponding setting is configured, and never deletes what it finds.
+ */
+function writeWorkspaceCacheSettings(settingsFile: string, writes: WorkspaceSettingWrite[]): PropsWrite {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(settingsFile, 'utf-8');
+  } catch {
+    raw = ''; // absent — a fresh plain-JSON file is created below
+  }
+  const trailingCommas = new Map<number, number>();
+  const stripped = stripJsonc(raw, trailingCommas);
+  let parsed: Record<string, unknown> | undefined;
+  if (raw !== '') {
+    try {
+      parsed = JSON.parse(stripped) as Record<string, unknown>;
+    } catch {
+      return 'unreadable';
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'unreadable';
+  }
+  if (raw === stripped) {
+    const settings = (parsed ?? {}) as Record<string, unknown>;
+    for (const w of writes) {
+      const existing = settings[w.key];
+      if (existing !== undefined && existing !== null && typeof existing !== w.kind) return 'unreadable';
+      if (existing === w.value) continue;
+      settings[w.key] = w.value;
+    }
+    return writeIfChanged(settingsFile, JSON.stringify(settings, null, 2) + '\n') ? 'written' : 'unchanged';
+  }
+  // ---- JSONC path: splice only our value spans / insert our properties ----
+  const props = objectProps(stripped);
+  if (!props) return 'unreadable';
+  const rootOpen = skipWs(stripped, 0);
+  const rootClose = matchBracket(stripped, rootOpen);
+  if (rootClose < 0) return 'unreadable';
+  const edits: Array<{ start: number; end: number; text: string }> = [];
+  const pending: WorkspaceSettingWrite[] = [];
+  for (const w of writes) {
+    const mine = props.find((p) => p.key === w.key);
+    if (mine) {
+      let frag: unknown;
+      try {
+        frag = JSON.parse(stripped.slice(mine.value.start, mine.value.end));
+      } catch {
+        return 'unreadable';
+      }
+      if (frag !== null && typeof frag !== w.kind) return 'unreadable'; // hand edit — never touch
+      if (frag === w.value) continue; // already the desired value
+      edits.push({ start: mine.value.start, end: mine.value.end, text: JSON.stringify(w.value) });
+    } else {
+      pending.push(w);
+    }
+  }
+  if (pending.length) {
+    const rootIndent = indentOf(stripped, rootOpen) + '  ';
+    const empty = stripped.slice(rootOpen + 1, rootClose).trim() === '';
+    const sep = props.length === 0 || hadTrailingCommaFn(trailingCommas, rootClose) ? '' : ',';
+    const body = pending.map((w) => `"${w.key}": ${JSON.stringify(w.value)}`).join(`,\n${rootIndent}`);
+    const text = empty
+      ? `\n${rootIndent}${body}\n${indentOf(stripped, rootClose)}`
+      : `${sep}\n${rootIndent}${body}`;
+    edits.push({ start: rootClose, end: rootClose, text });
+  }
+  if (!edits.length) return 'unchanged';
+  edits.sort((a, b) => b.start - a.start || b.end - a.end);
+  let out = raw;
+  for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  return writeIfChanged(settingsFile, out) ? 'written' : 'unchanged';
+}
+
+/** does the raw file carry a trailing comma whose own container closes at
+ * `closer`? (same rule writePropsFile uses before adding a separator) */
+function hadTrailingCommaFn(trailingCommas: Map<number, number>, closer: number): boolean {
+  for (const end of trailingCommas.values()) if (end === closer) return true;
+  return false;
+}
+
 /**
  * Add/update the MRVC configuration entry in one c_cpp_properties.json.
  * Plain-JSON files (and absent ones) are re-serialized whole — byte-stable
@@ -663,12 +760,35 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
         unreadableFolders.push(wf.name);
       }
     }
+
+    // 3. the cache overrides: when configured, MRVC writes
+    // C_Cpp.intelliSenseCachePath (from mrvc.intellisense.cachePath) and
+    // C_Cpp.intelliSenseCacheSize (from mrvc.intellisense.cacheSize, MB)
+    // into each workspace folder's .vscode/settings.json (a workspace value
+    // beats the user-level one), so the ipch cache lands on a chosen drive
+    // with a chosen cap instead of filling C:. Per-key opt-out: an EMPTY
+    // path setting skips the path key, a 0 size setting skips the size key —
+    // the OTHER key is still written (round24 §5.2 wording).
+    const cacheOverrides = applyCacheOverrides();
+    // every problem AT ONCE (round31 §3.3): a user shouldn't have to fix
+    // one and re-run to discover the next — the reported error is a
+    // multi-line list of everything that went wrong in this pass
+    const problems: string[] = [];
+    if (cacheOverrides.invalidSettings.length) {
+      problems.push(t('invalidCacheSettings', cacheOverrides.invalidSettings.join('; ')));
+    }
     if (unreadableFolders.length) {
+      problems.push(t('cppPropertiesUnreadable', unreadableFolders.join(', ')));
+    }
+    if (cacheOverrides.unreadable.length) {
+      problems.push(t('cacheSettingsUnreadable', cacheOverrides.unreadable.join(', ')));
+    }
+    if (problems.length) {
       return {
         projects: all.length,
         entries,
         updated: ccUpdated || propsUpdated,
-        error: `c_cpp_properties.json unreadable in: ${unreadableFolders.join(', ')} — left untouched`,
+        error: problems.join('\n'),
       };
     }
 
@@ -676,4 +796,65 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
   } catch (e) {
     return { projects: 0, entries: 0, updated: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+export interface CacheOverridesResult {
+  /** workspace folders whose settings.json could not be parsed */
+  unreadable: string[];
+  /** settings whose hand-edited value had the wrong runtime type — skipped,
+   *  surfaced so the user learns WHY a key was not written */
+  invalidSettings: string[];
+}
+
+/**
+ * The cache overrides ALONE (round23 §5.4): writing the two workspace
+ * settings keys needs no project scan, no toolchain resolution and no
+ * database rebuild — a cheap entry for the settings-change listener (a full
+ * ensureIntellisenseConfig on a big EVT workspace would stall the host just
+ * because the user edited a cache setting). Runtime-typed (round24 §5.1 /
+ * round25 §5.1): a hand-edited non-string path or non-number size is
+ * skipped and REPORTED via invalidSettings instead of throwing inside the
+ * configuration listener.
+ */
+export function applyCacheOverrides(): CacheOverridesResult {
+  const writes: WorkspaceSettingWrite[] = [];
+  const invalidSettings: string[] = [];
+  // runtime types: get<T> is a compile-time assertion only — a hand-edited
+  // settings value can be anything
+  const rawPath = vscode.workspace.getConfiguration('mrvc').get<unknown>('intellisense.cachePath', '');
+  if (rawPath === undefined || rawPath === null || rawPath === '') {
+    // not configured — the path key is simply not written
+  } else if (typeof rawPath === 'string') {
+    const t = rawPath.trim();
+    if (t) writes.push({ key: CACHE_PATH_KEY, value: t, kind: 'string' });
+  } else {
+    invalidSettings.push('mrvc.intellisense.cachePath: not a string (skipped)');
+  }
+  const rawSize = vscode.workspace.getConfiguration('mrvc').get<unknown>('intellisense.cacheSize', 0);
+  if (typeof rawSize === 'number' && Number.isFinite(rawSize) && rawSize > 0) {
+    // round26 §4.1: a fractional MB would floor to 0 (= "no cap" for
+    // cpptools) — reject non-integers instead of writing a silent 0
+    if (!Number.isInteger(rawSize)) {
+      invalidSettings.push(`mrvc.intellisense.cacheSize: ${rawSize} is not a whole number of MB (skipped)`);
+    } else {
+      writes.push({ key: CACHE_SIZE_KEY, value: rawSize, kind: 'number' });
+    }
+  } else if (typeof rawSize === 'number' && rawSize < 0) {
+    // round28 §3.2: a NEGATIVE value is reported (0 stays the silent opt-out)
+    invalidSettings.push(`mrvc.intellisense.cacheSize: ${rawSize} MB is not a positive cap (skipped)`);
+  } else if (rawSize !== undefined && rawSize !== null && rawSize !== 0 && typeof rawSize !== 'number') {
+    invalidSettings.push('mrvc.intellisense.cacheSize: not a number (skipped)');
+  }
+  const unreadable: string[] = [];
+  if (!writes.length) return { unreadable, invalidSettings };
+  for (const wf of vscode.workspace.workspaceFolders ?? []) {
+    try {
+      fs.mkdirSync(path.join(wf.uri.fsPath, '.vscode'), { recursive: true });
+      const r = writeWorkspaceCacheSettings(path.join(wf.uri.fsPath, '.vscode', 'settings.json'), writes);
+      if (r === 'unreadable') unreadable.push(wf.name);
+    } catch {
+      unreadable.push(wf.name);
+    }
+  }
+  return { unreadable, invalidSettings };
 }

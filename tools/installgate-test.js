@@ -88,6 +88,8 @@ const DEFAULT3 = inside(ROOT, 'default-mrs3');
 const settings = {};
 const messages = [];
 const configListeners = [];
+/** every watcher the stub created, for driving ProjectStore's bump handlers */
+const fakeWatchers = [];
 const vscodeStub = {
   window: {
     showErrorMessage: (text, ...buttons) => {
@@ -134,9 +136,58 @@ const vscodeStub = {
         },
       };
     },
+    /** fake watchers so a real ProjectStore can be constructed and driven:
+     *  every created watcher is recorded with its handlers for the tests */
+    createFileSystemWatcher: (pattern) => {
+      const w = {
+        pattern: String(pattern.pattern ?? pattern),
+        handlers: { change: [], create: [], delete: [] },
+        onDidChange: (fn) => {
+          w.handlers.change.push(fn);
+          return { dispose() {} };
+        },
+        onDidCreate: (fn) => {
+          w.handlers.create.push(fn);
+          return { dispose() {} };
+        },
+        onDidDelete: (fn) => {
+          w.handlers.delete.push(fn);
+          return { dispose() {} };
+        },
+        dispose() {},
+      };
+      fakeWatchers.push(w);
+      return w;
+    },
   },
   commands: { executeCommand: () => Promise.resolve() },
   ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
+  /** ProjectStore constructs EventEmitters — a minimal real one so the
+   *  onDidChange subscription/fire cycle works in the stub */
+  EventEmitter: class {
+    constructor() {
+      this.handlers = [];
+    }
+    get event() {
+      return (fn) => {
+        this.handlers.push(fn);
+        return { dispose: () => this.handlers.splice(this.handlers.indexOf(fn), 1) };
+      };
+    }
+    fire(x) {
+      for (const fn of [...this.handlers]) fn(x);
+    }
+    dispose() {
+      this.handlers = [];
+    }
+  },
+  /** tree/monitor wiring constructs RelativePattern for every watcher */
+  RelativePattern: class {
+    constructor(base, pattern) {
+      this.base = base;
+      this.pattern = pattern;
+    }
+  },
 };
 const orig = Module._resolveFilename;
 Module._resolveFilename = function (request, ...args) {
@@ -146,8 +197,8 @@ Module._resolveFilename = function (request, ...args) {
 require.cache['vscode-stub'] = { id: 'vscode-stub', filename: 'vscode-stub', loaded: true, exports: vscodeStub };
 
 let failures = 0;
-const check = (name, cond) => {
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
+const check = (name, cond, detail = '') => {
+  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  — ' + detail}`);
   if (!cond) failures++;
 };
 
@@ -324,6 +375,72 @@ const last = () => messages[messages.length - 1];
     check('arch gate: EVERY mismatched call warns again (no silent retries)', r2 === null && archWarns() === 2);
     const r3 = proj.toolchain(archInst, 'GCC8');
     check('arch gate: the native toolchain passes through untouched', !!r3 && r3.name === 'GCC8');
+  }
+
+  // 8. build-time tree-refresh suspension (round: linked-folder decorations
+  //    blinking white↔blue during a build) — a real ProjectStore is driven
+  //    through its fake obj-watcher: unsuspended bumps fire (debounced),
+  //    suspended bumps are swallowed, resume fires one catch-up refresh
+  {
+    const projRoot = inside(ROOT, 'watch-proj');
+    fs.mkdirSync(path.join(projRoot, 'src'), { recursive: true });
+    fs.writeFileSync(
+      inside(ROOT, 'watch-proj/.project'),
+      '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>WatchProj</name></projectDescription>'
+    );
+    fs.writeFileSync(
+      inside(ROOT, 'watch-proj/.cproject'),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="c" name="obj" artifactName="${ProjName}">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry flags="VALUE_WORKSPACE_PATH" name=""/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+    );
+    const { ProjectStore } = require('../out/vscode/projects.js');
+    const storeCtx = {
+      subscriptions: [],
+      workspaceState: { get: () => undefined, update: async () => {} },
+      globalState: { get: () => undefined, update: async () => {} },
+    };
+    const store = new ProjectStore(storeCtx);
+    const proj = store.add(projRoot);
+    check(
+      'watch: the project is added with its watchers',
+      !!proj && fakeWatchers.some((w) => /obj/.test(w.pattern)),
+      proj ? '' : ' — last message: ' + (messages[messages.length - 1]?.text ?? '(none)')
+    );
+    let fires = 0;
+    store.onDidChange(() => fires++);
+    const outW = fakeWatchers.find((w) => w.pattern.includes('obj'));
+    const bumpObj = (name) => outW.handlers.change.forEach((fn) => fn({ fsPath: path.join(projRoot, 'obj', name) }));
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    // unsuspended: an obj write bumps -> 400ms debounce -> exactly one fire
+    bumpObj('a.o');
+    await wait(520);
+    const afterFree = fires;
+    check('watch: an unsuspended bump fires exactly once (debounced)', afterFree === 1);
+    // round22 §5.5 negative probe: a bump whose debounce is ALREADY queued,
+    // followed immediately by suspend — the queued fire must be cancelled
+    bumpObj('pending.o');
+    store.suspendTreeRefresh();
+    await wait(520);
+    check('watch: a pre-suspension pending debounce stays suppressed', fires === afterFree);
+    // suspended: a whole build's worth of obj writes fires NOTHING
+    for (let i = 0; i < 5; i++) {
+      bumpObj('b' + i + '.o');
+      await wait(60);
+    }
+    check('watch: suspended bumps fire nothing during the build', fires === afterFree);
+    // resume: catch-up refresh is DELAYED 1 s (coalesced with the task-end
+    // refresh that fires immediately in the real wiring)
+    store.resumeTreeRefresh();
+    await wait(120);
+    check('watch: resume does not fire immediately (coalesced)', fires === afterFree);
+    // round23 §5.1: the catch-up must SURVIVE a re-suspend (Build All: the
+    // catch-up window of member N overlaps member N+1's task start)
+    store.suspendTreeRefresh();
+    await wait(1100);
+    check('watch: catch-up scheduled before a re-suspend is not lost', fires === afterFree);
+    store.resumeTreeRefresh();
+    await wait(1200);
+    check('watch: catch-up preserved across the re-suspend fires once', fires === afterFree + 1);
+    store.dispose();
   }
 
   setHostPlatformForTests(REAL_HOST);

@@ -325,6 +325,22 @@ export class BuildManager {
 
   /** Clean one project; never throws. */
   private cleanOne(p: MrsProject, install: NonNullable<ReturnType<typeof getInstall>>): Promise<BuildAllResult> {
+    // `make clean` deletes the whole obj/ tree — a write storm just like a
+    // build; wrap with the same suspension (nested with run()'s for rebuild)
+    this.store.suspendTreeRefresh();
+    return this.cleanOneInner(p, install).then(
+      (v) => {
+        this.store.resumeTreeRefresh();
+        return v;
+      },
+      (e) => {
+        this.store.resumeTreeRefresh();
+        throw e;
+      }
+    );
+  }
+
+  private cleanOneInner(p: MrsProject, install: NonNullable<ReturnType<typeof getInstall>>): Promise<BuildAllResult> {
     // shared guard with run()/buildOne: `make clean` against a running
     // build of the same project would delete .o/.d files mid-compile
     if (this.building.has(path.resolve(p.root).toLowerCase())) {
@@ -388,6 +404,36 @@ export class BuildManager {
   /** Build one project; never throws. */
   private buildOne(p: MrsProject, install: NonNullable<ReturnType<typeof getInstall>>, toolchainReq: string, jobs: number, analysis: boolean): Promise<BuildAllResult> {
     const fail = (detail: string): BuildAllResult => ({ project: p.projectName, ok: false, detail });
+    // the whole member build is wrapped: p.reload() + generateMakefiles write
+    // into the project/obj BEFORE the task starts, and the batch must not
+    // blink the tree between members either
+    this.store.suspendTreeRefresh();
+    try {
+      const promise = this.buildOneInner(p, install, toolchainReq, jobs, analysis, fail);
+      return promise.then(
+        (v) => {
+          this.store.resumeTreeRefresh();
+          return v;
+        },
+        (e) => {
+          this.store.resumeTreeRefresh();
+          throw e;
+        }
+      );
+    } catch (e) {
+      this.store.resumeTreeRefresh();
+      return Promise.resolve(fail(msg(e)));
+    }
+  }
+
+  private buildOneInner(
+    p: MrsProject,
+    install: NonNullable<ReturnType<typeof getInstall>>,
+    toolchainReq: string,
+    jobs: number,
+    analysis: boolean,
+    fail: (detail: string) => BuildAllResult
+  ): Promise<BuildAllResult> {
     let toolchainBinDir = '';
     try {
       p.reload();
@@ -473,6 +519,20 @@ export class BuildManager {
         });
       return;
     }
+    // suspend watcher-driven tree refreshes for the WHOLE run — including the
+    // pre-task window (generateMakefiles writes into obj/ before the task
+    // starts, and the task-start wiring only suspends from that moment on):
+    // the obj write storm would otherwise blink the linked-folder decorations
+    // through the first half of the build (round: user report)
+    this.store.suspendTreeRefresh();
+    try {
+      await this.runInner(kind, project, opts, buildKey);
+    } finally {
+      this.store.resumeTreeRefresh();
+    }
+  }
+
+  private async runInner(kind: BuildKind, project: MrsProject, opts: RunOptions | undefined, buildKey: string): Promise<void> {
 
     const install = getInstall();
     const tc = project.toolchain(install, vscode.workspace.getConfiguration('mrvc').get('toolchain', 'auto'));

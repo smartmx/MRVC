@@ -20,6 +20,7 @@
 | **Build Project And Download** | 工程右键 / 命令面板 **构建工程并下载**：编译 + 下载一条龙，编译成功才下载（与 MRS2 同名命令语义一致） |
 | **Show Full Build Output** | 命令面板 / 输出面板右键打开上次构建的完整输出（MRS2 同款 buildContentRecord.txt 位置），单工程与批量构建均记录，尾部附**全量编译指令清单**（每个源文件的完整命令行） |
 | **静态栈分析** | 设置 `mrvc.build.analysis` 开启后构建自动注入 `-fstack-usage` / `-fdump-rtl-expand`；**Static Stack Usage** / **Function Call Analysis** 命令生成分析报告（开源方案替代 MRS2 闭源解析器） |
+| **C/C++ 缓存治理** | 命令面板 **MRVC: Clear C/C++ IntelliSense Cache**：一键清除 cpptools 的 ipch 缓存（模态确认、逐路径体积、安全护栏、锁定路径降级；浏览数据库 `.BROWSE.VC.DB` 不在范围）。设置 `mrvc.intellisense.cachePath` 自动把 `C_Cpp.intelliSenseCachePath` 写进各工作区 `.vscode/settings.json`（工作区覆盖用户级），把缓存引到指定盘符而非撑满 C 盘——留空则不写路径键；设置 `mrvc.intellisense.cacheSize`（MB，默认 5120 与 cpptools 一致，0 = 不管理）自动写入 `C_Cpp.intelliSenseCacheSize` 显式固定上限 |
 | 新建工程向导 | `…` 菜单 → **新建 MounRiver 工程 / 静态库**：扫描 MRS2 SDK 模板（系列 → RTOS → 器件三步选择）→ 工程名 → **位置（可键入任意新路径自动创建，或点浏览按钮选择；默认上次创建目录）**，创建完成提示可一键在新窗口打开；renameProject 全套联动，MRS2 无损打开 |
 | 下载烧录 | 工程行内 **Flash 按钮** / 右键 **Download**：通过 MRS2 的 OpenOCD 下载 `obj/` 产物（hex/bin，地址取自 `.template` 的 Address，双核工程自动选 `wch-dual-core.cfg`；`.template` 勾选 **Erase All** 时下载前全片擦除）；输出进任务终端，失败弹提示 |
 | Download Settings | 属性页 → Download → Download Settings（镜像 MRS2）：**读保护状态查询 / 使能 / 解除**、**调试保护**、**Linked MCU Type 查询**、**Erase Code Flash**（By Pin NRST / By Power off）、**MCU Memory Assign**（Query/Apply）、**Operation Record** 操作日志；右侧完整编辑下载参数（MCU Type / Memory Type / Program Address / Debug Interface Mode / CLK Speed / Target File / Main Operations 八项），全部写回 `.template`（MRS2 无损打开）。硬件操作桥：Windows 走系统 32 位 PowerShell P/Invoke 调 McuCompilerDll.dll（MRS2 的 DLL 是 32 位，须进程外桥接）；Linux/macOS 进程内 koffi FFI 调 CommunicationLib 的 `libmcuupdate.so/.dylib`——与 MRS 自家扩展同款机制、同族 `MRSFunc_*` 导出；芯片 ID 与能力开关自动来自芯片库，不支持的选项按芯片自动灰显 |
@@ -36,6 +37,13 @@
 | 工具链选择 | `auto`（读 `.cproject` rvGcc/前缀）或强制 GCC8/GCC12/GCC15，均从 `sub_manifest.json` 动态解析 |
 
 快捷键：`F7` 编译，`Shift+F7` 重建，`F8` 下载（与 MRS 一致）。
+
+**推荐配套扩展**（随 MRVC 自动安装，也可在扩展市场单独安装）：
+- **C/C++ Extension Pack**（`ms-vscode.cpptools-extension-pack`）——MRVC 的 IntelliSense（代码提示/跳转）由它消费；
+- **Chinese (Simplified) Language Pack**（`MS-CEINTL.vscode-language-pack-zh-hans`）——中文界面。
+
+**可选推荐**（按需手动安装）：`koalamer.labeled-bookmarks`（MRS2 同款书签/注释）、
+`ms-vscode.hexeditor`（hex 文件查看/编辑）、`maziac.hex-hover-converter`（悬停即进制转换）。
 
 **界面语言**：命令菜单跟随 VSCode 显示语言自动中英文切换（内置双语资源）；提示/报错等
 运行时消息由 `mrvc.language` 设置驱动（`auto`/`en`/`zh-cn`，默认 auto）。

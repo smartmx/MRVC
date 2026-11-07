@@ -1,5 +1,43 @@
 # MRVC 更新日志
 
+## V0.2.7（2026-11-07）
+
+### 变更
+
+  - **新设置 `mrvc.intellisense.cachePath` / `mrvc.intellisense.cacheSize`（缓存位置与上限的工作区覆盖）**：
+  MRVC 自动把 `C_Cpp.intelliSenseCachePath`（配置后）与 `C_Cpp.intelliSenseCacheSize`（默认即写，5120 =
+  与 cpptools 通用默认一致）写进**每个工作区的 `.vscode/settings.json`**（工作区值覆盖用户级配置），让
+  cpptools 的 ipch 缓存落到指定盘符并显式固定磁盘上限。写入是 JSONC 保护式的——注释、兄弟设置、尾逗号
+  逐字节保留，只动这两个键；内容不变不落盘；settings.json 解析不了则原样不动并在结果中报告；
+  cachePath **留空 = 不写路径键**、cacheSize **填 0 = 不写上限键**，已写入的值也不会被 MRVC 删除。
+  cachePath 请填写任何已打开工程文件夹**之外**的目录（如 `F:\mrvc-cache`）。两个设置变更后**立即生效**
+  （轻量写入路径，不重建编译数据库）；手工编辑 settings.json 产生的**非字符串路径 / 非数字、非整数或
+  负数上限会被跳过并向用户警告**（不写该键、另一键照常、绝不让扩展宿主抛错；警告文案已本地化）——
+  小数上限（如 0.5）不会被静默取整成 0，负数不会冒充"无上限"（0 = 显式不写上限键的语义保持不变）。
+- **依赖项收窄**：`extensionDependencies` 从五项减为两项（**C/C++ Extension Pack** 与中文语言包）——
+  书签、Hex 编辑器、Hex 悬停转换三项改为 README 推荐安装、不再随 MRVC 自动装入（已装用户不受影响）。
+  卸载 MRVC 时仍不会连带卸载依赖项。
+- **新命令 `MRVC: Clear C/C++ IntelliSense Cache`（清除 C/C++ IntelliSense 缓存）**：大工程文件夹下
+  cpptools 的 ipch 缓存（默认上限 5120 MB）会膨胀到数 GB——本命令解析生效的 `C_Cpp.intelliSenseCachePath`
+  （含 MRVC 写入工作区的覆盖值）与平台默认位置（Windows `%LOCALAPPDATA%\Microsoft\vscode-cpptools\ipch`；
+  Linux `$XDG_CACHE_HOME\vscode-cpptools\ipch`（未设时 `~/.cache/...`）；macOS
+  `~/Library/Caches/vscode-cpptools/ipch`——与 cpptools 官方默认一致），模态确认（逐路径列出体积与来源、
+  合计 MB）后删除并报告释放空间。**自定义路径自适应识别**：cpptools 把设置值当缓存根（实际 PCH 在其下
+  `ipch/`，可为 `ipch/<哈希>/<名>.ipch` 嵌套布局），MRVC 按两种读法探测、且只对**经有界扫描确认含
+  `*.ipch` 内容**的目录提供删除——填错的路径永远不会成为删除目标；**安全护栏**：文件系统根、用户家
+  目录本身及其**祖先**（删祖先会连带家目录）、任何工作区文件夹一律拒绝，删除前还会**再次校验**缓存
+  内容（确认框停留期间目录被替换则放弃删除）；失败按**类型分级**：被运行中的 cpptools 锁住的路径
+  （Windows 共享冲突 EBUSY）降级为逐路径失败并提供一键重载窗口完成剩余清理——内容校验失败、护栏
+  拒绝与普通文件系统错误（EPERM 权限/ACL 等，重载无效）只显示原因、**不再误导性地提供重载按钮**，
+  绝不中断其余路径；`C_Cpp.intelliSenseCachePath` 被**手工编辑成非字符串**（数字/布尔/对象/数组）时
+  命令入口给出明确警告（该值已忽略、本次只尝试内置默认缓存路径）而不是静默回退，core 侧同样防御性
+  丢弃、绝不让命令抛错；IntelliSense 配置链路的全部失败提示（无效缓存设置 / settings.json 与
+  c_cpp_properties.json 不可读）已统一走中英文文案，且**多个问题同时存在时合并为一次多行报告**
+  （不再修一个才能看到下一个）；浏览数据库（`.BROWSE.VC.DB`，本机实测可达 2 GB+）
+  不在清理范围，确认框已注明。`ensureIntellisenseConfig` 的失败（如 settings.json 不可解析导致覆盖未
+  生效）现在也会在激活路径上警告一次，不再静默。旧测试文件里的动态 `require(path.join(...))` 顺带改为
+  静态字面量（与全库 require 约定一致）。
+
 ## V0.2.6（2026-11-06）
 
 ### 变更

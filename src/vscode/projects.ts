@@ -166,6 +166,13 @@ export class ProjectStore implements vscode.Disposable {
   private watchers = new Map<string, vscode.Disposable[]>(); // per project root
   private srcWatchers: vscode.Disposable[] = []; // workspace-wide source files
   private srcRefreshTimer: NodeJS.Timeout | undefined;
+  /** build tasks (wired in extension.ts) suspend watcher-driven tree
+   *  refreshes: make's obj/ write storm would otherwise re-render the tree
+   *  every debounce window and blink the linked-folder decorations
+   *  white↔blue for the whole build */
+  private treeRefreshSuspendCount = 0;
+  private bumpsWhileSuspended = false;
+  private catchUpTimer: NodeJS.Timeout | undefined;
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
@@ -187,6 +194,85 @@ export class ProjectStore implements vscode.Disposable {
 
   static key(root: string): string {
     return process.platform === 'win32' ? path.normalize(root).toLowerCase() : path.normalize(root);
+  }
+
+  /** called by the task wiring while one of OUR build/clean/flash tasks runs */
+  suspendTreeRefresh(): void {
+    this.treeRefreshSuspendCount++;
+    // cancel an already-queued debounce: the suspension must cover events
+    // that arrived BEFORE it (round22 §5.5 negative probe)
+    if (this.srcRefreshTimer) {
+      clearTimeout(this.srcRefreshTimer);
+      this.srcRefreshTimer = undefined;
+      this.bumpsWhileSuspended = true;
+    }
+    // a pending 1 s catch-up must SURVIVE the re-suspend (round23 §5.1):
+    // Build All's next member task starts while member N's catch-up window
+    // is still open — merge it back into the suspended-bumps flag so the
+    // final resume re-arms it
+    if (this.catchUpTimer) {
+      clearTimeout(this.catchUpTimer);
+      this.catchUpTimer = undefined;
+      this.bumpsWhileSuspended = true;
+    }
+  }
+
+  /** true while watcher-driven refreshes are suspended (task-end wiring
+   *  skips its own refresh then — the final resume's catch-up covers it) */
+  isTreeRefreshSuspended(): boolean {
+    return this.treeRefreshSuspendCount > 0;
+  }
+
+  resumeTreeRefresh(): void {
+    this.treeRefreshSuspendCount = Math.max(0, this.treeRefreshSuspendCount - 1);
+    if (this.treeRefreshSuspendCount === 0 && this.bumpsWhileSuspended) {
+      // catch-up refresh for external edits that landed mid-build — DELAYED
+      // and coalesced: the task-end wiring refreshes immediately anyway, so
+      // an immediate fire here would only add a second blink right after a
+      // build; 1 s later, and skipped entirely if a new build resumed first
+      this.bumpsWhileSuspended = false;
+      if (this.catchUpTimer) clearTimeout(this.catchUpTimer);
+      this.catchUpTimer = setTimeout(() => {
+        this.catchUpTimer = undefined;
+        // expiry while STILL suspended: preserve the pending flag so the next
+        // resume re-arms the catch-up (round23 §5.1 — Build All's next member
+        // task starts inside member N's catch-up window)
+        if (this.treeRefreshSuspendCount > 0) {
+          this.bumpsWhileSuspended = true;
+          return;
+        }
+        this._onDidChange.fire();
+      }, 1000);
+    }
+  }
+
+  /** the debounced tree-refresh entry every watcher funnels into */
+  private bumpTree(): void {
+    if (this.treeRefreshSuspendCount > 0) {
+      this.bumpsWhileSuspended = true;
+      return;
+    }
+    // a fresh bump supersedes any pending 1 s catch-up (round22 §5.8)
+    if (this.catchUpTimer) {
+      clearTimeout(this.catchUpTimer);
+      this.catchUpTimer = undefined;
+    }
+    if (this.srcRefreshTimer) clearTimeout(this.srcRefreshTimer);
+    this.srcRefreshTimer = setTimeout(() => {
+      this.srcRefreshTimer = undefined;
+      // the suspension may have started AFTER this debounce was queued
+      // (round22 §5.5 negative probe) — re-check before firing
+      if (this.treeRefreshSuspendCount > 0) {
+        this.bumpsWhileSuspended = true;
+        return;
+      }
+      this._onDidChange.fire();
+    }, 400);
+    // a pending catch-up is superseded by this fresh bump cycle (round22 §5.8)
+    if (this.catchUpTimer) {
+      clearTimeout(this.catchUpTimer);
+      this.catchUpTimer = undefined;
+    }
   }
 
   get(root: string): MrsProject | undefined {
@@ -325,6 +411,9 @@ export class ProjectStore implements vscode.Disposable {
   }
 
   setActive(proj: MrsProject): void {
+    // unchanged active project = nothing to persist or re-render: firing here
+    // made every F7 blink the tree once at build start (round: user report)
+    if (this._active === proj) return;
     this._active = proj;
     this.saveState();
     this._onDidChange.fire();
@@ -481,10 +570,7 @@ export class ProjectStore implements vscode.Disposable {
     // live OUTSIDE the workspace folders (the workspace-wide watcher in
     // watchWorkspaceSources cannot see them)
     const srcWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{c,h,cpp,hpp,s,S}'));
-    const bump = () => {
-      if (this.srcRefreshTimer) clearTimeout(this.srcRefreshTimer);
-      this.srcRefreshTimer = setTimeout(() => this._onDidChange.fire(), 400);
-    };
+    const bump = () => this.bumpTree();
     this.watchers.set(key, [
       watcher,
       watcher.onDidChange(onChange),
@@ -524,10 +610,7 @@ export class ProjectStore implements vscode.Disposable {
       const watcher = vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(folder, '**/*.{c,h,cpp,hpp,s,S}')
       );
-      const bump = () => {
-        if (this.srcRefreshTimer) clearTimeout(this.srcRefreshTimer);
-        this.srcRefreshTimer = setTimeout(() => this._onDidChange.fire(), 400);
-      };
+      const bump = () => this.bumpTree();
       this.srcWatchers.push(watcher, watcher.onDidChange(bump), watcher.onDidCreate(bump), watcher.onDidDelete(bump));
     }
   }
@@ -549,6 +632,7 @@ export class ProjectStore implements vscode.Disposable {
     for (const d of this.srcWatchers) d.dispose();
     this.srcWatchers = [];
     if (this.srcRefreshTimer) clearTimeout(this.srcRefreshTimer);
+    if (this.catchUpTimer) clearTimeout(this.catchUpTimer);
     this._onDidChange.dispose();
   }
 }

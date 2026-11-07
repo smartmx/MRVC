@@ -198,13 +198,22 @@ await view.show(store.active);
   {
     const { BuildManager } = require(path.join(__dirname, '..', 'out', 'vscode', 'tasks.js'));
     const key = path.resolve('X:/proj').toLowerCase();
-    const fakeSelf = { building: new Map([[key, {}]]) };
+    const fakeSelf = {
+      building: new Map([[key, {}]]),
+      store: { suspendTreeRefresh() {}, resumeTreeRefresh() {} },
+      // cleanOne delegates to cleanOneInner on `this` — the stub supplies it
+      cleanOneInner: () => Promise.resolve({ project: 'P', ok: true, detail: 'inner' }),
+    };
     const fakeProj = { root: 'X:/proj', projectName: 'P', buildDir: 'X:/proj/obj' };
     const r1 = await BuildManager.prototype.cleanOne.call(fakeSelf, fakeProj, { makeBin: 'X:/make' });
     check('batch clean: skipped while the project is building', r1.ok === true && r1.detail.length > 0);
     const r2 = await BuildManager.prototype.deleteOutputOne.call(fakeSelf, fakeProj, false);
     check('batch delete outputs: skipped while the project is building', r2.ok === true && r2.detail.length > 0);
-    const freeSelf = { building: new Map() };
+    const freeSelf = {
+      building: new Map(),
+      store: { suspendTreeRefresh() {}, resumeTreeRefresh() {} },
+      cleanOneInner: () => Promise.resolve({ project: 'P', ok: true, detail: 'inner-free' }),
+    };
     const r3 = await BuildManager.prototype.cleanOne.call(freeSelf, fakeProj, { makeBin: 'X:/make' });
     check('batch clean: proceeds (not just always skipping)', r3.ok === true && r3.detail !== r1.detail);
   }

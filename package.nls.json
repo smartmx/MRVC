@@ -41,6 +41,7 @@
   "command.mrvc.generateCMakeList.title": "Generate CMakeLists File",
   "command.mrvc.exportAsCMake.title": "Export As CMake Project",
   "command.mrvc.showFullBuildOutput.title": "Show Full Build Output",
+  "command.mrvc.clearIntelliSenseCache.title": "Clear C/C++ IntelliSense Cache",
   "command.mrvc.createProject.title": "New MounRiver Project",
   "command.mrvc.createStaticLib.title": "New MounRiver Static Library",
   "command.mrvc.restoreRemoved.title": "Restore Removed Resources",

@@ -41,6 +41,7 @@
   "command.mrvc.generateCMakeList.title": "生成 CMakeLists 文件",
   "command.mrvc.exportAsCMake.title": "导出为 CMake 工程",
   "command.mrvc.showFullBuildOutput.title": "显示完整构建输出",
+  "command.mrvc.clearIntelliSenseCache.title": "清除 C/C++ IntelliSense 缓存",
   "command.mrvc.createProject.title": "新建 MounRiver 工程",
   "command.mrvc.createStaticLib.title": "新建 MounRiver 静态库",
   "command.mrvc.restoreRemoved.title": "恢复已移除的资源",

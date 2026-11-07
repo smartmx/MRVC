@@ -42,6 +42,51 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     en: 'Toolchain "{0}" is built for {1}, but this machine runs {2} — select a native toolchain instead (e.g. GCC12/GCC15 on Apple Silicon with the mac V2.4 package).',
     'zh-cn': '工具链 "{0}" 是 {1} 架构，本机是 {2}——请改用本机原生的工具链（如 Apple Silicon 上使用 mac V2.4 包时选 GCC12/GCC15）。',
   },
+  cacheClearNone: {
+    en: 'No C/C++ IntelliSense cache directories found — nothing to clear.',
+    'zh-cn': '未找到 C/C++ IntelliSense 缓存目录——无需清理。',
+  },
+  cacheClearAllGuarded: {
+    en: 'Cache directories were found, but every one of them was refused by the safety guard (home/workspace collision):\n{0}',
+    'zh-cn': '找到了缓存目录，但全部被安全护栏拒绝（与家目录/工作区冲突）：\n{0}',
+  },
+  cacheClearGuardedNote: {
+    en: 'Note: these discovered directories are NOT part of this cleanup — the safety guard refused them:\n{0}',
+    'zh-cn': '注意：以下发现的目录被安全护栏拒绝，不在本次清理范围：\n{0}',
+  },
+  cacheClearConfirm: { en: 'Clear', 'zh-cn': '清除' },
+  cacheClearConfirmDetail: {
+    en: 'Delete the C/C++ IntelliSense cache? cpptools regenerates it on demand.\n{0}\nTotal: {1} MB\nNote: the browse database (.BROWSE.VC.DB) is not part of this cleanup.',
+    'zh-cn': '删除 C/C++ IntelliSense 缓存？cpptools 会在需要时自动重建。\n{0}\n合计：{1} MB\n注意：浏览数据库（.BROWSE.VC.DB）不在本次清理范围。',
+  },
+  cacheClearProgress: {
+    en: 'Clearing the C/C++ IntelliSense cache…',
+    'zh-cn': '正在清除 C/C++ IntelliSense 缓存…',
+  },
+  cacheClearDone: {
+    en: 'C/C++ IntelliSense cache cleared — {0} MB freed.',
+    'zh-cn': 'C/C++ IntelliSense 缓存已清除——释放 {0} MB。',
+  },
+  cacheClearPartial: {
+    en: 'The cache was partially cleared — these directories could not be removed:\n{0}',
+    'zh-cn': '缓存已部分清除——以下目录未能删除：\n{0}',
+  },
+  cacheClearMalformedPath: {
+    en: 'C_Cpp.intelliSenseCachePath is a {0}, not a string — it has been ignored; this cleanup will only offer the built-in default cache location. Fix the value in your settings to have it cleared too.',
+    'zh-cn': 'C_Cpp.intelliSenseCachePath 的值是 {0}，不是字符串——已忽略该配置，本次清理只尝试内置默认缓存路径。修正设置中的值后才会一并清理。',
+  },
+  invalidCacheSettings: {
+    en: 'Invalid MRVC cache settings — skipped: {0}',
+    'zh-cn': '无效的 MRVC 缓存设置——已跳过：{0}',
+  },
+  cacheSettingsUnreadable: {
+    en: 'settings.json unreadable in: {0} — left untouched',
+    'zh-cn': '以下位置的 settings.json 无法读取：{0}——未做修改',
+  },
+  cppPropertiesUnreadable: {
+    en: 'c_cpp_properties.json unreadable in: {0} — left untouched',
+    'zh-cn': '以下位置的 c_cpp_properties.json 无法读取：{0}——未做修改',
+  },
 
   // batch progress titles (notification popups)
   progressBuildAll: { en: 'MRVC: Build All', 'zh-cn': 'MRVC：构建全部工程' },
