@@ -153,16 +153,42 @@ check(attr('Version') === pkg.version && attr('Publisher') === pkg.publisher,
   identity ? `v=${attr('Version')} pub=${attr('Publisher')}` : 'Identity element not found');
 check(attr('Id') === pkg.name, 'vsixmanifest Identity Id == package name', attr('Id') || '?');
 
-// 7. leak check — vendor-ffi/node_modules/koffi is the ONE shipped dependency
-//    (the POSIX hardware bridge's FFI prebuilds); anything else leaks
-const leaks = [...zip.keys()].filter((n) =>
-  /^extension\/(docs|tools|src|chatgpt|\.scratch|buildlogs)\//.test(n) ||
-  (/^extension\/node_modules\//.test(n)) ||
-  (/^extension\/vendor-ffi\//.test(n) && !/^extension\/vendor-ffi\/node_modules\/koffi\//.test(n)));
-check(leaks.length === 0, 'no source/docs/tools entries leaked (vendor-ffi ships only the koffi runtime)', leaks.length ? leaks.join(', ') : `${zip.size} entries`);
+// 7. CONTENT WHITELIST (round1 §6) — the vsix may contain ONLY these entry
+//    shapes; anything else FAILS. A blacklist (the old leak check) silently
+//    admitted future top-level debris (a stray review-extra.txt packaged and
+//    "passed" in the round-1 sandbox probe). Exact allowlist derived from the
+//    manifest: media icons, the one bundle (+map), the extension icon, NLS,
+//    docs trio, license and the koffi runtime subtree.
+const WHITELIST = [
+  /^\[Content_Types\]\.xml$/,
+  /^extension\.vsixmanifest$/,
+  /^extension\/package\.json$/,
+  /^extension\/package\.nls\.json$/,
+  /^extension\/package\.nls\.zh-cn\.json$/,
+  /^extension\/README\.md$/,
+  /^extension\/CHANGELOG\.md$/,
+  /^extension\/LICENSE\.txt$/,
+  /^extension\/readme\.md$/, // vsce generates the lowercase copy for the gallery
+  /^extension\/changelog\.md$/, // vsce generates it from CHANGELOG.md
+  /^extension\/out\/extension\.js$/,
+  /^extension\/out\/extension\.js\.map$/,
+  /^extension\/resources\/icon\.png$/,
+  /^extension\/media\/[a-z_]+\.svg$/,
+  // the koffi runtime: JS entry + its subtree, POSIX prebuilds included
+  /^extension\/vendor-ffi\/node_modules\/koffi\//,
+];
+const leaks = [...zip.keys()].filter((n) => !WHITELIST.some((re) => re.test(n)));
+check(leaks.length === 0, 'every vsix entry matches the content whitelist (no stray files/dirs)', leaks.length ? leaks.join(', ') : `${zip.size} entries all allowed`);
 check([...zip.keys()].some((n) => n === 'extension/vendor-ffi/node_modules/koffi/index.js'), 'koffi JS entry is packaged');
 const prebuilds = [...zip.keys()].filter((n) => /^extension\/vendor-ffi\/node_modules\/koffi\/build\/koffi\/(linux_x64|darwin_arm64)\/koffi\.node$/.test(n));
 check(prebuilds.length === 2, 'koffi POSIX prebuilds are packaged (linux_x64 + darwin_arm64)', prebuilds.map((n) => n.replace('extension/vendor-ffi/node_modules/koffi/build/koffi/', '')).join(', ') || 'none');
+// the extension icon must be present AND a real 128x128 PNG (IHDR: bytes
+// 16..20 = width, 20..24 = height, byte 25 = color type 6 = RGBA); the
+// length guard covers the WHOLE IHDR read so a truncated 9..25-byte file
+// fails as data, not as a crash (round3 §5.3)
+const icon = file('extension/resources/icon.png');
+const iconOk = !!icon && icon.length >= 26 && icon.readUInt32BE(16) === 128 && icon.readUInt32BE(20) === 128 && icon[25] === 6;
+check(iconOk, 'extension icon is a 128x128 RGBA PNG', icon ? `${icon.length} B, ${icon.length >= 26 ? `${icon.readUInt32BE(16)}x${icon.readUInt32BE(20)}, ct=${icon[25]}` : 'too short to hold an IHDR'}` : 'missing');
 
 console.log(failed ? `\n${failed} check(s) FAILED` : '\nall vsix verification checks passed');
 process.exit(failed ? 1 : 0);

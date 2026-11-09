@@ -382,8 +382,55 @@ const last = () => messages[messages.length - 1];
   //    through its fake obj-watcher: unsuspended bumps fire (debounced),
   //    suspended bumps are swallowed, resume fires one catch-up refresh
   {
+    // legality gate (0.2.8 contract: 工程名.wvproj + companions .project
+    // AND .cproject) — probe debris carrying an incomplete triple must NOT
+    // crash the loader with an ENOENT (the reported failure: reading
+    // .cproject threw), it is refused with a clear warning instead; and a
+    // VANISHED root must not throw either (round6 §2 — the readdirSync in
+    // the missing-files probe used to abort the whole workspace scan)
+    const badRoot = inside(ROOT, 'debris-proj');
+    fs.mkdirSync(badRoot, { recursive: true });
+    fs.writeFileSync(
+      inside(ROOT, 'debris-proj/.project'),
+      '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>Debris</name></projectDescription>'
+    );
+    const storeCtx0 = {
+      subscriptions: [],
+      workspaceState: { get: () => undefined, update: async () => {} },
+      globalState: { get: () => undefined, update: async () => {} },
+    };
+    const store0 = new (require('../out/vscode/projects.js').ProjectStore)(storeCtx0);
+    const before = messages.length;
+    const rejected = store0.add(badRoot);
+    const last = messages[messages.length - 1];
+    check(
+      'legality: an incomplete triple is refused with a warning, not an ENOENT',
+      rejected === null && messages.length === before + 1 && typeof last?.text === 'string' && last.text.includes('.cproject'),
+      rejected ? ' — add() accepted the debris root' : ''
+    );
+    // round6 §2: a root that VANISHED after discovery must resolve to null
+    // without throwing (the readdirSync in the missing-files probe)
+    let vanishedOk = true;
+    let vanishedResult;
+    try {
+      vanishedResult = store0.add(inside(ROOT, 'gone-proj'));
+    } catch (e) {
+      vanishedOk = false;
+      vanishedResult = `threw: ${e.message}`;
+    }
+    check(
+      'legality: a vanished/unreadable root resolves to null without throwing',
+      vanishedOk && vanishedResult === null
+    );
+    store0.dispose();
+  }
+  {
     const projRoot = inside(ROOT, 'watch-proj');
     fs.mkdirSync(path.join(projRoot, 'src'), { recursive: true });
+    fs.writeFileSync(
+      inside(ROOT, 'watch-proj/WatchProj.wvproj'),
+      'WatchProj'
+    );
     fs.writeFileSync(
       inside(ROOT, 'watch-proj/.project'),
       '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>WatchProj</name></projectDescription>'
@@ -440,6 +487,13 @@ const last = () => messages[messages.length - 1];
     store.resumeTreeRefresh();
     await wait(1200);
     check('watch: catch-up preserved across the re-suspend fires once', fires === afterFree + 1);
+    // round2 §3: deleting .cproject (legality broken) turns the loaded
+    // project into a zombie — the watcher's delete handler and Refresh must
+    // both drop it (previously only .project deletion did)
+    fs.rmSync(inside(ROOT, 'watch-proj/.cproject'));
+    const projWatcher = fakeWatchers.find((w) => w.pattern.includes('.cproject'));
+    projWatcher.handlers.delete.forEach((fn) => fn({ fsPath: path.join(projRoot, '.cproject') }));
+    check('watch: deleting .cproject drops the zombie from the store', store.get(projRoot) === null || store.get(projRoot) === undefined);
     store.dispose();
   }
 

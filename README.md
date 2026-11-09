@@ -5,13 +5,14 @@
 **三平台可用：Windows / Linux / macOS**（0.2.6 起；边界：POSIX 的下载/烧录与硬件操作通道已实现但未实测——OpenOCD 与 libmcuupdate FFI 路径都在位，需实体机验证）。
 活动栏视图名为 "Project Explorer"；命令 ID 与设置键统一为 `mrvc.*`（V0.1.7 起，原 `mrs2.*` 历史前缀已退役——自定义快捷键需同步更新）。
 扩展 ID 自 V0.1.7 起为 `smartmx.mrvc`（publisher 由 `mrvc` 更名为 `smartmx`）：装过旧 `mrvc.mrvc` 的用户升级时需**先卸载旧扩展**再安装新版——两者是相互独立、不会自动互相覆盖的扩展。
+**懒激活（0.2.8 起）**：打开文件夹后 MRVC 不自动工作——**点开活动栏 MRVC 视图**，或从**命令面板执行 `MRVC: Open MRS Project / Solution`** 选中 `.wvproj`/`.wvsln`，才开始扫描工程、建立 IntelliSense 分析；此前激活为零开销。工程型命令（Build/Flash/属性页等）也会自动完成首次扫描——不会因"先命令后视图"而误报无工程。
 
 ## 功能
 
 | 功能 | 说明 |
 |---|---|
-| 打开 MRS 工程 | 与 MRS 一致：以 `工程名.wvproj` 为工程标记（发现/打开入口），`.project` 作为老工程兜底；随后解析 `.project` / `.cproject` / `.template` 获取全部配置。**Open MRS Project / Solution 为 MRS2 同款文件对话框**（右下角文件类型下拉：`.wvproj` / `.wvsln` / 全部文件），选中后在**新 VSCode 窗口**打开：选 `.wvproj`/`.project` → 打开其所在目录并自动发现；选 `.wvsln` → 生成同名 `.code-workspace` 并在新窗口加载 solution；**打开整个 EVT/EXAM 目录用 VSCode 自带的 文件 → 打开文件夹**（扩展自动递归发现全部工程：最深 8 层嵌套）。**自动修复打包残留**：EVT 工程的链接文件夹若指向打包机器的绝对路径（如 `E:/.../EXAM/SRC`），首次打开时自动按"最近祖先+尾段"定位真实目录并回写为可移植的 `PARENT-N-PROJECT_LOC` 形式（与 MRS2 的 rewriteLinkedFolders 行为一致；MRS1 风格的 `<location>` 自动转换为 `<locationURI>`） |
-| Solution（工程组） | 支持 MRS 新增的 `.wvsln` 解决方案：**仅当显式打开 `.wvsln` 文件时启用**——Open MRS Project / Solution 选中该文件后，生成同名 `.code-workspace` 并在**新 VSCode 窗口**打开，激活时自动加载 solution；树中显示为 solution 节点，成员工程按 MRS2 的 `BuildOrder=` 行（缺省按文件行序）排列、每个成员都是完整工程节点。解析兼容 MRS2 的宽松语法；生成的 solution 与 MRS2 完全兼容 |
+| 打开 MRS 工程 | 与 MRS 一致：**明确通过 `工程名.wvproj` 打开工程**（这是工程的标记与入口）。**合法性三文件**：`工程名.wvproj` + `.project`（可解析工程描述）+ `.cproject`（构建配置）**三者同时存在才进入发现树**——任一缺失的残缺目录（半删除/拷贝残留）会在发现阶段直接跳过；仅有 `.project` + `.cproject` 的 MRS1-era 旧目录不再进入树。**Open MRS Project / Solution 的文件过滤器只处理 `.wvproj` 与 `.wvsln`**（`.project`/`.cproject` 是附属文件，不是打开对象）；选中后在**新 VSCode 窗口**打开：选 `.wvproj` → 打开其所在目录并自动发现；选 `.wvsln` → 生成同名 `.code-workspace` 并在新窗口加载 solution；**打开整个 EVT/EXAM 目录用 VSCode 自带的 文件 → 打开文件夹**（扩展自动递归发现全部工程：最深 8 层嵌套）。**自动修复打包残留**：EVT 工程的链接文件夹若指向打包机器的绝对路径（如 `E:/.../EXAM/SRC`），首次打开时自动按"最近祖先+尾段"定位真实目录并回写为可移植的 `PARENT-N-PROJECT_LOC` 形式（与 MRS2 的 rewriteLinkedFolders 行为一致；MRS1 风格的 `<location>` 自动转换为 `<locationURI>`） |
+| Solution（工程组） | 支持 MRS 新增的 `.wvsln` 解决方案：**仅当显式打开 `.wvsln` 文件时启用**——Open MRS Project / Solution 选中该文件后，生成同名 `.code-workspace` 并在**新 VSCode 窗口**打开，打开 MRVC 视图时自动加载 solution；树中显示为 solution 节点，成员工程按 MRS2 的 `BuildOrder=` 行（缺省按文件行序）排列、每个成员都是完整工程节点。解析兼容 MRS2 的宽松语法；生成的 solution 与 MRS2 完全兼容 |
 | 生成 Solution | 树标题栏 `…` 菜单 → **Generate Solution From All Projects**：把当前已发现的全部工程生成一个 solution 并立即出现在树顶，MRS2 可直接打开 |
 | 工程树 | 活动栏 MRVC 容器内的 "Project Explorer"：标题栏 4 个按钮（**Open Mrs Project**（文件对话框）/ **Open Mrs Folder**（只选目录）/ 折叠全部 / **刷新**——外部改名/新增/删除的工程会被自动识别与清理）。工程 → 链接文件夹（蓝色名称）/ 实体目录 / **根级源文件** / 编译输出目录（红色）。树只显示扫描到的工程本身，不列工程目录之外的散落文件。**源文件自动刷新**：工作区与每个工程内的源文件新建/删除/改名即时反映到树（400ms 防抖），配置文件有专属监听 |
 | 文件管理 | 树节点右键（每类节点独立菜单）：New File / New Folder / **Copy→Paste**（插件内剪贴板，同名自动 `- copy` 递增，文件夹递归复制）/ Copy Absolute Path / **Copy Project Relative Path**（`${workspace_loc:/${ProjName}/…}` 形式的 CDT 逻辑路径）/ Copy File Name / Rename / Delete（均带确认）/ Open Containing Folder。链接文件夹禁用 Rename/Delete（防误删真实目录），其内部文件操作不受限 |
@@ -22,7 +23,7 @@
 | **静态栈分析** | 设置 `mrvc.build.analysis` 开启后构建自动注入 `-fstack-usage` / `-fdump-rtl-expand`；**Static Stack Usage** / **Function Call Analysis** 命令生成分析报告（开源方案替代 MRS2 闭源解析器） |
 | **C/C++ 缓存治理** | 命令面板 **MRVC: Clear C/C++ IntelliSense Cache**：一键清除 cpptools 的 ipch 缓存（模态确认、逐路径体积、安全护栏、锁定路径降级；浏览数据库 `.BROWSE.VC.DB` 不在范围）。设置 `mrvc.intellisense.cachePath` 自动把 `C_Cpp.intelliSenseCachePath` 写进各工作区 `.vscode/settings.json`（工作区覆盖用户级），把缓存引到指定盘符而非撑满 C 盘——留空则不写路径键；设置 `mrvc.intellisense.cacheSize`（MB，默认 5120 与 cpptools 一致，0 = 不管理）自动写入 `C_Cpp.intelliSenseCacheSize` 显式固定上限 |
 | 新建工程向导 | `…` 菜单 → **新建 MounRiver 工程 / 静态库**：扫描 MRS2 SDK 模板（系列 → RTOS → 器件三步选择）→ 工程名 → **位置（可键入任意新路径自动创建，或点浏览按钮选择；默认上次创建目录）**，创建完成提示可一键在新窗口打开；renameProject 全套联动，MRS2 无损打开 |
-| 下载烧录 | 工程行内 **Flash 按钮** / 右键 **Download**：通过 MRS2 的 OpenOCD 下载 `obj/` 产物（hex/bin，地址取自 `.template` 的 Address，双核工程自动选 `wch-dual-core.cfg`；`.template` 勾选 **Erase All** 时下载前全片擦除）；输出进任务终端，失败弹提示 |
+| 下载烧录 | 工程行内 **Flash 按钮** / 右键 **Download**：通过 MRS2 的 OpenOCD 下载 `obj/` 产物（hex/bin，地址取自 `.template` 的 Address，双核工程自动选 `wch-dual-core.cfg`；`.template` 勾选 **Erase All** 时下载前全片擦除）；输出进任务终端，失败弹提示。**WCH-Link 固件版本检测（0.2.8，只读）**：下载前核对已连接 WCH-Link 的固件版本与 MRS 安装 `wchlink.wcfg` 的期望值——过低时模态提示改用 **WCH-LinkUtility** 升级（MRVC 不刷写 Link 固件本身），检测失败静默放行 |
 | Download Settings | 属性页 → Download → Download Settings（镜像 MRS2）：**读保护状态查询 / 使能 / 解除**、**调试保护**、**Linked MCU Type 查询**、**Erase Code Flash**（By Pin NRST / By Power off）、**MCU Memory Assign**（Query/Apply）、**Operation Record** 操作日志；右侧完整编辑下载参数（MCU Type / Memory Type / Program Address / Debug Interface Mode / CLK Speed / Target File / Main Operations 八项），全部写回 `.template`（MRS2 无损打开）。硬件操作桥：Windows 走系统 32 位 PowerShell P/Invoke 调 McuCompilerDll.dll（MRS2 的 DLL 是 32 位，须进程外桥接）；Linux/macOS 进程内 koffi FFI 调 CommunicationLib 的 `libmcuupdate.so/.dylib`——与 MRS 自家扩展同款机制、同族 `MRSFunc_*` 导出；芯片 ID 与能力开关自动来自芯片库，不支持的选项按芯片自动灰显 |
 | 芯片选择器 | 属性页 → General → Chip / Target：MRS2 同款 "Target MCU Type" 选择器——系列树（RISC-V/ARM 分组）→ 型号列表 → 信息区；数据实时扫描 MRS2 的 SDK 组件目录（40+ 系列），选中后自动填充 Series / MCU / Mcu Type / Address 并写回 `.template`；SDK 缺失时回退文本编辑 |
 | Build Steps / Build Artifact | 属性页 → C/C++ Build 分组：**Build Steps**（Pre/Post-build 的 Command 与 Description，进 makefile）；**Build Artifact**（Artifact Type：Executable/Static Library；Artifact name 按 MRS 变量形式显示 `${ProjName}`；Artifact extension；Output prefix——产物名前缀与自定义扩展名在生成的 makefile 中生效） |
@@ -126,7 +127,7 @@ npm run package      # @vscode/vsce 打包 .vsix（--no-dependencies）
 - `webview-test.js` — 属性页/Sync 页真实渲染（脚本语法、注入探针、批量写回）
 - `mass-test.mjs` — **TEST 全树批量回归**（解析/扫描/排除/芯片库/makefile 字节稳定性，覆盖全部工程）
 - `makefile-dollar-test.js` — makefile `$` 转义回归（用户 `$` 翻倍，`$@`/`$(VAR)` 等 make 语法原样保留；守护“生成汇编清单”的 `.lst` 开关）
-- `build-test.mjs <EVT工程路径>` — 真实工具链编译单工程；`build-all.mjs` 全量批跑
+- `build-test.mjs <EVT工程路径>` — 真实工具链编译单工程；`build-all.mjs` 全量批跑——**⚠ 仅限隔离副本：它会生成并覆写真实工程的 `obj/`**（round5 曾以此覆写过 EVT 金标，恢复工具见 `restore-goldens.mjs`）；且其工程枚举只看 `.cproject`，是**底层工具链批测工具，不是插件三文件发现的模拟**（插件发现口径以 `discover-test.mjs` 为准）。**请勿对真实 EVT 树直接运行，常规回归用只读套件**（discover/config-audit/golden）
 - `print-menus.mjs` — 打印各类树节点右键菜单排序（开发辅助）
 - `verify-vsix.mjs` — 打包产物核对：自动先从 src 重建 bundle，再与 vsix 逐字节断言（manifest/NLS/changelog/bundle/版本号/泄漏）——改源码忘 esbuild、或包被旧产物顶替都会被拦，发布前必跑
 - `mrsinstall-test.js` — 安装选择策略（win32/linux/darwin 三平台布局 / MRS2·MRS3 IDE + 纯工具链三候选 / 架构门禁 / 零配置采用 / 字段误填与填反 / 回退；经 `setHostPlatformForTests` 在任意宿主上测全平台）

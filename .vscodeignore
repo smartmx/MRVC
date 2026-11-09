@@ -12,6 +12,7 @@ tools/**
 .mimosa/**
 docs/**
 chatgpt/**
+_icon-drafts/**
 **/tsconfig.json
 
 buildlogs/

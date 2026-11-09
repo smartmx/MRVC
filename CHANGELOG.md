@@ -1,5 +1,47 @@
 # MRVC 更新日志
 
+## V0.2.8（2026-11-09）
+
+### 变更
+
+- **工程合法性收紧（三文件：`.wvproj` 打开标记 + `.project`/`.cproject` 附属文件，单一契约）**：明确
+  工程语义——**MRS 工程通过「工程名.wvproj」打开（标记与入口），且 `工程名.wvproj`、`.project`
+  （可解析工程描述）、`.cproject`（构建配置）三文件同时存在才进入发现树**（仅有 `.project` +
+  `.cproject` 的 MRS1-era 旧目录不再进入树）。发现/加载/状态恢复/刷新/文件监听**五处共用同一判定**：
+  三文件缺一的半删除/探针残留目录此前会在加载时以 ENOENT 崩出（"打开 MRS 工程失败：no such file
+  or directory … .cproject"），现在发现阶段直接跳过、显式 `add()` 给出明确警告（列出实际缺失的
+  文件，且目录消失/不可读也不再抛出中止整次扫描）、状态恢复同样要求三文件齐全；**已加载工程运行中
+  删除任一必需文件不再留僵尸**——文件监听与 Refresh 都会把它从树里移除（此前只监控 `.project`
+  删除）。Open MRS Project / Solution 的文件过滤器**只处理 `.wvproj` 与 `.wvsln`**（`.project`/
+  `.cproject` 是附属文件，不是打开对象）。Solution 恢复探测（深度 0）语义随之澄清：合法工程根仍
+  截停（工程目录永不含 solution），残缺目录不再算工程根——其直属 `.wvsln` 会被收集。
+- **WCH-Link 固件版本检测（只读，烧录前）**：下载前对已连接的 WCH-Link 做一次**只读**固件版本
+  核对（OpenDevice → CompareVersion → GetDeviceVersion → CloseDevice，零写入、零 IAP 切换，任何
+  检测失败都静默放行绝不阻塞下载）——版本低于安装目录 `wchlink.wcfg` 的期望值时弹模态提示（显示
+  Link 型号与当前/期望版本，语义与 MRS3 下载前的 doUpdate 检查一致），提供 **打开 WCH-LinkUtility**
+  （由它完成固件升级）与 **仍要烧录** 两个选择；**只有显式点击"仍要烧录"才继续**——Esc/关闭对话框
+  一律取消本次下载（与 MRS 的取消语义一致，绝不带着已知过旧的固件静默烧录）。设备版本不在有效
+  10–99 区间（FFI 读到垃圾值）时静默跳过检测，绝不显示伪造版本号；Windows 检测脚本以 finally 保证
+  CloseDevice（异常路径不占用 USB 设备）。版本判定依据 `wchlink.wcfg`（MRS3 安装自带，DLL
+  自行解析）；MRVC **不实现固件刷写本身**——升级动作完全交给 WCH-LinkUtility。实现沿用既有
+  wlink 桥（Windows PowerShell P/Invoke 新增 4 个只读声明；POSIX koffi 新增同款绑定，
+  `int*` 出参以 Buffer 传递），新增只读导出与既有 8 个配置型操作互不影响。
+- **懒激活（打开文件夹不再立刻扫描/建分析）**：`activationEvents` 从 `workspaceContains`（打开
+  含 MRS 工程的文件夹即激活，激活后 800ms 自动扫描 + 生成编译数据库）改为 **`onView` + `onCommand`**
+  ——打开文件夹后 MRVC 完全不启动、不占用扩展宿主；**点开活动栏 MRVC 视图**，或从命令面板执行
+  `MRVC: Open MRS Project / Solution` 选中 `.wvproj`/`.wvsln`，才开始：扫描工程 → 生成
+  `.vscode/c_cpp_properties.json` 与编译数据库 → 检查 cpptools。初始化为**一次性记忆化**
+  （`ensureWorkspaceInit`），视图可见与**全部工程型命令入口**共享同一次运行——命令面板直接执行
+  Build/Flash/属性页等（含快捷键与 `executeCommand` 调用）会先自动完成扫描，绝不误报"没有工程"；
+  纯工具/设置/文件节点操作类命令豁免（不触发扫描）。首次扫描失败不缓存——下一次用户动作自动重试
+  并报告原因。安装门禁与全部监听器随激活顺延，激活前零开销。注意：若上一次会话把 MRVC 视图留在
+  展开状态，新窗口恢复布局时视图可见即视为"点击"（实现已消除创建时序竞态：注册监听器后补查
+  `treeView.visible` 初始态）。
+- **插件图标**：新增黑白「芯片 MRVC」图标（`resources/icon.png`，128×128）——黑色圆角底板 +
+  白色 IC 封装（四边各 4 引脚）+ 框内 2×2 栅格 MR/VC，字母为手绘等线电路笔法路径（不依赖字体，
+  任意分辨率不变形）；黑白配色保证深色/浅色主题下均可正常显示（暗色下白色图形承载对比、浅色下
+  黑色底板承载对比）。`package.json` 增加 `icon` 字段，marketplace 与扩展列表使用。
+
 ## V0.2.7（2026-11-07）
 
 ### 变更

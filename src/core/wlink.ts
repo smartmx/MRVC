@@ -116,7 +116,7 @@ export function resolveCommLib(install: MrsInstall, platform: NodeJS.Platform = 
  * so this mirrors the vendor mechanism exactly.
  */
 interface KoffiLib {
-  func(name: string, retType: string, argTypes: string[]): (...args: number[]) => number;
+  func(name: string, retType: string, argTypes: string[]): (...args: unknown[]) => number;
 }
 interface KoffiLike {
   load(path: string): KoffiLib;
@@ -418,6 +418,274 @@ export function runWlinkOp(install: MrsInstall, op: WlinkOp, args: WlinkArgs): P
           resolve({ op, ok: parsed.ok === true, ...parsed });
         } catch {
           resolve({ op, ok: false, error: `unparsable bridge output: ${line}` });
+        }
+      }
+    );
+  });
+}
+
+// ---- WCH-Link firmware version check (0.2.8, READ-ONLY) --------------------
+//
+// An out-of-date WCH-Link firmware misbehaves during flashing (MRS's own
+// download path runs a version check before every download and refuses into
+// a modal upgrade flow — decompiled from mrs-vscode's doUpdate). MRVC does
+// NOT touch the link firmware: it only detects the version mismatch and
+// directs the user to WCH-LinkUtility. Everything here is read-only —
+// OpenDevice / CompareVersion / GetDeviceVersion / CloseDevice — and any
+// failure degrades to state 'error' (the flash path treats that as silent).
+
+export interface WlinkFirmwareCheck {
+  state: 'no-link' | 'up-to-date' | 'upgrade-needed' | 'error';
+  /** raw linkID byte from CompareVersion's out param (0/1=WCH-Link, 2/18=LinkE, 4=DAPLink, 5/133=LinkW) */
+  linkId?: number;
+  /** the connected link model, e.g. "WCH-Link", "WCH-LinkE" */
+  linkName?: string;
+  /** current link firmware version number (10..99 meaningful, MRS parity) */
+  currentVersion?: number;
+  /** expected version from the installation's wchlink.wcfg */
+  expectedVersion?: number;
+  error?: string;
+}
+
+/**
+ * The installation's wchlink.wcfg (the DLL parses it itself — MRS only
+ * hands the path over FFI): `<platform layer>/components/WCH/Others/
+ * Firmware_Link/default/wchlink.wcfg`. Ships with MRS3; an MRS2-era install
+ * may lack it, in which case the check reports an error and the caller
+ * stays silent.
+ */
+export function wchlinkFirmwareCfgPath(install: MrsInstall): string {
+  return path.join(install.resourcesDir, 'components', 'WCH', 'Others', 'Firmware_Link', 'default', 'wchlink.wcfg');
+}
+
+/** linkID → model/chip (decompiled from mrs-vscode's getByLinkID) */
+export function linkInfoFor(linkId: number): { name: string; chipType: string } {
+  switch (linkId) {
+    case 2:
+    case 18:
+      return { name: 'WCH-LinkE', chipType: 'CH32V305' };
+    case 4:
+      return { name: 'WCH-DAPLink', chipType: 'CH32V203' };
+    case 5:
+    case 133:
+      return { name: 'WCH-LinkW', chipType: 'CH32V208' };
+    default:
+      return { name: 'WCH-Link', chipType: 'CH549' };
+  }
+}
+
+/**
+ * Expected link firmware version from the wcfg text (decompiled from
+ * mrs-vscode's version lookup): key = chipType + "Ver", with the CH549
+ * special cases "_RV" (linkId 0) / "_ARM" (linkId 1 + DAP variant) and the
+ * "CH32V305Ver" → "CH32V307Ver" remap. Undefined when the key is absent.
+ */
+export function expectedFirmwareVersion(cfgText: string, linkId: number, isDap = false): number | undefined {
+  let key = linkInfoFor(linkId).chipType + 'Ver';
+  if (linkId === 0) key += '_RV';
+  else if (linkId === 1) key += isDap ? '_ARM' : '_RV';
+  if (key === 'CH32V305Ver') key = 'CH32V307Ver';
+  for (const line of cfgText.split(/\r?\n/)) {
+    const m = line.trim().match(new RegExp('^' + key + '=(\\d+)$'));
+    if (m) return Number(m[1]);
+  }
+  return undefined;
+}
+
+/** `v` + zero-padded two-digit version (mrs-vscode's w() formatting); a
+ *  value outside the meaningful 10..99 band formats as `?` — never show a
+ *  fabricated v00/v-1/v123 (round2 §6) */
+export function formatLinkVersion(n: number | undefined): string {
+  return n !== undefined && n >= 10 && n <= 99 ? 'v' + String(n).padStart(2, '0') : '?';
+}
+
+/**
+ * The Windows P/Invoke counterpart of buildPsScript for the firmware check.
+ * CompareVersion takes a string (the wcfg path) and two int* out params —
+ * the ONLY string/pointer declarations in the whole bridge — returning
+ * 0 = up to date, 1 = upgrade needed; out1's low byte is the linkID.
+ */
+export function buildPsFirmwareCheckScript(commLib: CommLib, wcfgPath: string): string {
+  const decl = (name: string, entry: string, sig: string): string =>
+    `  [DllImport("McuCompilerDll.dll", CallingConvention = CallingConvention.StdCall, EntryPoint = "${entry}")]\n` +
+    `  public static extern int ${name}(${sig});\n`;
+  const quoted = wcfgPath.replace(/'/g, "''");
+  return (
+    `$ErrorActionPreference='Stop';\n` +
+    `Add-Type -Namespace Win32 -Name Native -MemberDefinition '[DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetDllDirectory(string path);';\n` +
+    `[Win32.Native]::SetDllDirectory('${commLib.dir.replace(/'/g, "''")}');\n` +
+    `$code = @'\nusing System;\nusing System.Runtime.InteropServices;\npublic static class McuLink {\n` +
+    decl('OpenDevice', 'McuCompiler_OpenDevice', '') +
+    decl('CloseDevice', 'McuCompiler_CloseDevice', '') +
+    decl('GetDeviceVersion', 'McuCompiler_GetDeviceVersion', 'ref int a, ref int b') +
+    decl('CompareVersion', 'McuCompiler_CompareVersion', 'string path, ref int a, ref int b') +
+    `\n}\n'@;\n` +
+    `Add-Type -TypeDefinition $code;\n` +
+    `$r = @{op='firmwareCheck'};\n` +
+    `$opened = $false;\n` +
+    `try {\n` +
+    `  $open = [McuLink]::OpenDevice();\n` +
+    `  if ($open -ne 0) { $r.state = 'no-link'; }\n` +
+    `  else {\n` +
+    `    $opened = $true;\n` +
+    `    $a = 0; $b = 0;\n` +
+    `    $c = [McuLink]::CompareVersion('${quoted}', [ref]$a, [ref]$b);\n` +
+    `    $r.linkId = ($a -band 255);\n` +
+    `    if ($c -eq 0) { $r.state = 'up-to-date'; }\n` +
+    `    elseif ($c -eq 1) {\n` +
+    `      $r.state = 'upgrade-needed';\n` +
+    `      $va = 0; $vb = 0;\n` +
+    `      $r.version = [McuLink]::GetDeviceVersion([ref]$va, [ref]$vb);\n` +
+    `    }\n` +
+    `    else { $r.state = 'error'; $r.error = ('CompareVersion code ' + $c); }\n` +
+    `  }\n` +
+    `} catch {\n  $r.state = 'error'; $r.error = $_.Exception.Message;\n` +
+    `} finally {\n` +
+    `  if ($opened) { try { [void][McuLink]::CloseDevice(); } catch { } }\n` +
+    `}\n` +
+    `$r | ConvertTo-Json -Compress | Write-Output;\n`
+  );
+}
+
+/**
+ * Shared post-processing for a bridge result (round3 §2): remaps the
+ * Windows script's `version` field to `currentVersion` and rejects device
+ * versions outside the meaningful 10..99 band (mrs-vscode's -2 semantics —
+ * a garbage FFI read must not surface as a fabricated v00/v123 upgrade
+ * prompt). Exported for direct unit testing of BOTH platforms' behaviour
+ * from one place.
+ */
+export function normalizeFirmwareCheck(parsed: Partial<WlinkFirmwareCheck> & { version?: number }): Partial<WlinkFirmwareCheck> {
+  if (parsed.version !== undefined && parsed.currentVersion === undefined) {
+    parsed.currentVersion = parsed.version;
+    delete parsed.version;
+  }
+  const v = parsed.currentVersion;
+  if (v !== undefined && (v < 10 || v > 99)) {
+    return { ...parsed, state: 'error', error: `device version out of range: ${v}` };
+  }
+  return parsed;
+}
+
+/**
+ * Read-only WCH-Link firmware version check (the detect-only half of MRS's
+ * doUpdate). POSIX: in-process koffi, Buffer args for the int* out params
+ * (the same marshalling mrs-vscode uses — a Buffer IS the pointer target).
+ * Windows: the PowerShell bridge above. Never throws — every failure path
+ * resolves to state 'error' so the flash flow can skip it silently.
+ */
+export async function checkWCHLinkFirmware(
+  install: MrsInstall,
+  koffiModule?: KoffiLike | null,
+  platform: NodeJS.Platform = process.platform
+): Promise<WlinkFirmwareCheck> {
+  const wcfg = wchlinkFirmwareCfgPath(install);
+  const finish = (c: Partial<WlinkFirmwareCheck>): WlinkFirmwareCheck => {
+    if (c.linkId !== undefined) {
+      const info = linkInfoFor(c.linkId);
+      c.linkName = info.name;
+      try {
+        c.expectedVersion = expectedFirmwareVersion(fs.readFileSync(wcfg, 'utf-8'), c.linkId);
+      } catch {
+        // unreadable wcfg — the expected version stays undefined
+      }
+    }
+    return { state: 'error', ...c } as WlinkFirmwareCheck;
+  };
+  if (!fs.existsSync(wcfg)) {
+    return { state: 'error', error: 'wchlink.wcfg not found under the MounRiver installation' };
+  }
+
+  const runPosix = async (): Promise<WlinkFirmwareCheck> => {
+    const commLib = resolveCommLib(install, platform);
+    if (!commLib) {
+      return { state: 'error', error: `WCH CommunicationLib (${mcuLibFileName(platform)}) not found under the MounRiver installation` };
+    }
+    let koffi: KoffiLike;
+    if (koffiModule !== undefined) {
+      if (!koffiModule) return { state: 'error', error: 'the koffi dependency is missing from this MRVC installation' };
+      koffi = koffiModule;
+    } else {
+      try {
+        koffi = require('koffi') as KoffiLike;
+      } catch {
+        try {
+          koffi = require('../vendor-ffi/node_modules/koffi') as KoffiLike;
+        } catch {
+          return { state: 'error', error: 'the koffi dependency is missing from this MRVC installation' };
+        }
+      }
+    }
+    try {
+      const lib = loadMcuLib(koffi, commLib.mcuDll);
+      const OpenDevice = lib.func('McuCompiler_OpenDevice', 'int', []);
+      const CloseDevice = lib.func('McuCompiler_CloseDevice', 'int', []);
+      const GetDeviceVersion = lib.func('McuCompiler_GetDeviceVersion', 'int', ['int *', 'int *']);
+      const CompareVersion = lib.func('McuCompiler_CompareVersion', 'int', ['string', 'int *', 'int *']);
+      const open = OpenDevice();
+      if (open !== 0) return finish({ state: 'no-link', linkId: undefined });
+      try {
+        const out1 = Buffer.alloc(4);
+        const out2 = Buffer.alloc(4);
+        const c = CompareVersion(wcfg, out1, out2);
+        const linkId = out1.readInt32LE(0) & 255;
+        if (c === 0) return finish({ state: 'up-to-date', linkId });
+        if (c === 1) {
+          const v = GetDeviceVersion(Buffer.alloc(4), Buffer.alloc(4));
+          // the 10..99 band check lives in normalizeFirmwareCheck — shared
+          // with the Windows JSON path (round3 §2)
+          return finish(normalizeFirmwareCheck({ state: 'upgrade-needed', linkId, currentVersion: v }));
+        }
+        return finish({ state: 'error', linkId, error: `CompareVersion code ${c}` });
+      } finally {
+        try {
+          CloseDevice();
+        } catch {
+          // close is best-effort — the check result stands
+        }
+      }
+    } catch (e) {
+      return { state: 'error', error: e instanceof Error ? e.message : String(e) };
+    }
+  };
+
+  if (platform !== 'win32') return runPosix();
+
+  const commLib = resolveCommLib(install, 'win32');
+  if (!commLib || !fs.existsSync(commLib.mcuDll)) {
+    return { state: 'error', error: 'WCH CommunicationLib (McuCompilerDll.dll) not found under the MounRiver installation' };
+  }
+  const psExe = bridgePowerShell(commLib.mcuDll);
+  if (!fs.existsSync(psExe)) {
+    return { state: 'error', error: 'Windows PowerShell not found on this system (' + psExe + ')' };
+  }
+  const script = buildPsFirmwareCheckScript(commLib, wcfg);
+  const ps1 = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mrvc-wlink-')), 'fwcheck.ps1');
+  fs.writeFileSync(ps1, '\uFEFF' + script, 'utf-8');
+  return new Promise((resolve) => {
+    execFile(
+      psExe,
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1],
+      { timeout: 15000, windowsHide: true },
+      (err, stdout) => {
+        try {
+          fs.rmSync(path.dirname(ps1), { recursive: true, force: true });
+        } catch {
+          // temp cleanup best-effort
+        }
+        const line = (stdout ?? '').split(/\r?\n/).filter((l) => l.startsWith('{')).pop();
+        if (!line) {
+          resolve({ state: 'error', error: err?.message ?? 'no result from the PowerShell bridge' });
+          return;
+        }
+        try {
+          const parsed = JSON.parse(line) as Partial<WlinkFirmwareCheck> & { op?: string; version?: number };
+          delete parsed.op;
+          // normalizeFirmwareCheck remaps `version` → currentVersion and
+          // enforces the 10..99 band for BOTH platforms (round3 §2)
+          resolve(finish(normalizeFirmwareCheck(parsed)));
+        } catch {
+          resolve({ state: 'error', error: `unparsable bridge output: ${line}` });
         }
       }
     );

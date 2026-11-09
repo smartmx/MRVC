@@ -350,10 +350,24 @@ const memberDir = (name) => {
   fs.writeFileSync(path.join(dir, 'obj', 'O.wvsln'), 'A\n');
   fs.writeFileSync(path.join(dir, 'proj', '.project'), '<?xml version="1.0"?><projectDescription/>');
   fs.writeFileSync(path.join(dir, 'proj', 'P.wvsln'), 'A\n');
+  // note (0.2.8 legality, round5 final contract): when the ROOT ITSELF is
+  // probed at depth 0, a LEGAL project root (工程名.wvproj + companions
+  // .project AND .cproject) still stops the walk (it can never hold a
+  // solution); any subset of the three is debris — its stray .wvsln is
+  // collected because it is not a project
 
   const one = solutionCandidates([dir]);
   check('recover: direct child found; nested/.hidden/obj ignored', one.length === 1 && path.basename(one[0]) === 'Top.wvsln');
-  check('recover: a project root contributes nothing', solutionCandidates([path.join(dir, 'proj')]).length === 0);
+  check('recover: a LEGAL project root contributes nothing', (() => {
+    // upgrade the fixture to a LEGAL root: add the marker + .cproject
+    fs.writeFileSync(path.join(dir, 'proj', 'Proj.wvproj'), 'x');
+    fs.writeFileSync(path.join(dir, 'proj', '.cproject'), '<?xml version="1.0"?><cproject/>');
+    const legal = solutionCandidates([path.join(dir, 'proj')]).length === 0;
+    fs.rmSync(path.join(dir, 'proj', '.cproject'));
+    fs.rmSync(path.join(dir, 'proj', 'Proj.wvproj'));
+    return legal;
+  })());
+  check('recover: debris (incomplete triple) no longer stops the walk', solutionCandidates([path.join(dir, 'proj')]).length === 1);
   check('recover: the same root twice dedupes', solutionCandidates([dir, dir]).length === 1);
   check('recover: case-insensitive dedupe across roots', solutionCandidates([dir, dir.toUpperCase()]).length === 1);
   check('recover: no roots / missing root -> empty', solutionCandidates([]).length === 0 && solutionCandidates([path.join(dir, 'nope')]).length === 0);

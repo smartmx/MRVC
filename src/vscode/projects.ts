@@ -10,7 +10,7 @@ import { MrsProjectFile, readProjectFile, linkedFolderMap } from '../core/projec
 import { migrateLegacyCppNature } from '../core/projectType';
 import { readTemplate, TemplateData } from '../core/templateFile';
 import { selectInstall, InstallSelection, InstallFieldCheck, flavorLabel, launcherFileNames, mergeCustomToolchains, CustomToolchain, MrsInstall, selectToolchain, toolchainArchProblem, ToolchainInfo } from '../core/toolchain';
-import { findProjectRoots } from '../core/discover';
+import { findProjectRoots, isLegalProjectRoot } from '../core/discover';
 import { parseSolution } from '../core/solution';
 import { t } from '../core/i18n';
 
@@ -281,10 +281,11 @@ export class ProjectStore implements vscode.Disposable {
 
   /**
    * Open dialog (files only — MRS2-style type dropdown in the corner):
-   *   .wvproj / .project file → open its folder in a NEW VSCode window
-   *   .wvsln file             → generate the companion .code-workspace and
-   *                             open it in a NEW VSCode window (loads the
-   *                             solution)
+   *   .wvproj file → open its folder in a NEW VSCode window (the .wvproj is
+   *                  THE open entry; .project/.cproject only participate in
+   *                  the three-file legality check, they are not open targets)
+   *   .wvsln file  → generate the companion .code-workspace and open it in a
+   *                  NEW VSCode window (loads the solution)
    * Folders are opened through the dedicated openFolder() command instead —
    * canSelectFolders cannot be combined with filters: VSCode ignores filters
    * in folder mode.
@@ -296,6 +297,9 @@ export class ProjectStore implements vscode.Disposable {
       openLabel: 'Open MRS Project / Solution',
       title: 'Open MRS Project / Solution',
       filters: {
+        // ONLY the open-entry markers (.wvproj / .wvsln) — user rule
+        // (round4 final): .project/.cproject are mandatory COMPANION files,
+        // never open targets, so they stay out of the filters
         'MRS Project / Solution (*.wvproj, *.wvsln)': ['wvproj', 'wvsln'],
         'MRS Project (*.wvproj)': ['wvproj'],
         'MRS Solution (*.wvsln)': ['wvsln'],
@@ -331,7 +335,11 @@ export class ProjectStore implements vscode.Disposable {
 
   /** open a project folder in a new window; projects are discovered there */
   private async openFolderWindow(root: string): Promise<void> {
-    if (!fs.existsSync(path.join(root, '.project')) && !findProjectRoots(root).length) {
+    // the SAME legality contract as everywhere else (round5 §2): the root
+    // itself must be a legal project root (all three files), or it must
+    // contain legal projects deeper — a .project-without-.cproject half
+    // deletion previously slipped through here and opened an empty window
+    if (!isLegalProjectRoot(root) && !findProjectRoots(root).length) {
       vscode.window.showErrorMessage(t('noProjectInFolder'));
       return;
     }
@@ -368,12 +376,32 @@ export class ProjectStore implements vscode.Disposable {
   }
 
   add(root: string): MrsProject | null {
-    if (!fs.existsSync(path.join(root, '.project'))) {
-      // discovered via 工程名.wvproj (the MRS marker) but the parseable
-      // project description is absent — MRVC-only project
-      vscode.window.showWarningMessage(
-        t('wvprojOnlySkipped', path.basename(root))
-      );
+    // legality (0.2.8, single contract with discover.ts): a valid MRS
+    // project carries ALL THREE files — the 工程名.wvproj open marker and
+    // the companions .project (parseable description) and .cproject (build
+    // configuration). A folder missing any of them is debris (probe/scratch
+    // leftovers) and previously crashed the loader with an ENOENT on the
+    // .cproject read
+    if (!isLegalProjectRoot(root)) {
+      // name the files that are actually missing — the warning must match
+      // reality (round3 §3 / round5 §1: the contract is 工程名.wvproj +
+      // companions .project and .cproject). The whole probe is guarded:
+      // the root may have vanished or become unreadable between discovery
+      // and this call, and a throw here would abort the ENTIRE workspace
+      // scan mid-loop (round6 §2)
+      let missing = '.wvproj, .project, .cproject';
+      try {
+        missing = (['.wvproj', '.project', '.cproject'] as const)
+          .filter((f) =>
+            f === '.wvproj'
+              ? !fs.readdirSync(root).some((n) => n.toLowerCase().endsWith('.wvproj'))
+              : !fs.existsSync(path.join(root, f))
+          )
+          .join(', ');
+      } catch {
+        // unreadable/vanished — report the full triple as missing
+      }
+      vscode.window.showWarningMessage(t('cprojectMissingSkipped', path.basename(root), missing));
       return null;
     }
     try {
@@ -460,8 +488,10 @@ export class ProjectStore implements vscode.Disposable {
    * Bound to the tree's Refresh button.
    */
   async refreshWorkspace(): Promise<void> {
+    // the SAME legality contract as discovery (round2 §3): a loaded project
+    // whose .cproject (or .project) was deleted is a zombie — drop it
     for (const p of this.all) {
-      if (!fs.existsSync(path.join(p.root, '.project'))) {
+      if (!isLegalProjectRoot(p.root)) {
         this.remove(p.root);
       }
     }
@@ -531,7 +561,7 @@ export class ProjectStore implements vscode.Disposable {
   restoreState(): void {
     const roots = this.context.workspaceState.get<string[]>('mrvc.projects') ?? [];
     for (const r of roots) {
-      if (fs.existsSync(path.join(r, '.project'))) {
+      if (isLegalProjectRoot(r)) {
         try {
           this.projects.set(ProjectStore.key(r), new MrsProject(r));
           this.watchProject(r);
@@ -560,9 +590,11 @@ export class ProjectStore implements vscode.Disposable {
       }
     };
     const onDelete = () => {
-      // a deleted .project means the project is gone (renamed/removed
-      // externally) — drop it from the store instead of keeping a zombie
-      if (!fs.existsSync(path.join(root, '.project')) && !fs.existsSync(path.join(root, '.cproject'))) {
+      // the legality contract broken (either required file deleted
+      // externally) means the project is gone — drop it from the store
+      // instead of keeping a zombie that would build from stale config
+      // (round2 §3: .cproject-only deletion previously kept the project)
+      if (!isLegalProjectRoot(root)) {
         this.remove(root);
       }
     };

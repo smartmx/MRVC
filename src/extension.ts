@@ -133,6 +133,42 @@ function startExtension(context: vscode.ExtensionContext): void {
   const treeView = vscode.window.createTreeView('mrvc.projectExplorer', { treeDataProvider: tree, dragAndDropController: undefined });
   context.subscriptions.push(treeView);
 
+  // lazy workspace init (0.2.8): opening a folder must NOT start MRVC —
+  // no scan, no compile databases, no cpptools prompt — until the user
+  // actually engages the extension. Memoized so every entry point (view
+  // becoming visible, commands that need the store) shares one run; the
+  // activation events in package.json match (onView/onCommand). A FAILED
+  // run is NOT cached (round1 §7): the memo resets so the next user action
+  // retries, and the error surfaces once via the report channel.
+  let workspaceInit: Promise<void> | undefined;
+  const ensureWorkspaceInit = (): Promise<void> => {
+    if (!workspaceInit) {
+      workspaceInit = (async () => {
+        await store.discoverInWorkspace();
+        reportIntellisenseError(ensureIntellisenseConfig(store).error);
+        // the databases are only half of code navigation — make sure the
+        // extension that consumes them is present and new enough
+        maybePromptCppTools(context, store);
+      })();
+      workspaceInit.catch((e) => {
+        workspaceInit = undefined; // allow the next user action to retry
+        reportIntellisenseError(`workspace scan failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
+    }
+    return workspaceInit;
+  };
+  // the user clicking the MRVC icon in the activity bar (first time the
+  // view becomes visible) is the explicit "start working" signal — plus a
+  // visible-at-creation check (round1 §5): createTreeView may report the
+  // restored layout's visible state before this listener exists, and
+  // onDidChangeVisibility only fires on CHANGES
+  context.subscriptions.push(
+    treeView.onDidChangeVisibility((e) => {
+      if (e.visible) void ensureWorkspaceInit();
+    })
+  );
+  if (treeView.visible) void ensureWorkspaceInit();
+
   // IntelliSense context switch: selecting a (different) project in the tree
   // copies that project's compile_commands database over the active one —
   // cpptools re-parses with the project's own macros/includes (the MRS2
@@ -254,8 +290,51 @@ function startExtension(context: vscode.ExtensionContext): void {
   }
 
   // ---- commands ----
-  const reg = (id: string, fn: (...a: never[]) => unknown) =>
-    context.subscriptions.push(vscode.commands.registerCommand(id, fn as (...a: unknown[]) => unknown));
+  // Every command AWAITS the lazy workspace init before running (round1 §3):
+  // the command palette can invoke mrvc.* the moment the extension activates
+  // — without the scan, Build/Flash/Properties would report "No MRS project
+  // loaded" on a perfectly good folder. Only commands that never touch the
+  // project store are exempted (NO_SCAN list: pure tool/settings/file
+  // operations — launching them must not trigger a full workspace scan).
+  const NO_SCAN = new Set([
+    'mrvc.openFolder', // opens ANOTHER window; scanning here would be premature
+    'mrvc.openProject', // opens a picker that leads to another window
+    'mrvc.clearIntelliSenseCache',
+    'mrvc.flashUtility', // WCH-LinkUtility GUI
+    'mrvc.ispTool',
+    'mrvc.touchkeyTool',
+    'mrvc.uiDesigner',
+    'mrvc.hexBinTool',
+    'mrvc.comTransmit',
+    'mrvc.wchToolKit',
+    'mrvc.openSettings',
+    'mrvc.resetInstallGuidance',
+    // syncSettings/batchMacros are NOT exempt (round2 §1.1): their pages
+    // render from store.all — invoked on an empty store they would show
+    // empty UIs, so they join the scan-first set
+    'mrvc.collapseAll',
+    'mrvc.refreshTreeDecorations',
+    // file-node operations act on the TreeItem's own paths, not the store
+    'mrvc.file.copy',
+    'mrvc.file.paste',
+    'mrvc.file.newFile',
+    'mrvc.file.newFolder',
+    'mrvc.file.copyPath',
+    'mrvc.file.copyRelPath',
+    'mrvc.file.copyName',
+    'mrvc.file.reveal',
+    'mrvc.file.rename',
+    'mrvc.file.delete',
+  ]);
+  const reg = (id: string, fn: (...a: never[]) => unknown) => {
+    const impl = NO_SCAN.has(id)
+      ? fn
+      : async (...a: never[]) => {
+          await ensureWorkspaceInit();
+          return fn(...a);
+        };
+    context.subscriptions.push(vscode.commands.registerCommand(id, impl as (...a: unknown[]) => unknown));
+  };
 
   reg('mrvc.openProject', () => store.openProject());
   reg('mrvc.openFolder', () => store.openFolder());
@@ -503,16 +582,6 @@ function startExtension(context: vscode.ExtensionContext): void {
     });
   }
 
-
-  // discover projects already inside the workspace (debounced once at start)
-  setTimeout(() => {
-    void store.discoverInWorkspace().then(() => {
-      reportIntellisenseError(ensureIntellisenseConfig(store).error);
-      // the databases are only half of code navigation — make sure the
-      // extension that consumes them is present and new enough
-      maybePromptCppTools(context, store);
-    });
-  }, 800);
 
   // while one of OUR build/clean/flash tasks runs, suspend the watcher-driven
   // tree refreshes: make's obj/ write storm would otherwise re-render the

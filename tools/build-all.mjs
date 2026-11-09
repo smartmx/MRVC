@@ -2,6 +2,13 @@
  * Batch build every EXAM project with the current generator + real toolchain.
  * Runs tools/build-test.mjs per project (concurrency-limited) and reports.
  *
+ * WARNING: NOT a side-effect-free regression command — it GENERATES AND
+ * OVERWRITES obj/ in the REAL projects of the target tree. The round-5
+ * review's build-all run destroyed the F:/CH585 golden baselines this way
+ * (recovered via tools/restore-goldens.mjs). Run it only against an ISOLATED
+ * COPY of the tree; for routine regression use the read-only suites
+ * (discover/config/golden) or build-test against a scratch project.
+ *
  * Usage: node tools/build-all.mjs [rootDir] [concurrency]
  */
 import * as fs from 'fs';

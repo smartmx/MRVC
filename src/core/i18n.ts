@@ -71,6 +71,18 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     en: 'The cache was partially cleared — these directories could not be removed:\n{0}',
     'zh-cn': '缓存已部分清除——以下目录未能删除：\n{0}',
   },
+  wchLinkFwUpdateNeeded: {
+    en: 'The connected {0} firmware is {1}, but the MounRiver installation expects {2} — an old link firmware can misbehave during flashing. Upgrade it with WCH-LinkUtility (Firmware → Upgrade).',
+    'zh-cn': '已连接的 {0} 固件为 {1}，而 MounRiver 安装期望 {2}——旧固件可能导致烧录异常。请使用 WCH-LinkUtility 升级固件（固件 → 升级）。',
+  },
+  wchLinkFwOpenUtility: {
+    en: 'Open WCH-LinkUtility',
+    'zh-cn': '打开 WCH-LinkUtility',
+  },
+  wchLinkFwContinue: {
+    en: 'Flash anyway',
+    'zh-cn': '仍要烧录',
+  },
   cacheClearMalformedPath: {
     en: 'C_Cpp.intelliSenseCachePath is a {0}, not a string — it has been ignored; this cleanup will only offer the built-in default cache location. Fix the value in your settings to have it cleared too.',
     'zh-cn': 'C_Cpp.intelliSenseCachePath 的值是 {0}，不是字符串——已忽略该配置，本次清理只尝试内置默认缓存路径。修正设置中的值后才会一并清理。',
@@ -404,11 +416,11 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     'zh-cn': '所选文件夹中没有 .project（不是 MRS 工程？）。',
   },
   wsFileWriteFailed: { en: 'MRVC: cannot write workspace file — {0}', 'zh-cn': 'MRVC：无法写入工作区文件——{0}' },
-  wvprojOnlySkipped: {
-    en: 'Skipped "{0}": found a .wvproj marker but no .project (MRVC-only project cannot be parsed).',
-    'zh-cn': '已跳过" {0} "：发现了 .wvproj 标记但没有 .project（无法解析该工程）。',
-  },
   openProjectFailed: { en: 'Failed to open MRS project: {0}', 'zh-cn': '打开 MRS 工程失败：{0}' },
+  cprojectMissingSkipped: {
+    en: '{0} is not a valid MRS project — missing {1}; skipped. A project opens through its 工程名.wvproj marker, and the companion files .project and .cproject must all be present.',
+    'zh-cn': '{0} 不是合法的 MRS 工程——缺少 {1}，已跳过。工程以「工程名.wvproj」打开，附属文件 .project 与 .cproject 必须全部存在。',
+  },
   openFolderFirst: {
     en: 'MRVC: open a workspace folder first — the solution is saved in it.',
     'zh-cn': 'MRVC：请先打开一个工作区文件夹——解决方案将保存在其中。',

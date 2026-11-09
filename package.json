@@ -2,9 +2,10 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "MRVC — open, configure and build MounRiver (MRS) projects for WCH MCUs directly in VSCode.",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "publisher": "smartmx",
   "license": "MIT",
+  "icon": "resources/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/smartmx/MRVC.git"
@@ -31,8 +32,7 @@
     "CH59x"
   ],
   "activationEvents": [
-    "workspaceContains:**/.project",
-    "workspaceContains:**/*.wvproj",
+    "onView:mrvc.projectExplorer",
     "onCommand:mrvc.openProject"
   ],
   "main": "./out/extension.js",

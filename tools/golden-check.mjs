@@ -39,6 +39,11 @@ const defaults = [path.join(EVT, 'FreeRTOS'), path.join(EVT, 'HarmonyOS'), path.
 
 const argProjects = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const projects = argProjects.length ? argProjects : defaults;
+// NOTE: the scratch root must stay at .scratch itself — the golden bundle's
+// esbuild module-path labels embed this relative depth and the byte-equality
+// gate depends on it (moving it to .scratch/golden broke 29/29). The
+// parallel-suite interference this once caused is fixed on the OTHER side:
+// wlink-test now runs from os.tmpdir() instead of .scratch (round5 §4).
 const scratchRoot = path.join(here, '..', '.scratch');
 fs.rmSync(scratchRoot, { recursive: true, force: true });
 

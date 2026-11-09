@@ -5,6 +5,7 @@
 import { createRequire } from 'module';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const require = createRequire(import.meta.url);
@@ -104,7 +105,9 @@ const ARGS = { chipId: 6, clkSpeed: 1, dbgMode: 0 };
 // McuCompilerDll, the MRS3 beta a 64-bit one) — the PE machine type decides
 // which PowerShell host runs the P/Invoke script
 {
-  const scratch = path.join(DEVELOP_DIR, '.scratch', 'wlink-pe');
+  // os.tmpdir, NOT .scratch — golden-check wipes the whole .scratch root at
+  // startup and a parallel run would delete this fixture mid-test (round5 §4)
+  const scratch = path.join(os.tmpdir(), 'mrvc-wlink-pe');
   fs.rmSync(scratch, { recursive: true, force: true });
   fs.mkdirSync(scratch, { recursive: true });
   const writePe = (file, machine) => {
@@ -151,8 +154,10 @@ const ARGS = { chipId: 6, clkSpeed: 1, dbgMode: 0 };
 // physical machines; here we pin the SEQUENCE, the ok codes and the resolvers)
 const { runWlinkOpPosix, mcuLibFileName } = require(path.join(outCore, 'wlink.js'));
 
-// every path this helper writes must stay inside the scratch root
-const PROOT = path.join(DEVELOP_DIR, '.scratch', 'wlink-posix');
+// every path this helper writes must stay inside the scratch root —
+// os.tmpdir, NOT .scratch (golden-check wipes .scratch wholesale at startup;
+// a parallel run would delete this fixture mid-test, round5 §4)
+const PROOT = path.join(os.tmpdir(), 'mrvc-wlink-posix');
 fs.rmSync(PROOT, { recursive: true, force: true });
 function inside(root, target) {
   const resolved = path.resolve(root, target);
@@ -269,6 +274,175 @@ try {
     check('posix: a throwing export becomes an error result', !r.ok && r.error.includes('USB device gone'));
   }
 } finally {
+  fs.rmSync(PROOT, { recursive: true, force: true });
+}
+
+// ---- WCH-Link firmware version check (READ-ONLY detect-only, 0.2.8): the
+// decompiled mrs-vscode doUpdate semantics — OpenDevice → CompareVersion
+// (out1 low byte = linkID; 0 = up to date, 1 = upgrade needed) →
+// GetDeviceVersion → CloseDevice. MRVC never touches the link firmware.
+const {
+  checkWCHLinkFirmware,
+  wchlinkFirmwareCfgPath,
+  linkInfoFor,
+  expectedFirmwareVersion,
+  formatLinkVersion,
+  buildPsFirmwareCheckScript,
+  normalizeFirmwareCheck,
+} = require(path.join(outCore, 'wlink.js'));
+
+// round3 §2: the shared post-processor covers BOTH platforms — the Windows
+// `version` field remap AND the 10..99 band, in one pure function
+check('fwcheck: normalize remaps the Windows `version` field to currentVersion', (() => {
+  const r = normalizeFirmwareCheck({ state: 'upgrade-needed', linkId: 2, version: 43 });
+  return r.currentVersion === 43 && r.version === undefined && r.state === 'upgrade-needed';
+})());
+check('fwcheck: normalize rejects out-of-band versions on the Windows shape too', (() => {
+  const low = normalizeFirmwareCheck({ state: 'upgrade-needed', linkId: 2, version: 0 });
+  const high = normalizeFirmwareCheck({ state: 'upgrade-needed', linkId: 2, version: 100 });
+  return low.state === 'error' && /out of range/.test(low.error ?? '') && high.state === 'error';
+})());
+check('fwcheck: normalize leaves currentVersion-carrying results untouched', (() => {
+  const r = normalizeFirmwareCheck({ state: 'upgrade-needed', linkId: 5, currentVersion: 34 });
+  return r.currentVersion === 34 && r.state === 'upgrade-needed';
+})());
+
+{
+  // the real wchlink.wcfg from the MRS3 install (INI: link type -> expected
+  // firmware version number)
+  const WCFG = [
+    '[WCHLINK]',
+    'LinkName=Default',
+    '',
+    '[Default]',
+    'CH549Ver_RV=32',
+    'CH549Ver_ARM=31',
+    'CH32V307Ver=43',
+    'CH32V208Ver=34',
+    'CH32V203Ver=32',
+    '',
+  ].join('\n');
+
+  // fixture: install carrying BOTH the CommunicationLib library and the
+  // Firmware_Link/default/wchlink.wcfg (a UNIQUE resources dir per case —
+  // a shared name would let a later withCfg=false fixture wipe the wcfg an
+  // earlier install points at)
+  function fwInstall(withCfg, tag) {
+    const res = inside(PROOT, 'fw-res-' + tag);
+    const commDir = inside(PROOT, path.join('fw-res-' + tag, 'components', 'WCH', 'Others', 'CommunicationLib', 'default'));
+    const fwDir = inside(PROOT, path.join('fw-res-' + tag, 'components', 'WCH', 'Others', 'Firmware_Link', 'default'));
+    fs.mkdirSync(commDir, { recursive: true });
+    fs.writeFileSync(path.join(commDir, 'libmcuupdate.so'), 'binary');
+    if (withCfg) {
+      fs.mkdirSync(fwDir, { recursive: true });
+      fs.writeFileSync(path.join(fwDir, 'wchlink.wcfg'), WCFG);
+    }
+    return { root: PROOT, resourcesDir: res, kind: 'ide', components: path.join(res, 'components', 'WCH'), makeBin: '', openocdExe: '', openocdCfg: '', linkUtilityExe: '', toolchains: [], flavor: 'mrs3', label: 'MounRiver Studio 3' };
+  }
+
+  const FW_INS = fwInstall(true, 'main');
+  check('fwcheck: wcfg path resolves under Firmware_Link/default', wchlinkFirmwareCfgPath(FW_INS).replace(/\\/g, '/').endsWith('/components/WCH/Others/Firmware_Link/default/wchlink.wcfg'));
+
+  // pure helpers: linkID map, wcfg version lookup, formatting
+  check('fwcheck: linkInfoFor — 0/1=CH549, 2/18=LinkE, 4=DAPLink, 5/133=LinkW, default=CH549',
+    linkInfoFor(0).chipType === 'CH549' && linkInfoFor(1).name === 'WCH-Link' &&
+    linkInfoFor(2).chipType === 'CH32V305' && linkInfoFor(18).name === 'WCH-LinkE' &&
+    linkInfoFor(4).chipType === 'CH32V203' && linkInfoFor(4).name === 'WCH-DAPLink' &&
+    linkInfoFor(5).chipType === 'CH32V208' && linkInfoFor(133).name === 'WCH-LinkW' &&
+    linkInfoFor(999).chipType === 'CH549');
+  check('fwcheck: expectedFirmwareVersion — CH549Ver_RV(0)=32, _ARM(1+DAP)=31, LinkE remapped to CH32V307Ver=43, DAPLink=32, LinkW=34',
+    expectedFirmwareVersion(WCFG, 0) === 32 && expectedFirmwareVersion(WCFG, 1, false) === 32 &&
+    expectedFirmwareVersion(WCFG, 1, true) === 31 && expectedFirmwareVersion(WCFG, 2) === 43 &&
+    expectedFirmwareVersion(WCFG, 18) === 43 && expectedFirmwareVersion(WCFG, 4) === 32 &&
+    expectedFirmwareVersion(WCFG, 5) === 34 && expectedFirmwareVersion(WCFG, 133) === 34);
+  check('fwcheck: expectedFirmwareVersion — a key the cfg does not carry -> undefined (defensive branch)',
+    expectedFirmwareVersion('[Default]\nCH549Ver_RV=32\n', 5) === undefined);
+  check('fwcheck: formatLinkVersion pads to vNN within the 10..99 band, ? outside', formatLinkVersion(43) === 'v43' && formatLinkVersion(10) === 'v10' && formatLinkVersion(99) === 'v99' && formatLinkVersion(8) === '?' && formatLinkVersion(undefined) === '?');
+
+  // POSIX flow against the fake koffi — the DLL parses the wcfg itself (the
+  // JS only passes the path) and returns the linkID through out1
+  {
+    const k = fakeKoffi({
+      McuCompiler_OpenDevice: 0,
+      McuCompiler_CompareVersion: (a) => { a[1].writeInt32LE(2); return 1; },
+      McuCompiler_GetDeviceVersion: 43,
+      McuCompiler_CloseDevice: 0,
+    });
+    const r = await checkWCHLinkFirmware(FW_INS, k, 'linux');
+    check('fwcheck posix: upgrade-needed with LinkE identity and v43/v43',
+      r.state === 'upgrade-needed' && r.linkId === 2 && r.linkName === 'WCH-LinkE' && r.currentVersion === 43 && r.expectedVersion === 43);
+    check('fwcheck posix: call sequence Open → Compare → Version → Close',
+      k.calls.map((c) => c[0]).join(',') === 'McuCompiler_OpenDevice,McuCompiler_CompareVersion,McuCompiler_GetDeviceVersion,McuCompiler_CloseDevice');
+    check('fwcheck posix: CompareVersion got the wcfg PATH as its first arg', typeof k.calls[1][1] === 'string' && k.calls[1][1].endsWith('wchlink.wcfg'));
+  }
+  {
+    // round2 §6: a garbage device version (outside 10..99, mrs-vscode's -2
+    // band) degrades to a silent error instead of a fabricated v00/v-1/v123
+    const k = fakeKoffi({
+      McuCompiler_OpenDevice: 0,
+      McuCompiler_CompareVersion: (a) => { a[1].writeInt32LE(2); return 1; },
+      McuCompiler_GetDeviceVersion: 5,
+      McuCompiler_CloseDevice: 0,
+    });
+    const r = await checkWCHLinkFirmware(FW_INS, k, 'linux');
+    check('fwcheck posix: version below the 10..99 band -> state error (no fake upgrade prompt)', r.state === 'error' && /out of range/.test(r.error ?? ''));
+    const r2 = await checkWCHLinkFirmware(FW_INS, fakeKoffi({
+      McuCompiler_OpenDevice: 0,
+      McuCompiler_CompareVersion: (a) => { a[1].writeInt32LE(2); return 1; },
+      McuCompiler_GetDeviceVersion: 100,
+      McuCompiler_CloseDevice: 0,
+    }), 'linux');
+    check('fwcheck posix: version above the band -> state error too', r2.state === 'error');
+    check('fwcheck posix: formatLinkVersion refuses out-of-band values', formatLinkVersion(5) === '?' && formatLinkVersion(100) === '?' && formatLinkVersion(-1) === '?');
+  }
+  {
+    const k = fakeKoffi({
+      McuCompiler_OpenDevice: 0,
+      McuCompiler_CompareVersion: (a) => { a[1].writeInt32LE(0); return 0; },
+      McuCompiler_CloseDevice: 0,
+    });
+    const r = await checkWCHLinkFirmware(FW_INS, k, 'linux');
+    check('fwcheck posix: compare 0 -> up-to-date, WCH-Link, no version read',
+      r.state === 'up-to-date' && r.linkName === 'WCH-Link' && r.currentVersion === undefined && k.calls.length === 3);
+  }
+  {
+    const k = fakeKoffi({ McuCompiler_OpenDevice: 5 });
+    const r = await checkWCHLinkFirmware(FW_INS, k, 'linux');
+    check('fwcheck posix: non-zero OpenDevice -> no-link (no further FFI)', r.state === 'no-link' && k.calls.length === 1);
+  }
+  {
+    // an FFI-level throw is an error result, never an exception out
+    const k = fakeKoffi({ McuCompiler_OpenDevice: () => { throw new Error('HID busy'); } });
+    const r = await checkWCHLinkFirmware(FW_INS, k, 'linux');
+    check('fwcheck posix: a throwing export becomes state error', r.state === 'error' && r.error.includes('HID busy'));
+  }
+  {
+    const r = await checkWCHLinkFirmware(fwInstall(false, 'nocfg'), fakeKoffi({}), 'linux');
+    check('fwcheck posix: missing wchlink.wcfg -> error (caller stays silent)', r.state === 'error' && r.error.includes('wchlink.wcfg'));
+    const r2 = await checkWCHLinkFirmware(FW_INS, null, 'linux');
+    check('fwcheck posix: missing koffi dependency -> error', r2.state === 'error' && r2.error.includes('koffi dependency is missing'));
+  }
+
+  // Windows script shape (no execution — PowerShell assertions live in the
+  // wrapper suite; here we pin the declarations and the quoting)
+  {
+    const sc = buildPsFirmwareCheckScript({ dir: 'C:\\MRS\\lib', mcuDll: 'C:\\MRS\\lib\\McuCompilerDll.dll', usbDll: '' }, 'C:\\MRS\\Others\\Firmware_Link\\default\\wchlink.wcfg');
+    check('fwcheck ps: the four read-only declarations with the right entry points',
+      sc.includes('EntryPoint = "McuCompiler_OpenDevice"') && sc.includes('EntryPoint = "McuCompiler_CloseDevice"') &&
+      sc.includes('EntryPoint = "McuCompiler_GetDeviceVersion"') && sc.includes('EntryPoint = "McuCompiler_CompareVersion"'));
+    check('fwcheck ps: CompareVersion takes the wcfg path + two ref ints, no Update/SetIAPMode anywhere',
+      sc.includes('CompareVersion(string path, ref int a, ref int b)') && !sc.includes('McuCompiler_Update') && !sc.includes('McuCompiler_SetIAPMode'));
+    // round2 §4/§7: the script names the device version `version` (the JS
+    // side remaps it to currentVersion) and guarantees CloseDevice even when
+    // the check throws (finally on the $opened flag)
+    check('fwcheck ps: device version is written as $r.version for the JS remap', sc.includes('$r.version = [McuLink]::GetDeviceVersion'));
+    check('fwcheck ps: CloseDevice is guarded by $opened in a finally with its own try/catch (exception-safe, JSON always emitted)',
+      sc.includes('$opened = $false') && sc.includes('finally {') && sc.includes("if ($opened) { try { [void][McuLink]::CloseDevice(); } catch { } }"));
+    check('fwcheck ps: the wcfg path is single-quote escaped and SetDllDirectory gets the comm dir',
+      sc.includes("CompareVersion('C:\\MRS\\Others\\Firmware_Link\\default\\wchlink.wcfg'") && sc.includes("SetDllDirectory('C:\\MRS\\lib')"));
+    check('fwcheck ps: JSON contract line present', sc.includes("$r | ConvertTo-Json -Compress | Write-Output;"));
+  }
+
   fs.rmSync(PROOT, { recursive: true, force: true });
 }
 

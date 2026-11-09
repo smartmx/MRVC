@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import { ProjectStore, MrsProject, getInstall } from './projects';
 import { prepareFlash, inferFlashAddress, FlashPlan } from '../core/flash';
 import { scanSources } from '../core/scan';
+import { checkWCHLinkFirmware, formatLinkVersion } from '../core/wlink';
 import { t } from '../core/i18n';
 
 /**
@@ -179,6 +180,37 @@ export async function downloadProject(store: ProjectStore, project: MrsProject):
   } catch (e) {
     vscode.window.showErrorMessage(t('flashAddressInvalid', project.projectName, e instanceof Error ? e.message : String(e)));
     return false;
+  }
+
+  // WCH-Link firmware check (0.2.8, READ-ONLY — detect only): an out-of-date
+  // link firmware misbehaves during flashing. Best-effort and silent on any
+  // check failure; an upgrade-needed result offers the WCH-LinkUtility route
+  // instead of MRVC flashing the link itself (parity with MRS's pre-download
+  // doUpdate check). Runs before the OpenOCD spawn so the USB device is free.
+  try {
+    const fw = await checkWCHLinkFirmware(install);
+    if (fw.state === 'upgrade-needed') {
+      const openUtil = t('wchLinkFwOpenUtility');
+      const continueBtn = t('wchLinkFwContinue');
+      const pick = await vscode.window.showWarningMessage(
+        t('wchLinkFwUpdateNeeded', fw.linkName ?? 'WCH-Link', formatLinkVersion(fw.currentVersion), formatLinkVersion(fw.expectedVersion)),
+        { modal: true },
+        openUtil,
+        continueBtn
+      );
+      // ONLY an explicit "flash anyway" proceeds — Esc/closing the dialog
+      // (undefined) cancels the download, matching MRS's doUpdate where a
+      // dismissed confirmation aborts instead of flashing with a known-bad
+      // link firmware (round2 §5)
+      if (pick === continueBtn) {
+        // fall through to the download
+      } else {
+        if (pick === openUtil) openLinkUtility();
+        return false;
+      }
+    }
+  } catch {
+    // the firmware check must never block or crash a download
   }
 
   store.setActive(project);
