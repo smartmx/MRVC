@@ -70,3 +70,42 @@ export function templateSet(projectRoot: string, key: string, value: string): vo
   data.values[key] = value;
   writeTemplate(projectRoot, data);
 }
+
+/**
+ * Detect a stale .template Target Path at download time (no write). EVT
+ * trees ship cross-project values (CH394Q__MACRAW records
+ * obj\CH394Q__TCP_SERVER.hex — another project's artifact, absent on this
+ * machine); the download falls back to the project's own build artifact,
+ * but the recorded value stays stale on disk. Returns the proposed rewrite
+ * (old recorded value -> project's own artifact, relative to the project
+ * root, platform separators — the MRS convention) when the recorded target
+ * does not exist AND the own artifact does.
+ *
+ * A target that EXISTS is never reported even when it points at another
+ * project's file — sharing an artifact (Merge.Bin workflows) is legitimate.
+ * Undefined when there is nothing to fix (no value, target exists, or the
+ * own artifact is missing too — the project may simply not be built).
+ */
+export function staleTargetPath(projectRoot: string, ownFirmware: string): { old: string; next: string } | undefined {
+  const old = (readTemplate(projectRoot).values['Target Path'] ?? '').trim();
+  if (!old) return undefined;
+  const recorded = path.isAbsolute(old) ? old : path.join(projectRoot, old);
+  if (fs.existsSync(recorded)) return undefined;
+  if (!fs.existsSync(ownFirmware)) return undefined;
+  const rel = path.relative(projectRoot, ownFirmware);
+  const next = rel.startsWith('..') ? ownFirmware : rel;
+  if (next === old) return undefined;
+  return { old, next };
+}
+
+/**
+ * Write the rewrite staleTargetPath() reports. Callers must ask the user
+ * first (default is NOT to touch .template — the recorded value is the
+ * user's to change).
+ */
+export function healTargetPath(projectRoot: string, ownFirmware: string): { old: string; next: string } | undefined {
+  const change = staleTargetPath(projectRoot, ownFirmware);
+  if (!change) return undefined;
+  templateSet(projectRoot, 'Target Path', change.next);
+  return change;
+}

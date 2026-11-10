@@ -6,19 +6,22 @@
 import { createRequire } from 'module';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DEVELOP_DIR = path.dirname(here); // .../develop
 const { prepareFlash, ADDRESS_RE } = require(path.join(DEVELOP_DIR, 'out', 'core', 'flash.js'));
-const { scanChipDb, chipDbRoot } = require(path.join(DEVELOP_DIR, 'out', 'core', 'chipdb.js'));
-const { inferFlashAddress, hexBaseAddress } = require('../out/core/flash.js');
+const { scanChipDb, chipDbRoot, seriesForTemplate, chipForTemplate, chipTargetMismatch, guardLinkedChip } = require(path.join(DEVELOP_DIR, 'out', 'core', 'chipdb.js'));
+const { inferFlashAddress, hexBaseAddress, displayTargetPath } = require('../out/core/flash.js');
 const { encodingForAcp } = require('../out/core/platformEncoding.js');
 const { Cproject } = require('../out/core/cproject.js');
 const { scanSources } = require('../out/core/scan.js');
 
-const scratch = path.join(DEVELOP_DIR, '.scratch', 'flash');
+// a per-run temp dir, not the shared .scratch tree — concurrent suite runs
+// (and any golden-check copy) must never see each other's fixtures
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mrvc-flash-test-'));
 
 let failures = 0;
 const check = (name, cond) => {
@@ -144,9 +147,103 @@ check('regex rejects bare hex and overflow', !ADDRESS_RE.test('0x00G00000') && !
     check('chipdb: ARM series present', db.series.some((s) => s.arch === 'ARM'));
     check('chipdb: chipDbRoot joins resourcesWin32', chipDbRoot('C:/MRS/res').endsWith('components' + path.sep + 'WCH' + path.sep + 'SDK' + path.sep + 'default'));
     check('chipdb: missing dir -> unavailable', scanChipDb(path.join(DEVELOP_DIR, '.scratch', 'no-such-sdk')).available === false);
+    // the download target-chip guard compares these family ids: a V307
+    // project (V30x) must not pass for a V4X7 board and vice versa
+    const v30x = db.series.find((s) => s.mcuType === 'CH32V30x');
+    const v4x7 = db.series.find((s) => s.mcuType === 'CH32V4X7');
+    check('chipdb: V30x/V4X7 family ids both known and different', !!v30x && !!v4x7 && v30x.id > 0 && v4x7.id > 0 && v30x.id !== v4x7.id);
+    // MRS2 swaps the whole flash control for a flash.json "special" model
+    // (CH32V203CCT -> CH32V205, id 206) — the guard must not treat that
+    // board as mismatched
+    const v203 = db.series.find((s) => s.name === 'CH32V203');
+    check('chipdb: CH32V203 special parsed', v203?.special?.mcu === 'CH32V203CCT' && v203?.special?.id === 206 && v203?.special?.mcuType === 'CH32V205');
+    check('chipdb: special applies only to its model', chipForTemplate(db, { Series: 'CH32V203', MCU: 'CH32V203CCT' })?.id === 206);
+    check('chipdb: special also matches the full part number', chipForTemplate(db, { Series: 'CH32V203', MCU: 'CH32V203CCT6' })?.id === 206);
+    check('chipdb: other CH32V203 models keep the series id', chipForTemplate(db, { Series: 'CH32V203', MCU: 'CH32V203C8T6' })?.id === v203?.id);
   } else {
     console.log('SKIP  chipdb scan (MRS2 SDK not present)');
   }
+}
+
+// 7b. project .template -> series resolution (shared by the properties page
+// and the download target-chip guard): MRS2's fallback chain Series ->
+// Mcu Type -> MCU model, with trimming; unknown values resolve to nothing
+// (the guard then skips instead of blocking).
+{
+  const db = {
+    available: true,
+    series: [
+      { name: 'CH32V307', arch: 'RISC-V', mcuType: 'CH32V30x', flashAddress: '0x08000000', chips: ['CH32V307VCT6'], id: 6, support: {} },
+      { name: 'CH32V4X7', arch: 'RISC-V', mcuType: 'CH32V4X7', flashAddress: '0x08000000', chips: ['CH32V407VET6'], id: 166, support: {} },
+      { name: 'CH32V20x', arch: 'RISC-V', mcuType: 'CH32V20x', flashAddress: '0x08000000', chips: ['CH32V203C8T6', 'CH32V203CCT'], id: 8, support: {}, special: { mcu: 'CH32V203CCT', mcuType: 'CH32V205', id: 206, support: {} } },
+    ],
+  };
+  check('seriesForTemplate: Series wins over Mcu Type/MCU', seriesForTemplate(db, { Series: 'CH32V4X7', 'Mcu Type': 'CH32V30x', MCU: 'CH32V203C8T6' })?.id === 166);
+  check('seriesForTemplate: falls back to Mcu Type', seriesForTemplate(db, { 'Mcu Type': 'CH32V30x' })?.id === 6);
+  check('seriesForTemplate: trims and falls back to the MCU model', seriesForTemplate(db, { MCU: ' CH32V203C8T6 ' })?.id === 8);
+  check('seriesForTemplate: MRS2 slice fallback (MCU part number vs zip name)', seriesForTemplate(db, { MCU: 'CH32V203CCT6' })?.id === 8);
+  check('seriesForTemplate: unknown project values -> undefined', seriesForTemplate(db, { Series: 'CH32X999', MCU: 'CH32X999' }) === undefined);
+  check('seriesForTemplate: empty template -> undefined', seriesForTemplate(db, {}) === undefined);
+  check('chipForTemplate: special override applies to its model', chipForTemplate(db, { Series: 'CH32V20x', MCU: 'CH32V203CCT6' })?.id === 206);
+  check('chipForTemplate: other models keep the series control', chipForTemplate(db, { Series: 'CH32V20x', MCU: 'CH32V203C8T6' })?.id === 8);
+  check('chipForTemplate: non-special series unaffected', chipForTemplate(db, { Series: 'CH32V307', MCU: 'CH32V307VCT6' })?.mcuType === 'CH32V30x');
+  check('chipForTemplate: unknown project -> undefined', chipForTemplate(db, {}) === undefined);
+}
+
+// 7c. download target-chip decision (round5 P3): the pure comparison the
+// download pipeline runs after GetLinkedMCUID — trusted-only, skip on every
+// unknown, and report every series that shares the linked family id
+{
+  const db = {
+    available: true,
+    series: [
+      { name: 'CH32V307', arch: 'RISC-V', mcuType: 'CH32V30x', flashAddress: '0x08000000', chips: ['CH32V307VCT6'], id: 6, support: {} },
+      { name: 'CH32V4X7', arch: 'RISC-V', mcuType: 'CH32V4X7', flashAddress: '0x08000000', chips: ['CH32V407VET6'], id: 166, support: {} },
+      { name: 'CH32M007', arch: 'RISC-V', mcuType: 'CH32M007', flashAddress: '0x08000000', chips: ['CH32M007A'], id: 78, support: {} },
+      { name: 'CH32V002', arch: 'RISC-V', mcuType: 'CH32V002/4/5/6/7', flashAddress: '0x08000000', chips: ['CH32V006A'], id: 78, support: {} },
+    ],
+  };
+  const v307 = { Series: 'CH32V307', MCU: 'CH32V307VCT6' };
+  const v407 = { Series: 'CH32V4X7', MCU: 'CH32V407VET6' };
+  const m = chipTargetMismatch(db, v307, 166, true);
+  check('chipTargetMismatch: trusted different ids -> warning (connected/expected names)', m?.connected === 'CH32V4X7' && m?.expected === 'CH32V307VCT6');
+  check('chipTargetMismatch: reverse direction warns too', chipTargetMismatch(db, v407, 6, true)?.connected === 'CH32V30x');
+  check('chipTargetMismatch: same family id -> no warning', chipTargetMismatch(db, v307, 6, true) === undefined);
+  check('chipTargetMismatch: untrusted raw 6 with V30x project -> skipped (no false pass)', chipTargetMismatch(db, v307, 6, false) === undefined);
+  check('chipTargetMismatch: untrusted raw 6 with V4X7 project -> skipped (no false warning)', chipTargetMismatch(db, v407, 6, false) === undefined);
+  check('chipTargetMismatch: linked 0/undefined -> skipped', chipTargetMismatch(db, v307, 0, true) === undefined && chipTargetMismatch(db, v307, undefined, true) === undefined);
+  check('chipTargetMismatch: id outside the SDK -> skipped', chipTargetMismatch(db, v307, 999, true) === undefined);
+  check('chipTargetMismatch: unknown project target -> skipped', chipTargetMismatch(db, { Series: 'CH32X999' }, 166, true) === undefined);
+  check('chipTargetMismatch: unavailable db -> skipped', chipTargetMismatch({ available: false, series: db.series }, v307, 166, true) === undefined);
+  const dup = chipTargetMismatch(db, v307, 78, true)?.connected || '';
+  check('chipTargetMismatch: shared family id lists every candidate', dup === 'CH32M007 / CH32V002/4/5/6/7');
+
+  // round6 P3: the guard resolves the project target BEFORE touching the
+  // link — a .template-less EVT project must not pay a needless query
+  let calls = 0;
+  const noTarget = await guardLinkedChip(db, {}, async () => {
+    calls++;
+    return { result: 166, initState: 'ok' };
+  });
+  check('guardLinkedChip: unknown target -> zero link queries', noTarget === undefined && calls === 0);
+  calls = 0;
+  const warn = await guardLinkedChip(db, v307, async () => {
+    calls++;
+    return { result: 166, initState: 'ok' };
+  });
+  check('guardLinkedChip: known target queries once and warns', warn?.connected === 'CH32V4X7' && calls === 1);
+  calls = 0;
+  const same = await guardLinkedChip(db, v307, async () => {
+    calls++;
+    return { result: 6, initState: 'ok' };
+  });
+  check('guardLinkedChip: known target, same family -> no warning', same === undefined && calls === 1);
+  calls = 0;
+  const untrusted = await guardLinkedChip(db, v307, async () => {
+    calls++;
+    return { result: 166, initState: 'failed' };
+  });
+  check('guardLinkedChip: untrusted result -> no warning', untrusted === undefined && calls === 1);
 }
 
 // 8. chip-family address inference (EVT trees ship without .template)
@@ -229,10 +326,19 @@ check('regex rejects bare hex and overflow', !ADDRESS_RE.test('0x00G00000') && !
   check('eraseAll: address override stays first (bank base at probe time)', lines[0] === 'wlink_set_address 0x00000000');
   check('eraseAll: init once, then reset init', lines[1] === 'init' && lines[2] === 'reset init');
   check('eraseAll: single bank scrubbed to last sector', lines[3] === 'flash erase_sector 0 0 last');
-  check('eraseAll: write_image erase keeps the offset', lines[4] === 'flash write_image erase "E:/prj/obj/LED.hex" 0x00000000');
+  check(
+    'eraseAll: progress echo + write_image erase keeps the offset',
+    lines[4] === 'echo "** Programming Started **"' && lines[5] === 'flash write_image erase "E:/prj/obj/LED.hex" 0x00000000' && lines[6] === 'echo "** Programming Finished **"'
+  );
   check(
     'eraseAll: verify/reset/shutdown mirror the program proc',
-    lines[5] === 'verify_image "E:/prj/obj/LED.hex" 0x00000000' && lines[6] === 'poll off' && lines[7] === 'reset run' && lines[8] === 'shutdown'
+    lines[7] === 'echo "** Verify Started **"' &&
+      lines[8] === 'verify_image "E:/prj/obj/LED.hex" 0x00000000' &&
+      lines[9] === 'echo "** Verified OK **"' &&
+      lines[10] === 'poll off' &&
+      lines[11] === 'echo "** Resetting Target **"' &&
+      lines[12] === 'reset run' &&
+      lines[13] === 'shutdown'
   );
   fs.rmSync(scratch, { recursive: true, force: true });
   prepareFlash({ ...base, eraseAll: true, banks: 2 });
@@ -243,6 +349,23 @@ check('regex rejects bare hex and overflow', !ADDRESS_RE.test('0x00G00000') && !
   const bare = readCfg(scratch);
   check('eraseAll: verify/reset omitted when disabled', !bare.includes('verify_image') && !bare.includes('reset run') && bare.trimEnd().endsWith('shutdown'));
 }
+
+// 13. Download Settings display form of the resolved target (review round2
+// §2): only ABSOLUTE paths may go through path.relative; an unresolved raw
+// value (recorded Target Path of an unbuilt project) must be shown verbatim —
+// running path.relative() on it folds in the process cwd and shows garbage.
+{
+  const root = path.resolve('E:/prj');
+  const inside = path.join(root, 'obj', 'LED.hex');
+  check('display: absolute under the root -> relative', displayTargetPath(root, inside) === path.join('obj', 'LED.hex'));
+  const outside = path.join(path.dirname(root), 'other', 'LED.hex');
+  check('display: absolute outside the root stays absolute', displayTargetPath(root, outside) === outside);
+  check('display: unresolved raw relative value shown verbatim', displayTargetPath(root, 'obj/LiteOS_m.hex') === 'obj/LiteOS_m.hex');
+  check('display: empty value stays empty', displayTargetPath(root, '') === '');
+}
+
+// drop the per-run fixture dir
+fs.rmSync(scratch, { recursive: true, force: true });
 
 console.log(failures ? `\n${failures} FAILURES` : '\nall flash tests passed');
 process.exit(failures ? 1 : 0);

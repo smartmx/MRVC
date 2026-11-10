@@ -41,11 +41,11 @@ const argProjects = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const projects = argProjects.length ? argProjects : defaults;
 // NOTE: the scratch root must stay at .scratch itself — the golden bundle's
 // esbuild module-path labels embed this relative depth and the byte-equality
-// gate depends on it (moving it to .scratch/golden broke 29/29). The
-// parallel-suite interference this once caused is fixed on the OTHER side:
-// wlink-test now runs from os.tmpdir() instead of .scratch (round5 §4).
+// gate depends on it (moving it to .scratch/golden broke 29/29). The root is
+// SHARED with the other suites (flash/roundtrip/define/… each own a distinct
+// subdir), so only THIS run's project dirs are wiped — never the root —
+// which keeps a parallel `golden-check` + `node tools/*-test` run safe.
 const scratchRoot = path.join(here, '..', '.scratch');
-fs.rmSync(scratchRoot, { recursive: true, force: true });
 
 console.log(`baseline EVT: ${EVT}${goldensMarker ? `  (.goldens: ${goldensMarker})` : ''}`);
 
@@ -98,6 +98,8 @@ for (const proj of projects) {
   }
   const name = path.basename(proj);
   const scratch = path.join(scratchRoot, name);
+  // this run's own copy only — the shared root stays untouched
+  fs.rmSync(scratch, { recursive: true, force: true });
   copyTree(proj, scratch);
 
   // Rewrite PARENT-N-PROJECT_LOC tokens in the scratch .project so linked

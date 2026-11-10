@@ -143,6 +143,9 @@ export interface WlinkArgs {
   eraseMode?: number;
   /** SetMemType select value */
   memVal?: number;
+  /** the install's wchlink.wcfg — required by the queryMcuId init sequence
+   * (Windows transport; POSIX derives it from the install) */
+  wcfgPath?: string;
 }
 
 /**
@@ -172,6 +175,9 @@ public static class McuLink {
     decl('SetMemType', 'MRSFunc_SetMemType', 'int chipId, int clk, int val') +
     decl('ClearCodeFlash', 'MRSFunc_ClearCodeFlash', 'int chipId, int clk, int mode') +
     decl('SetTargetChip', 'McuCompiler_SetTargetChip', 'int chipId, int dbgMode') +
+    decl('OpenDevice', 'McuCompiler_OpenDevice', '') +
+    decl('CloseDevice', 'McuCompiler_CloseDevice', '') +
+    decl('CompareVersion', 'McuCompiler_CompareVersion', 'string path, ref int a, ref int b') +
     `
 }
 '@;
@@ -182,6 +188,29 @@ Add-Type -TypeDefinition $code;
 /** one operation per script; the JSON line on stdout is the result contract */
 export function buildPsScript(commLib: CommLib, op: WlinkOp, args: WlinkArgs): string {
   const { chipId, clkSpeed, dbgMode } = args;
+  // queryMcuId runs the MRS-parity init sequence first (OpenDevice →
+  // CompareVersion → CloseDevice — MRS2's getChipID RPC runs its firmware
+  // check before the query; without it the raw GetLinkedMCUID returns the
+  // LINK's id (2/6) instead of the MCU family code on some chips/links).
+  // $r.init reports how that sequence ended ('ok' only when the device opened
+  // and CompareVersion said 0): consumers that ACT on the id (the download
+  // chip guard) must not trust anything else.
+  const initQueryMcuId =
+    op === 'queryMcuId'
+      ? `  $r.init = 'missing-wcfg';\n` +
+        (args.wcfgPath
+          ? `  try {\n` +
+            `    $r.init = 'failed';\n` +
+            `    if ([McuLink]::OpenDevice() -eq 0) {\n` +
+            `      try {\n` +
+            `        $ia = 0; $ib = 0;\n` +
+            `        $rc = [McuLink]::CompareVersion('${String(args.wcfgPath).replace(/'/g, "''")}', [ref]$ia, [ref]$ib);\n` +
+            `        if ($rc -eq 0) { $r.init = 'ok' } else { $r.init = 'upgrade-needed' }\n` +
+            `      } finally { [void][McuLink]::CloseDevice(); }\n` +
+            `    }\n` +
+            `  } catch { }\n`
+          : '')
+      : '';
   const pre =
     `$ErrorActionPreference='Stop';\n` +
     `Add-Type -Namespace Win32 -Name Native -MemberDefinition '[DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetDllDirectory(string path);';\n` +
@@ -194,7 +223,7 @@ export function buildPsScript(commLib: CommLib, op: WlinkOp, args: WlinkArgs): s
   let body: string;
   switch (op) {
     case 'queryMcuId':
-      body = `  $v = [McuLink]::GetLinkedMCUID(); $r.result = $v;\n`;
+      body = initQueryMcuId + `  $v = [McuLink]::GetLinkedMCUID(); $r.result = $v;\n`;
       break;
     case 'queryRpt':
       body = `  $v = [McuLink]::QueryRProtect(${chipId}, ${clkSpeed}); $r.result = $v;\n`;
@@ -234,11 +263,19 @@ export function buildPsScript(commLib: CommLib, op: WlinkOp, args: WlinkArgs): s
   return pre + body + post;
 }
 
+/** How the queryMcuId init sequence (OpenDevice → CompareVersion →
+ *  CloseDevice) ended. 'ok' = device opened AND CompareVersion reported 0;
+ *  only then is GetLinkedMCUID a target-MCU answer rather than possibly the
+ *  LINK's own id (LinkE 2.23 answers 2/6 raw — and 6 IS CH32V30x's id). */
+export type WlinkInitState = 'ok' | 'upgrade-needed' | 'failed' | 'missing-wcfg';
+
 export interface WlinkResult {
   op: WlinkOp;
   ok: boolean;
   /** raw DLL return value (3/4 for RPT state, chip id, mem type, 0=success...) */
   result?: number;
+  /** queryMcuId only — see WlinkInitState */
+  initState?: WlinkInitState;
   error?: string;
 }
 
@@ -331,8 +368,40 @@ export async function runWlinkOpPosix(
     if (op !== 'queryMcuId') SetTargetChip(args.chipId, args.dbgMode);
     let ok = false;
     let result: number | undefined;
+    let initState: WlinkInitState | undefined;
     switch (op) {
       case 'queryMcuId':
+        // MRS parity (MRS2's getChipID RPC runs its firmware check first):
+        // without the init sequence the raw GetLinkedMCUID returns the LINK's
+        // id (2/6) instead of the MCU family code on some chips/links
+        // (LinkE 2.23 observed). The init stays best-effort for the query
+        // itself (legacy raw fallback), but its outcome is REPORTED: the id
+        // is only trustworthy with 'ok' (the download chip guard requires
+        // that — raw 6 would otherwise pass for CH32V30x and raise a false
+        // mismatch for every other family).
+        {
+          const wcfg = wchlinkFirmwareCfgPath(install);
+          if (!fs.existsSync(wcfg)) {
+            initState = 'missing-wcfg';
+          } else {
+            initState = 'failed';
+            try {
+              const OpenDevice = bind('McuCompiler_OpenDevice', 0);
+              const CloseDevice = bind('McuCompiler_CloseDevice', 0);
+              const CompareVersion = lib.func('McuCompiler_CompareVersion', 'int', ['string', 'int *', 'int *']);
+              if (OpenDevice() === 0) {
+                try {
+                  initState = CompareVersion(wcfg, Buffer.alloc(4), Buffer.alloc(4)) === 0 ? 'ok' : 'upgrade-needed';
+                } finally {
+                  CloseDevice();
+                }
+              }
+            } catch {
+              // init failed — initState stays 'failed', the raw query below
+              // still runs (legacy behaviour for Download Settings)
+            }
+          }
+        }
         result = GetLinkedMCUID();
         break;
       case 'queryRpt':
@@ -367,7 +436,7 @@ export async function runWlinkOpPosix(
       default:
         throw new Error(`unknown wlink op: ${op}`);
     }
-    return { op, ok, result };
+    return { op, ok, result, initState };
   } catch (e) {
     return { op, ok: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -389,7 +458,15 @@ export function runWlinkOp(install: MrsInstall, op: WlinkOp, args: WlinkArgs): P
   if (!fs.existsSync(psExe)) {
     return Promise.resolve({ op, ok: false, error: 'Windows PowerShell not found on this system (' + psExe + ')' });
   }
-  const script = buildPsScript(commLib, op, args);
+  // queryMcuId: hand the wcfg over only when it exists — a nonexistent path
+  // would turn the script's init state into failed/upgrade-needed instead of
+  // the truthful 'missing-wcfg', plus a pointless CompareVersion call
+  let psArgs = args;
+  if (op === 'queryMcuId') {
+    const wcfgPath = wchlinkFirmwareCfgPath(install);
+    psArgs = { ...args, wcfgPath: fs.existsSync(wcfgPath) ? wcfgPath : undefined };
+  }
+  const script = buildPsScript(commLib, op, psArgs);
   const ps1 = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mrvc-wlink-')), 'op.ps1');
   // BOM: Windows PowerShell 5.1 decodes BOM-less scripts as ANSI, which
   // mangles non-ASCII install paths (Chinese folder names are common)
@@ -414,8 +491,13 @@ export function runWlinkOp(install: MrsInstall, op: WlinkOp, args: WlinkArgs): P
         try {
           const parsed = JSON.parse(line);
           // ok = the operation succeeded (script sets it); result carries
-          // the raw DLL code for value-specific wording either way
-          resolve({ op, ok: parsed.ok === true, ...parsed });
+          // the raw DLL code for value-specific wording either way. The
+          // script's $r.init is the queryMcuId trust state — surfaced under a
+          // typed name so consumers cannot confuse it with ok.
+          const init = parsed.init;
+          const initState =
+            init === 'ok' || init === 'upgrade-needed' || init === 'failed' || init === 'missing-wcfg' ? init : undefined;
+          resolve({ op, ok: parsed.ok === true, ...parsed, initState });
         } catch {
           resolve({ op, ok: false, error: `unparsable bridge output: ${line}` });
         }
@@ -698,7 +780,11 @@ export function describeResult(op: WlinkOp, r: WlinkResult): string {
   const v = r.result ?? -1;
   switch (op) {
     case 'queryMcuId':
-      return v > 0 && v < 10000 ? `Linked MCU chip id: ${v}` : `Linked MCU query failed (code ${v}) — check the WCH-Link connection`;
+      // the id is an SDK SERIES id (CH32V307 -> 6) — the caller resolves the
+      // display name (CH32V30x) from the chip database, not here
+      return v > 0 && v < 10000
+        ? `Linked MCU chip id: ${v}`
+        : `Linked MCU query failed (code ${v}) — check the WCH-Link connection`;
     case 'queryRpt':
       return v === 3 ? 'Code-Protect is Enable' : v === 4 ? 'Code-Protect is Disable' : `Query failed (code ${v})`;
     case 'enableRpt':

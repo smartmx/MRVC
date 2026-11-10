@@ -11,8 +11,9 @@ import * as crypto from 'crypto';
 import { ProjectStore, MrsProject, getInstall } from './projects';
 import { Cproject } from '../core/cproject';
 import { TemplateData, readTemplate, writeTemplate } from '../core/templateFile';
-import { ADDRESS_RE } from '../core/flash';
-import { ChipDb, chipDbRoot, scanChipDb } from '../core/chipdb';
+import { ADDRESS_RE, displayTargetPath } from '../core/flash';
+import { resolveDownloadTarget } from './flash';
+import { ChipDb, chipDbRoot, scanChipDb, chipForTemplate } from '../core/chipdb';
 import { WlinkArgs, WlinkOp, describeResult, runWlinkOp } from '../core/wlink';
 import { t } from '../core/i18n';
 
@@ -520,6 +521,9 @@ const FILE_LIST_KEYS = new Set(['fileincs', 'asmfileincs']);
 export class ConfigView {
   private panel: vscode.WebviewPanel | null = null;
   private project: MrsProject | null = null;
+  /** the chip db of the project's install — the Download Settings page needs
+   *  it to resolve SDK series ids (queryMcuId result) to display names */
+  private dlChipDb: ChipDb | undefined;
 
   constructor(
     private store: ProjectStore,
@@ -625,7 +629,16 @@ export class ConfigView {
         return;
       }
       void runWlinkOp(install, op, args).then((r) => {
-        this.panel?.webview.postMessage({ command: 'dlLog', text: describeResult(op, r), op, result: r.result });
+        let text = describeResult(op, r);
+        let mcuType: string | undefined;
+        // the queryMcuId result is an SDK SERIES id — resolve the MRS-parity
+        // display name (flash.json type, e.g. 6 -> CH32V30x) from the chip db
+        // (round: remote panel showed the raw id while MRS2 showed CH32V30x)
+        if (op === 'queryMcuId' && r.result !== undefined) {
+          mcuType = this.dlChipDb?.series.find((s2) => s2.id === r.result)?.mcuType;
+          if (mcuType) text = `Linked MCU type: ${mcuType} (family id ${r.result})`;
+        }
+        this.panel?.webview.postMessage({ command: 'dlLog', text, op, result: r.result, mcuType });
       });
       return;
     }
@@ -767,17 +780,26 @@ export class ConfigView {
   private dlSettingsHtml(project: MrsProject, chipDb: ChipDb, nonce: string): string {
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const tpl = project.template.values;
-    const series =
-      chipDb.series.find((s) => s.name === tpl['Series']) ??
-      chipDb.series.find((s) => s.mcuType === tpl['Mcu Type']) ??
-      chipDb.series.find((s) => s.chips.some((c) => c === tpl['MCU'])) ??
-      null;
-    const sup = series?.support;
+    // the Target File field shows the RESOLVED download target (what a
+    // download will actually flash) — EVT packages ship cross-project Target
+    // Paths (MACRAW's template pointing at TCP_SERVER's hex), and displaying
+    // the stale raw value would contradict the real download. An UNRESOLVED
+    // raw value (project not built) is shown verbatim — path.relative() on
+    // it would fold in the process cwd (review round2 §2).
+    const displayTarget = (resolved: string): string => displayTargetPath(project.root, resolved) || (tpl['Target Path'] ?? '');
+    // MRS2's own fallback chain (Series -> Mcu Type -> MCU) plus the
+    // flash.json per-model "special" override — shared with the download
+    // target-chip guard in src/vscode/flash.ts. The hard-ware controls use the
+    // EFFECTIVE flash control (id/type/support), exactly what MRS2 passes to
+    // MRSFunc_* for this project (CH32V203CCT runs on CH32V205's control).
+    const chip = chipForTemplate(chipDb, tpl) ?? null;
+    const series = chip?.series ?? null;
+    const sup = chip?.support;
     const has = (k?: boolean) => (k === true ? '' : ' disabled');
     const chk = (v: string | undefined) => (v === 'true' ? ' checked' : '');
     const rptOn = sup?.readProtectOpts === true;
     const ctx = {
-      chipId: series?.id ?? 0,
+      chipId: chip?.id ?? 0,
       series: series?.name ?? '',
       sdkOk: chipDb.available,
     };
@@ -801,9 +823,9 @@ export class ConfigView {
     <div class="dlrow"><label>MCU Type:</label><input type="text" id="dl-mcutype" value="${esc(tpl['Mcu Type'] ?? '')}" readonly></div>
     <div class="dlrow"><label>Memory Type:</label><select id="dl-memtype" data-dlkey="Flash Type"><option value="Internal"${tpl['Flash Type'] === 'External' ? '' : ' selected'}>Internal</option><option value="External"${tpl['Flash Type'] === 'External' ? ' selected' : ''}>External</option></select></div>
     <div class="dlrow"><label>Program Address:</label><input type="text" id="dl-address" data-dlkey="Address" value="${esc(tpl['Address'] ?? '')}" spellcheck="false"></div>
-    <div class="dlrow"><label>Debug Interface Mode:</label><select id="dl-dbgif" data-dlkey="DebugInterfaceMode"${has(sup?.debugInterfaceMode)}>${sup?.debugInterfaceMode === true ? '' : '<option value="" selected hidden></option>'}<option value="0">1-wire serial</option><option value="1">2-wires serial</option></select></div>
+    <div class="dlrow"><label>Debug Interface Mode:</label><select id="dl-dbgif" data-dlkey="DebugInterfaceMode"><option value="0"${tpl['DebugInterfaceMode'] !== '1' ? ' selected' : ''}>1-wire serial</option><option value="1"${tpl['DebugInterfaceMode'] === '1' ? ' selected' : ''}>2-wires serial</option></select></div>
     <div class="dlrow"><label>CLK Speed:</label><select id="dl-clk" data-dlkey="CLKSpeed"><option value="1"${tpl['CLKSpeed'] === '1' ? ' selected' : ''}>High</option><option value="2"${tpl['CLKSpeed'] === '2' ? ' selected' : ''}>Middle</option><option value="3"${tpl['CLKSpeed'] === '3' ? ' selected' : ''}>Low</option></select></div>
-    <div class="dlrow"><label>Target File:</label><input type="text" id="dl-target" data-dlkey="Target Path" value="${esc(tpl['Target Path'] ?? '')}" spellcheck="false"><button type="button" id="dl-targetbtn">…</button></div>
+    <div class="dlrow"><label>Target File:</label><input type="text" id="dl-target" data-dlkey="Target Path" value="${esc(displayTarget(resolveDownloadTarget(project)))}" spellcheck="false"><button type="button" id="dl-targetbtn">…</button></div>
     <div class="dlchk"><span>Main Operations:</span>
       <label><input type="checkbox" data-dlkey="eraseAll"${chk(tpl['Erase All'])}> Erase All</label>
       <label><input type="checkbox" data-dlkey="program"${chk(tpl['Program'])}> Program</label>
@@ -903,7 +925,10 @@ export class ConfigView {
         .join('\n');
       let body = fields;
       if (p.key === 'chip' && chipDb.available) body = this.chipPickerHtml() + body;
-      if (p.key === 'dlset') body = this.dlSettingsHtml(project, chipDb, nonce);
+      if (p.key === 'dlset') {
+        this.dlChipDb = chipDb;
+        body = this.dlSettingsHtml(project, chipDb, nonce);
+      }
       return `<div class="page" data-page="${p.key}" data-title="${esc(p.title)}" data-desc="${esc(p.description)}" style="display:${i === 0 ? 'block' : 'none'}">${body}</div>`;
     }).join('\n');
 
@@ -1077,6 +1102,13 @@ window.addEventListener('message', (e) => {
         sel.innerHTML = opts.map((o) => '<option>' + o + '</option>').join('');
         sel.selectedIndex = idx < opts.length ? idx : 0;
       }
+    }
+    // Linked MCU Type: the query result is an SDK series id — the extension
+    // resolves the flash.json type name (CH32V30x) and fills the field
+    // (MRS2 parity: the field shows the type, not the raw family id)
+    if (e.data.op === 'queryMcuId') {
+      const f = document.getElementById('dl-mcuid');
+      if (f) f.value = e.data.mcuType ?? '';
     }
   }
   if (e.data.command === 'pickedTarget') {

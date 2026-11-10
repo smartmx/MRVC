@@ -7,8 +7,11 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { ProjectStore, MrsProject, getInstall } from './projects';
 import { prepareFlash, inferFlashAddress, FlashPlan } from '../core/flash';
+import { healTargetPath, staleTargetPath } from '../core/templateFile';
 import { scanSources } from '../core/scan';
-import { checkWCHLinkFirmware, formatLinkVersion } from '../core/wlink';
+import { checkWCHLinkFirmware, formatLinkVersion, runWlinkOp, wchlinkFirmwareCfgPath } from '../core/wlink';
+import { MrsInstall } from '../core/toolchain';
+import { chipDbRoot, scanChipDb, guardLinkedChip } from '../core/chipdb';
 import { t } from '../core/i18n';
 
 /**
@@ -30,23 +33,23 @@ function selectBoardCfg(project: MrsProject, cfg: vscode.WorkspaceConfiguration)
   return install.openocdCfg;
 }
 
-/** firmware: .template Target Path (MRS2 convention, covers Merge.Bin) →
- * derived hexPath → file picker */
-async function pickFirmware(project: MrsProject): Promise<string | undefined> {
+/**
+ * What a download will actually flash for this project — the .template
+ * Target Path when it exists on disk, else the project's own obj artifact
+ * (EVT packages ship cross-project Target Paths: CH394Q__MACRAW's template
+ * points at obj\CH394Q__TCP_SERVER.hex, another project's artifact — the
+ * display must show the resolved target, not the stale raw value).
+ * Falls back to the recorded raw value when nothing exists; callers check
+ * existence before flashing (and offer the compile step).
+ */
+export function resolveDownloadTarget(project: MrsProject): string {
   const target = project.template.values['Target Path']?.trim();
   if (target) {
     const cand = path.isAbsolute(target) ? target : path.join(project.root, target);
     if (fs.existsSync(cand)) return cand;
   }
   if (fs.existsSync(project.hexPath)) return project.hexPath;
-  const pick = await vscode.window.showOpenDialog({
-    canSelectFiles: true,
-    canSelectMany: false,
-    defaultUri: vscode.Uri.file(project.buildDir),
-    filters: { Firmware: ['hex', 'bin'] },
-    title: t('selectFirmware', project.projectName),
-  });
-  return pick?.length ? pick[0].fsPath : undefined;
+  return target ?? '';
 }
 
 /** run the flash task and resolve with its exit code (undefined = no end event) */
@@ -107,6 +110,46 @@ function inferFlashAddressFromSources(project: MrsProject): string | undefined {
   }
 }
 
+/**
+ * Target-chip guard (MRS2/MRS3 parity): MRS refuses a download whose project
+ * chip family differs from the chip on the link — with MRVC a CH32V307
+ * project flashed into a CH32V407 board goes through and the board never
+ * runs. Both sides resolve to the SDK flash-control id: the project through
+ * MRS2's own chain (.template → SDK chip db, including the per-model
+ * "special" override in flash.json), the link through GetLinkedMCUID — the
+ * same query MRS uses to report the current chip model, and the same id
+ * space MRS passes to MRSFunc_FlashOperationExB (whose DLL-side check
+ * answers "Chip type mismatch." 10006). MRVC flashes through OpenOCD, so the
+ * comparison has to happen before the spawn instead.
+ *
+ * The comparison itself lives in chipTargetMismatch() (pure, tested); this
+ * wrapper only supplies the environment. The query result is passed as
+ * trusted ONLY when its init sequence completed ('ok') — a raw GetLinkedMCUID
+ * answers the LINK's own id, and 6 is both LinkE's id and CH32V30x's family
+ * id, which would silently pass a real mismatch. Every other failure mode
+ * (no SDK, no wchlink.wcfg, no link, no FFI bridge, upgrade-needed, unknown
+ * id) also resolves to "unknown" and lets the download proceed unchanged.
+ */
+async function chipFamilyMismatch(
+  install: MrsInstall,
+  project: MrsProject
+): Promise<{ connected: string; expected: string } | undefined> {
+  if (!fs.existsSync(wchlinkFirmwareCfgPath(install))) return undefined;
+  const db = scanChipDb(chipDbRoot(install.resourcesDir));
+  if (!db.available) return undefined;
+  // guardLinkedChip resolves the project target BEFORE querying: a
+  // .template-less EVT project has no target chip to compare against, so the
+  // link query (a PowerShell round trip on Windows) is skipped entirely
+  return guardLinkedChip(db, project.template.values, async () => {
+    try {
+      const r = await runWlinkOp(install, 'queryMcuId', { chipId: 0, clkSpeed: 1, dbgMode: 0 });
+      return { result: r.result, initState: r.initState };
+    } catch {
+      return {};
+    }
+  });
+}
+
 export async function flashProject(store: ProjectStore, proj?: MrsProject): Promise<void> {
   const project = proj ?? store.active;
   if (!project) {
@@ -123,9 +166,8 @@ export async function flashProject(store: ProjectStore, proj?: MrsProject): Prom
 /**
  * The download pipeline shared by the Download command and Build and
  * Download (the latter calls it only after a successful build). Resolves
- * false when the download failed; a firmware-picker cancellation is not a
- * failure and resolves true. The project only becomes ACTIVE once the user
- * commits to a firmware (cancelling the picker must not switch contexts).
+ * false when the download failed; a cancelled stale-target fix or "compile
+ * first" stop is NOT a failure and resolves true.
  */
 export async function downloadProject(store: ProjectStore, project: MrsProject): Promise<boolean> {
   const install = getInstall();
@@ -134,11 +176,44 @@ export async function downloadProject(store: ProjectStore, project: MrsProject):
     return false;
   }
 
-  const hex = await pickFirmware(project);
-  if (!hex) return true;
-  if (!fs.existsSync(hex)) {
-    vscode.window.showErrorMessage(t('firmwareNotFound', hex));
-    return false;
+  // Stale .template Target Path (EVT trees record another project's
+  // artifact, e.g. CH394Q__MACRAW -> obj\CH394Q__TCP_SERVER.hex, absent on
+  // this machine): the download falls back to the project's own artifact,
+  // but .template still records a file that does not exist. Ask FIRST — the
+  // recorded value is the user's to change. On confirm the key is rewritten
+  // and the user is told to download again; on decline the value stays and
+  // the download proceeds with the fallback resolution as before.
+  const stale = staleTargetPath(project.root, project.hexPath);
+  if (stale) {
+    const fix = t('templateTargetFix');
+    const pick = await vscode.window.showWarningMessage(
+      t('templateTargetStalePrompt', stale.old, stale.next),
+      { modal: true },
+      fix,
+      t('templateTargetKeep')
+    );
+    if (pick === fix) {
+      healTargetPath(project.root, project.hexPath);
+      project.reload();
+      // modal, not a toast: the confirmation must be seen — a plain
+      // notification right after the dialog can be missed or suppressed by
+      // Do Not Disturb (reported as "no message after choosing Modify")
+      await vscode.window.showInformationMessage(t('templateTargetHealed', stale.old, stale.next), { modal: true });
+      return true;
+    }
+  }
+
+  // Nothing to flash: neither the recorded target nor the project's own
+  // artifact exists (project never built). Point the user at the compile
+  // step — the .template Target Path is the MRS-side way to aim elsewhere.
+  const hex = resolveDownloadTarget(project);
+  if (!hex || !fs.existsSync(hex)) {
+    // modal like the stale-target prompt — the "build first" guidance must
+    // not be missable as a fading toast. NOT a failure: the pipeline stopped
+    // on a user-actionable prerequisite without attempting a download, so it
+    // resolves true (the same contract as the cancelled stale-target fix).
+    await vscode.window.showWarningMessage(t('projectNotBuilt', project.hexPath), { modal: true });
+    return true;
   }
 
   const cfg = vscode.workspace.getConfiguration('mrvc');
@@ -180,6 +255,23 @@ export async function downloadProject(store: ProjectStore, project: MrsProject):
   } catch (e) {
     vscode.window.showErrorMessage(t('flashAddressInvalid', project.projectName, e instanceof Error ? e.message : String(e)));
     return false;
+  }
+
+  // Target-chip guard BEFORE the OpenOCD spawn (MRS2/MRS3 behave the same):
+  // a project built for one chip family must not be flashed into another.
+  // Only an explicit "download anyway" gets past the dialog — Esc/closing it
+  // cancels, and a cancelled download is reported as not completed (same as
+  // declining the firmware-upgrade prompt below).
+  const mismatch = await chipFamilyMismatch(install, project);
+  if (mismatch) {
+    const proceed = t('chipMismatchContinue');
+    const pick = await vscode.window.showWarningMessage(
+      t('chipMismatchPrompt', mismatch.connected, mismatch.expected),
+      { modal: true },
+      proceed,
+      t('chipMismatchCancel')
+    );
+    if (pick !== proceed) return false;
   }
 
   // WCH-Link firmware check (0.2.8, READ-ONLY — detect only): an out-of-date

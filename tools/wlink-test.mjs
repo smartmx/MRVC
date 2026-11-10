@@ -62,6 +62,26 @@ const ARGS = { chipId: 6, clkSpeed: 1, dbgMode: 0 };
   check('clearCodeFlash: erase mode 0=pin / 1=power', buildPsScript(COMM, 'clearCodeFlash', { ...ARGS, eraseMode: 1 }).includes('ClearCodeFlash(6, 1, 1)'));
   check('setMemType: passes the select index', buildPsScript(COMM, 'setMemType', { ...ARGS, memVal: 3 }).includes('SetMemType(6, 1, 3)'));
   check('queryMcuId: runtime guard skips SetTargetChip', buildPsScript(COMM, 'queryMcuId', ARGS).includes("-ne 'queryMcuId'"));
+  {
+    // review round2 §3: CompareVersion can throw — the init sequence must
+    // close the device in a finally, mirroring the POSIX in-process path.
+    // Round5 P2: the script also reports HOW the init ended ($r.init), so
+    // consumers that act on the id can require a completed init.
+    const s = buildPsScript(COMM, 'queryMcuId', { ...ARGS, wcfgPath: 'C:/MRS/wchlink.wcfg' });
+    check('queryMcuId init (win): CompareVersion result drives $r.init, CloseDevice in finally',
+      s.includes(`$rc = [McuLink]::CompareVersion('C:/MRS/wchlink.wcfg', [ref]$ia, [ref]$ib);`) &&
+        s.includes(`if ($rc -eq 0) { $r.init = 'ok' } else { $r.init = 'upgrade-needed' }`) &&
+        s.includes(`$r.init = 'failed'`) &&
+        // failed must be the state BEFORE the OpenDevice branch: an OpenDevice
+        // failure skips the inner block and must not stay 'missing-wcfg'
+        s.indexOf(`$r.init = 'failed'`) < s.indexOf(`if ([McuLink]::OpenDevice() -eq 0)`) &&
+        s.includes('} finally { [void][McuLink]::CloseDevice(); }'));
+    check('queryMcuId init (win): absent without a wcfg path -> missing-wcfg',
+      (() => {
+        const legacy = buildPsScript(COMM, 'queryMcuId', ARGS);
+        return legacy.includes(`$r.init = 'missing-wcfg'`) && !legacy.includes(`$r.init = 'failed'`) && !legacy.includes('finally');
+      })());
+  }
   let threw = false;
   try {
     buildPsScript(COMM, 'nope', ARGS);
@@ -246,7 +266,69 @@ try {
   {
     const k = fakeKoffi({ MRSFunc_GetLinkedMCUID: 307 });
     const r = await runWlinkOpPosix(INS, 'queryMcuId', ARGS7, k, 'linux');
-    check('posix queryMcuId: NO SetTargetChip, zero-arg call, id wording', k.calls.length === 1 && k.calls[0][0] === 'MRSFunc_GetLinkedMCUID' && r.result === 307 && describeResult('queryMcuId', r).includes('chip id: 307'));
+    // round (0.2.9 fix): without a wchlink.wcfg the init sequence is skipped —
+    // the LEGACY raw query still runs (chips where it worked keep working)
+    check('posix queryMcuId legacy: NO SetTargetChip, zero-arg call, id wording', k.calls.length === 1 && k.calls[0][0] === 'MRSFunc_GetLinkedMCUID' && r.result === 307 && describeResult('queryMcuId', r).includes('chip id: 307'));
+    // round5 P2: a raw query is NOT trustworthy — the guard keys off initState
+    check('posix queryMcuId legacy: initState missing-wcfg (id untrusted)', r.initState === 'missing-wcfg');
+  }
+  {
+    // MRS parity (round 0.2.9): WITH a wchlink.wcfg present, the query runs
+    // the init sequence Open → CompareVersion → Close first — without it the
+    // raw GetLinkedMCUID returned the LINK id (2/6) instead of the MCU
+    // family code on LinkE 2.23 (the remote Download Settings failure)
+    const fwRes = path.join(INS.resourcesDir, 'components', 'WCH', 'Others', 'Firmware_Link', 'default');
+    fs.mkdirSync(fwRes, { recursive: true });
+    fs.writeFileSync(path.join(fwRes, 'wchlink.wcfg'), '[WCHLINK]\nLinkName=Default\n[Default]\nCH549Ver_RV=32\n');
+    const k = fakeKoffi({
+      McuCompiler_OpenDevice: 0,
+      McuCompiler_CompareVersion: (a) => { a[1].writeInt32LE(2); return 0; },
+      McuCompiler_CloseDevice: 0,
+      MRSFunc_GetLinkedMCUID: 307,
+    });
+    const r = await runWlinkOpPosix(INS, 'queryMcuId', ARGS7, k, 'linux');
+    check('posix queryMcuId init: Open → CompareVersion → Close precede the raw query',
+      k.calls.map((c) => c[0]).join(',') === 'McuCompiler_OpenDevice,McuCompiler_CompareVersion,McuCompiler_CloseDevice,MRSFunc_GetLinkedMCUID',
+      JSON.stringify(k.calls.map((c) => c[0])));
+    check('posix queryMcuId init: CompareVersion got the wcfg path, raw family id in the result',
+      typeof k.calls[1][1] === 'string' && k.calls[1][1].endsWith('wchlink.wcfg') && describeResult('queryMcuId', r).includes('chip id: 307'));
+    check('posix queryMcuId init: CompareVersion 0 -> initState ok (id trusted)', r.initState === 'ok');
+  }
+  {
+    // round5 P2 probes: OpenDevice failure and a nonzero CompareVersion must
+    // NOT be reported as a trustworthy id (raw GetLinkedMCUID answers the
+    // link's own 2/6 — 6 collides with CH32V30x's family id)
+    const k = fakeKoffi({
+      McuCompiler_OpenDevice: 1,
+      McuCompiler_CompareVersion: 0,
+      McuCompiler_CloseDevice: 0,
+      MRSFunc_GetLinkedMCUID: 6,
+    });
+    const r = await runWlinkOpPosix(INS, 'queryMcuId', ARGS7, k, 'linux');
+    check('posix queryMcuId init: OpenDevice failure -> initState failed, raw 6 untrusted',
+      r.initState === 'failed' && r.result === 6 && !k.calls.some((c) => c[0] === 'McuCompiler_CompareVersion') && !k.calls.some((c) => c[0] === 'McuCompiler_CloseDevice'));
+  }
+  {
+    const k = fakeKoffi({
+      McuCompiler_OpenDevice: 0,
+      McuCompiler_CompareVersion: 1,
+      McuCompiler_CloseDevice: 0,
+      MRSFunc_GetLinkedMCUID: 6,
+    });
+    const r = await runWlinkOpPosix(INS, 'queryMcuId', ARGS7, k, 'linux');
+    check('posix queryMcuId init: CompareVersion 1 (upgrade-needed) -> id untrusted, device closed',
+      r.initState === 'upgrade-needed' && r.result === 6 && k.calls.map((c) => c[0]).join(',') === 'McuCompiler_OpenDevice,McuCompiler_CompareVersion,McuCompiler_CloseDevice,MRSFunc_GetLinkedMCUID');
+  }
+  {
+    const k = fakeKoffi({
+      McuCompiler_OpenDevice: 0,
+      McuCompiler_CompareVersion: () => { throw new Error('wcfg unreadable'); },
+      McuCompiler_CloseDevice: 0,
+      MRSFunc_GetLinkedMCUID: 6,
+    });
+    const r = await runWlinkOpPosix(INS, 'queryMcuId', ARGS7, k, 'linux');
+    check('posix queryMcuId init: CompareVersion throw -> initState failed, CloseDevice still ran',
+      r.initState === 'failed' && r.result === 6 && k.calls.some((c) => c[0] === 'McuCompiler_CloseDevice'));
   }
   {
     const k = fakeKoffi({ MRSFunc_DisableDbgInterface: 3 });
@@ -358,6 +440,13 @@ check('fwcheck: normalize leaves currentVersion-carrying results untouched', (()
   check('fwcheck: expectedFirmwareVersion — a key the cfg does not carry -> undefined (defensive branch)',
     expectedFirmwareVersion('[Default]\nCH549Ver_RV=32\n', 5) === undefined);
   check('fwcheck: formatLinkVersion pads to vNN within the 10..99 band, ? outside', formatLinkVersion(43) === 'v43' && formatLinkVersion(10) === 'v10' && formatLinkVersion(99) === 'v99' && formatLinkVersion(8) === '?' && formatLinkVersion(undefined) === '?');
+  // the family display (CH32V30x) is resolved by the CALLER from the chip
+  // database (SDK flash.json type for the series id) — describeResult keeps
+  // the raw id
+  check('fwcheck: queryMcuId describeResult keeps the raw SDK series id', (() => {
+    const d = describeResult('queryMcuId', { op: 'queryMcuId', ok: false, result: 6 });
+    return d.includes('chip id: 6') && !d.includes('CH32V');
+  })());
 
   // POSIX flow against the fake koffi — the DLL parses the wcfg itself (the
   // JS only passes the path) and returns the linkID through out1

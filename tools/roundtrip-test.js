@@ -485,5 +485,50 @@ check('makefile switches to static-lib rule', mk.includes('out_LED.a: $(OBJS)'))
   fs.rmSync(tplDir, { recursive: true, force: true });
 }
 
+// --- .template Target Path heal at download time: a recorded target that
+// does not exist falls back to the project's own artifact during a download;
+// healTargetPath() writes that artifact back (relative, MRS convention) so
+// the file matches what is actually flashed. Existent targets (including a
+// legitimately shared one) and missing own artifacts are left untouched. ---
+{
+  const { readTemplate, healTargetPath, staleTargetPath } = require('../out/core/templateFile.js');
+  const prj = path.join(scratch, '..', 'roundtrip-heal');
+  fs.rmSync(prj, { recursive: true, force: true });
+  fs.mkdirSync(path.join(prj, 'obj'), { recursive: true });
+  const template = (target) => ['Vendor=WCH', 'Address=0x08000000', `Target Path=${target}`, ''].join('\r\n');
+  const ownHex = path.join(prj, 'obj', 'LED.hex');
+  fs.writeFileSync(ownHex, ':00000001FF\n', 'utf-8');
+  const expected = path.relative(prj, ownHex);
+
+  // stale cross-project target (missing file) -> detection reports the
+  // rewrite WITHOUT touching the file (the user must confirm first)
+  const stale = path.join('obj', 'CH394Q__TCP_SERVER.hex');
+  fs.writeFileSync(path.join(prj, '.template'), template(stale), 'utf-8');
+  const detected = staleTargetPath(prj, ownHex);
+  check('heal: detection reports the rewrite without writing', !!detected && detected.old === stale && detected.next === expected && readTemplate(prj).values['Target Path'] === stale);
+  const healed = healTargetPath(prj, ownHex);
+  check('heal: stale target rewritten to the own artifact', !!healed && healed.old === stale && healed.next === expected);
+  check('heal: .template on disk carries the healed value', readTemplate(prj).values['Target Path'] === expected);
+  check('heal: second call is a no-op (now resolves)', healTargetPath(prj, ownHex) === undefined && staleTargetPath(prj, ownHex) === undefined);
+
+  // a target that exists stays untouched, even when it is another file
+  const shared = path.join(prj, 'obj', 'SHARED.hex');
+  fs.writeFileSync(shared, ':00000001FF\n', 'utf-8');
+  const sharedRel = path.relative(prj, shared);
+  fs.writeFileSync(path.join(prj, '.template'), template(sharedRel), 'utf-8');
+  check('heal: existing (shared) target left alone', healTargetPath(prj, ownHex) === undefined && readTemplate(prj).values['Target Path'] === sharedRel);
+
+  // missing own artifact -> nothing to heal (the download shows the picker)
+  const gone = path.join('obj', 'GONE.hex');
+  fs.writeFileSync(path.join(prj, '.template'), template(gone), 'utf-8');
+  check('heal: missing own artifact -> no heal', healTargetPath(prj, path.join(prj, 'obj', 'NOPE.hex')) === undefined);
+  check('heal: stale value preserved when nothing can be healed', readTemplate(prj).values['Target Path'] === gone);
+
+  // empty value -> not a stale-resolution case
+  fs.writeFileSync(path.join(prj, '.template'), template(''), 'utf-8');
+  check('heal: empty target untouched', healTargetPath(prj, ownHex) === undefined);
+  fs.rmSync(prj, { recursive: true, force: true });
+}
+
 console.log(failures ? `\n${failures} FAILURES` : '\nall round-trip checks passed');
 process.exit(failures ? 1 : 0);

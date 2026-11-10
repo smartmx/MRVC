@@ -277,8 +277,26 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   syncAlreadySame: { en: 'MRVC: project name already matches the folder name.', 'zh-cn': 'MRVC：工程名已与文件夹名一致。' },
 
   // flash
-  firmwareNotFound: { en: 'Firmware file not found: {0}', 'zh-cn': '未找到固件文件：{0}' },
-  selectFirmware: { en: 'Select firmware to download ({0})', 'zh-cn': '选择要下载的固件（{0}）' },
+  templateTargetStalePrompt: {
+    en: "The .template Target Path points at a file that does not exist ({0}), while this project's build artifact exists ({1}). Modify the .template file?",
+    'zh-cn': '工程的 .template 中 Target Path 指向的文件不存在（{0}），而本工程的构建产物存在（{1}）。是否修改 .template 文件？',
+  },
+  templateTargetFix: { en: 'Modify', 'zh-cn': '修改' },
+  templateTargetKeep: { en: 'Keep as is', 'zh-cn': '不修改' },
+  templateTargetHealed: {
+    en: 'MRVC: the .template was updated successfully ({0} → {1}). You can click Download again.',
+    'zh-cn': 'MRVC：.template 已修改成功（{0} → {1}）。请重新点击下载。',
+  },
+  projectNotBuilt: {
+    en: 'No firmware found — the project has not been built yet (expected {0}). Build the project first, then download.',
+    'zh-cn': '未找到固件——当前工程尚未编译（应生成 {0}）。请先编译工程，再点击下载。',
+  },
+  chipMismatchPrompt: {
+    en: 'The chip on the WCH-Link ({0}) does not match the project target chip ({1}). MRS refuses such a download; flashing another chip family may result in a board that does not run. Download anyway?',
+    'zh-cn': 'WCH-Link 连接的芯片（{0}）与工程的目标芯片（{1}）不一致。MRS 会拒绝此类下载；烧写不匹配的芯片可能导致程序无法运行。是否仍要下载？',
+  },
+  chipMismatchContinue: { en: 'Download anyway', 'zh-cn': '仍然下载' },
+  chipMismatchCancel: { en: 'Cancel download', 'zh-cn': '取消下载' },
   openocdNotFound: { en: 'openocd.exe not found: {0}', 'zh-cn': '未找到 openocd.exe：{0}' },
   openocdCfgNotFound: { en: 'OpenOCD config not found: {0}', 'zh-cn': '未找到 OpenOCD 配置：{0}' },
   linkUtilityNotFound: { en: 'WCH-LinkUtility.exe not found under the MounRiver installation.', 'zh-cn': '在 MounRiver 安装目录下未找到 WCH-LinkUtility.exe。' },

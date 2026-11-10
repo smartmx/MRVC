@@ -1,5 +1,51 @@
 # MRVC 更新日志
 
+## V0.2.9（2026-11-10）
+
+### 变更
+
+- **Erase All 下载日志补齐进度输出**：勾选 **Erase All** 的工程走手工展开的 OpenOCD 脚本，
+  此前 `flash write_image` / `verify_image` 在默认日志级别下一行输出都没有——任务窗口只有
+  `device id` 与 `shutdown command invoked`，看起来像"点了没反应/没下载进去"（实际已写入并校验）。
+  现在脚本在该分支输出与内置 `program` 命令同构的 `** Programming Started **` /
+  `** Programming Finished **` / `** Verify Started **` / `** Verified OK **` /
+  `** Resetting Target **`；失败时错误行照旧可见且任务以非零退出码结束（下载失败提示不受影响）。
+- **下载前目标芯片一致性校验（对齐 MRS2/MRS3）**：此前把 CH32V307 工程下载到 CH32V407 芯片上
+  会照常烧写（板子自然不运行），而 MRS2/MRS3 会拒绝这种系列不匹配的下载。现在下载前用
+  `MRSFunc_GetLinkedMCUID`（与 Download Settings 的 Linked MCU Type 同一查询）取 WCH-Link 上
+  芯片的 flash-control id，与工程 `.template` 目标芯片的 flash-control id（MRS2 `getFlashControl`
+  同一语义：SDK `<series>-flash.json` 的 `id`，含 `special` 单型号覆盖——如 CH32V203CCT 实为
+  CH32V205 的 id 206——以及 `mcu.slice(0,-1)` 的 zip 名容错）比对；两者都已知且不同时弹
+  **模态警告**（显示的连接型号 vs 工程目标型号），只有显式选择"仍然下载"才继续，取消/Esc 中止
+  下载。查询结果**只在初始化确认完成时采信**（设备打开且 CompareVersion 返回 0；裸查询可能返回
+  Link 自身 id，6 恰好与 CH32V30x 撞号——初始化失败、需升级固件、无 `wchlink.wcfg` 等情形一律按
+  "未知"静默放行）。查询在任何环节不可用（SDK 芯片库缺失、无 Link、FFI 桥失败、未知 id）时同样
+  不改变既有下载流程。机制说明：MRS2/MRS3 是把工程 chipId 交给
+  `MRSFunc_FlashOperationExB`、由 DLL 在烧写时报 10006 "Chip type mismatch."；MRVC 的烧写走
+  OpenOCD，故把同一 id 比对前置到下载之前。共享 family id 的系列（如 78 = CH32M007 与
+  CH32V002/4/5/6/7）在提示里全部列出，避免显示错别名。无 `.template` 的 EVT 工程（下载地址
+  由源文件前缀推导）没有可比对的目标芯片，**不会发起一次无意义的 Link 查询**。
+- **下载目标修正（.template Target Path，先询问不自动改）**：EVT 工程常记录跨工程的
+  Target Path（如 `CH394Q__MACRAW` 记录的是 `obj\CH394Q__TCP_SERVER.hex`，本机并不存在该文件），
+  下载时虽已按回退链使用本工程产物，但 `.template` 仍留着失效值。现在**点下载时**若记录的
+  Target Path 指向不存在的文件、而本工程构建产物存在，则**弹窗询问是否修改 `.template`**
+  （默认不修改：取消则保留原值、按回退目标照常下载）；用户确认后回写为相对本工程的产物路径
+  （MRS 惯例写法），并提示修改成功、可重新点击下载。目标文件存在的场景（包括有意共享其他产物、
+  Merge.Bin 等）一律不改动；`.template` 其余行保持字节保真。
+- **未编译提示**：工程从未编译、既没有 `.template` 指向的固件也没有本工程构建产物时，下载不再
+  弹文件选择器，而是明确提示**先编译工程再下载**（应生成的产物路径随提示给出）。
+- **Linked MCU Type 查询对齐 MRS2（0.2.9）**：Download Settings 的 **Linked MCU Type** 此前在
+  LinkE 等新型号上查不到（`MRSFunc_GetLinkedMCUID` 无前置初始化时返回的是 Link 自身 id 2/6 而非
+  MCU 家族号）。现按 MRS2 getChipID RPC 的顺序先做一次 OpenDevice → CompareVersion → CloseDevice
+  初始化（POSIX 进程内 koffi 与 Windows PowerShell 桥同实现；Windows 侧 CompareVersion 以
+  try/finally 保证关闭设备），再查询并用芯片库把 SDK 系列 id 解析成显示名（如 CH32V30x）回填；
+  无 `wchlink.wcfg` 时保持旧的裸查询回退。
+- **免责声明（非官方）**：README 顶部与扩展描述（package.json `description`）显式声明——MRVC 为
+  个人独立开发项目，**非 WCH / MounRiver 官方开发或官方支持**，仅供开发调试使用。
+- **市场图标去白边**：`resources/icon.png` 重绘为**透明圆角、黑底满铺**（此前为白底+四周留白，
+  在扩展市场/扩展视图的图标块里会显示一圈白色）；图形与 0.2.8 定稿一致（黑底白图、四边引脚、
+  MR/VC 方框内排布）。
+
 ## V0.2.8（2026-11-09）
 
 ### 变更

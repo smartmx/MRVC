@@ -65,7 +65,8 @@ function copyTree(src, dest, skip = new Set(['obj', '.settings'])) {
 // <name>, the exact layout golden-check uses, so restoration must use the
 // same paths or the bytes cannot match
 const scratchRoot = path.join(here, '..', '.scratch');
-fs.rmSync(scratchRoot, { recursive: true, force: true });
+// only each run's own project dirs are wiped — the root is shared with the
+// other suites (same policy as golden-check)
 
 for (const { proj, legacy } of RESTORE) {
   const legacyMake = fs.readFileSync(path.join(LEGACY, legacy, 'makefile'), 'utf-8');
@@ -78,6 +79,7 @@ for (const { proj, legacy } of RESTORE) {
 
   const name = path.basename(proj);
   const scratch = path.join(scratchRoot, name);
+  fs.rmSync(scratch, { recursive: true, force: true });
   copyTree(proj, scratch);
   // rewrite PARENT-N-PROJECT_LOC tokens exactly like golden-check does
   const projFile = path.join(scratch, '.project');

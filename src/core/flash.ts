@@ -9,6 +9,22 @@ import { encodeArtifact } from './platformEncoding';
 export const ADDRESS_RE = /^0x[0-9a-fA-F]{1,8}$/;
 
 /**
+ * Display/apply form of a resolved download target for the Download Settings
+ * page: an ABSOLUTE path inside the project becomes relative to the project
+ * root (MRS's Target Path convention), one outside the root stays absolute,
+ * and an UNRESOLVED raw value — the recorded Target Path when neither it nor
+ * the project artifact exists (project not built) — is shown exactly as
+ * recorded. path.relative() must never see that raw string: it would resolve
+ * it against the process cwd and produce a garbage path (review round2 §2).
+ */
+export function displayTargetPath(projectRoot: string, resolved: string): string {
+  if (!resolved) return '';
+  if (!path.isAbsolute(resolved)) return resolved;
+  const rel = path.relative(projectRoot, resolved);
+  return rel.startsWith('..') ? resolved : rel;
+}
+
+/**
  * Infer the flash download address from the project's source-file names —
  * EVT trees ship WITHOUT .template, and the SDK's per-series flash.json
  * rule is: only the CH5xx wireless families (CH56x/57x/58x/59x, minus
@@ -139,14 +155,29 @@ export function prepareFlash(opts: FlashOptions): FlashPlan {
     // erase to a `program` call) with the full-chip erase inserted between
     // reset init and the write. wlink_set_address stays first: the WCH
     // driver captures the bank base at probe time, i.e. during init.
+    // The progress echoes mirror the proc's own output (it echoes these in
+    // Tcl; the bare write_image/verify_image commands log nothing at the
+    // default level — without them the download looks like a no-op in the
+    // task log). Errors still abort the script with a visible Error line
+    // and a non-zero exit, so the caller reports the failure as before.
     steps.push(`wlink_set_address ${bank}`);
     steps.push('init');
     steps.push('reset init');
     const nBanks = Math.max(1, opts.banks ?? 1);
     for (let b = 0; b < nBanks; b++) steps.push(`flash erase_sector ${b} 0 last`);
+    steps.push('echo "** Programming Started **"');
     steps.push(`flash write_image erase "${fwPosix}" ${offset}`);
-    if (opts.verify) steps.push(`verify_image "${fwPosix}" ${offset}`);
-    if (opts.reset) steps.push('poll off', 'reset run');
+    steps.push('echo "** Programming Finished **"');
+    if (opts.verify) {
+      steps.push('echo "** Verify Started **"');
+      steps.push(`verify_image "${fwPosix}" ${offset}`);
+      steps.push('echo "** Verified OK **"');
+    }
+    if (opts.reset) {
+      steps.push('poll off');
+      steps.push('echo "** Resetting Target **"');
+      steps.push('reset run');
+    }
     steps.push('shutdown');
   } else {
     steps.push(`wlink_set_address ${bank}`);
