@@ -4,6 +4,8 @@ node_modules/
 # the koffi subtree (git needs the un-ignored DIRECTORY to descend into it)
 !vendor-ffi/node_modules/
 !vendor-ffi/node_modules/koffi/
+# the serialport runtime must be tracked too (SDI PRINT monitor, 0.3.0)
+!vendor-serial/node_modules/
 .scratch/
 .mimosa/
 buildlogs/
