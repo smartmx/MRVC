@@ -6,32 +6,15 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ProjectStore, MrsProject, getInstall } from './projects';
-import { prepareFlash, inferFlashAddress, FlashPlan } from '../core/flash';
+import { prepareFlash, inferFlashAddress, FlashPlan, PowerVoltage } from '../core/flash';
 import { healTargetPath, staleTargetPath } from '../core/templateFile';
 import { scanSources } from '../core/scan';
-import { checkWCHLinkFirmware, formatLinkVersion, runWlinkOp, wchlinkFirmwareCfgPath } from '../core/wlink';
+import { checkWCHLinkFirmware, formatLinkVersion, runWlinkOp, wchlinkFirmwareCfgPath, WlinkFirmwareCheck } from '../core/wlink';
 import { MrsInstall } from '../core/toolchain';
-import { chipDbRoot, scanChipDb, guardLinkedChip } from '../core/chipdb';
+import { chipDbRoot, scanChipDb, chipForTemplate, guardLinkedChip } from '../core/chipdb';
+import { executeFlashTask, powerLinkUnsupportedNotice, powerOffBeforeDownload, selectBoardCfg } from './powerCycle';
+import { noteSdiPrintfEnabled, noteSdiPrintfFailed, noteSdiPrintfNotRequested } from '../core/sdiState';
 import { t } from '../core/i18n';
-
-/**
- * Board cfg selection, aligned with MRS2's own rule (its debug launcher):
- * the explicit setting wins, dual-core projects need wch-dual-core.cfg
- * (core1's flash bank sits at 0x00005000), ARM toolchains need
- * wch-arm.cfg, everything else uses the stock wch-riscv.cfg. Chip series
- * never enters the choice — address differences ride on the .template.
- */
-function selectBoardCfg(project: MrsProject, cfg: vscode.WorkspaceConfiguration): string {
-  const install = getInstall();
-  if (!install) return '';
-  const override = cfg.get<string>('openocd.config');
-  if (override) return override;
-  const binDir = path.dirname(install.openocdCfg);
-  if (project.kernel) return path.join(binDir, 'wch-dual-core.cfg');
-  const tc = project.toolchain(install, cfg.get<string>('toolchain', 'auto'));
-  if (tc && tc.prefix.startsWith('arm')) return path.join(binDir, 'wch-arm.cfg');
-  return install.openocdCfg;
-}
 
 /**
  * What a download will actually flash for this project — the .template
@@ -50,50 +33,6 @@ export function resolveDownloadTarget(project: MrsProject): string {
   }
   if (fs.existsSync(project.hexPath)) return project.hexPath;
   return target ?? '';
-}
-
-/** run the flash task and resolve with its exit code (undefined = no end event) */
-async function executeFlashTask(task: vscode.Task): Promise<number | undefined> {
-  const done = new Promise<number | undefined>((resolve) => {
-    let settled = false;
-    let exec: vscode.TaskExecution | undefined;
-    // end events arriving before executeTask() hands us the execution are
-    // buffered and matched on resolution — a same-type task ending in that
-    // window must not settle this waiter with its exit code
-    const early: Array<[vscode.TaskExecution, number | undefined]> = [];
-    const d = vscode.tasks.onDidEndTaskProcess((e) => {
-      if (settled || e.execution.task.definition.type !== 'mrvc-flash') return;
-      if (!exec) {
-        early.push([e.execution, e.exitCode]);
-        return;
-      }
-      // match by execution identity: a still-running earlier flash must not
-      // resolve this one with its exit code
-      if (e.execution !== exec) return;
-      settled = true;
-      d.dispose();
-      resolve(e.exitCode);
-    });
-    vscode.tasks.executeTask(task).then(
-      (e) => {
-        exec = e;
-        const hit = early.find(([x]) => x === e);
-        if (hit && !settled) {
-          settled = true;
-          d.dispose();
-          resolve(hit[1]);
-        }
-      },
-      () => {
-        // task never started — release the listener, report failure
-        if (settled) return;
-        settled = true;
-        d.dispose();
-        resolve(undefined);
-      }
-    );
-  });
-  return done;
 }
 
 /** EVT trees ship without .template — derive the download address from the
@@ -157,7 +96,10 @@ export async function flashProject(store: ProjectStore, proj?: MrsProject): Prom
     return;
   }
   try {
-    await downloadProject(store, project);
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: t('progressDownloadProject', project.projectName), cancellable: true },
+      (_progress, token) => downloadProject(store, project, token)
+    );
   } catch (e) {
     vscode.window.showErrorMessage(`MRVC: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -169,7 +111,17 @@ export async function flashProject(store: ProjectStore, proj?: MrsProject): Prom
  * false when the download failed; a cancelled stale-target fix or "compile
  * first" stop is NOT a failure and resolves true.
  */
-export async function downloadProject(store: ProjectStore, project: MrsProject): Promise<boolean> {
+export async function downloadProject(
+  store: ProjectStore,
+  project: MrsProject,
+  token?: vscode.CancellationToken
+): Promise<boolean> {
+  const cancelled = (): false => {
+    vscode.window.showInformationMessage(t('downloadCancelled', project.projectName));
+    return false;
+  };
+  const isCancelled = (): boolean => token?.isCancellationRequested === true;
+  if (isCancelled()) return cancelled();
   const install = getInstall();
   if (!install) {
     vscode.window.showErrorMessage(t('installNotFound'));
@@ -202,6 +154,7 @@ export async function downloadProject(store: ProjectStore, project: MrsProject):
       return true;
     }
   }
+  if (isCancelled()) return cancelled();
 
   // Nothing to flash: neither the recorded target nor the project's own
   // artifact exists (project never built). Point the user at the compile
@@ -215,10 +168,15 @@ export async function downloadProject(store: ProjectStore, project: MrsProject):
     await vscode.window.showWarningMessage(t('projectNotBuilt', project.hexPath), { modal: true });
     return true;
   }
+  if (isCancelled()) return cancelled();
 
   const cfg = vscode.workspace.getConfiguration('mrvc');
   const openocd = cfg.get<string>('openocd.path') || install.openocdExe;
   const boardCfg = selectBoardCfg(project, cfg);
+  // power-off-reset download: de-energise before the session, the script
+  // brings the rail back up (prepareFlash powerOn as its FIRST step)
+  const powerOff = cfg.get<string>('flash.resetMode', 'nrst') === 'powerOff';
+  const powerOn: PowerVoltage | undefined = powerOff ? (cfg.get<string>('flash.powerOutput', '3v3') === '5v' ? '5v' : '3v3') : undefined;
   if (!fs.existsSync(openocd)) {
     vscode.window.showErrorMessage(t('openocdNotFound', openocd));
     return false;
@@ -251,6 +209,7 @@ export async function downloadProject(store: ProjectStore, project: MrsProject):
       // the whole flash before writing; dual-core cfgs expose two banks
       eraseAll: String(project.template.values['Erase All'] ?? '').trim().toLowerCase() === 'true',
       banks: project.kernel ? 2 : 1,
+      powerOn,
     });
   } catch (e) {
     vscode.window.showErrorMessage(t('flashAddressInvalid', project.projectName, e instanceof Error ? e.message : String(e)));
@@ -263,6 +222,7 @@ export async function downloadProject(store: ProjectStore, project: MrsProject):
   // cancels, and a cancelled download is reported as not completed (same as
   // declining the firmware-upgrade prompt below).
   const mismatch = await chipFamilyMismatch(install, project);
+  if (isCancelled()) return cancelled();
   if (mismatch) {
     const proceed = t('chipMismatchContinue');
     const pick = await vscode.window.showWarningMessage(
@@ -279,8 +239,12 @@ export async function downloadProject(store: ProjectStore, project: MrsProject):
   // check failure; an upgrade-needed result offers the WCH-LinkUtility route
   // instead of MRVC flashing the link itself (parity with MRS's pre-download
   // doUpdate check). Runs before the OpenOCD spawn so the USB device is free.
+  // The result also feeds the power-off gate below (link model — no second
+  // bridge round trip for it).
+  let fwCheck: WlinkFirmwareCheck | undefined;
   try {
-    const fw = await checkWCHLinkFirmware(install);
+    fwCheck = await checkWCHLinkFirmware(install);
+    const fw = fwCheck;
     if (fw.state === 'upgrade-needed') {
       const openUtil = t('wchLinkFwOpenUtility');
       const continueBtn = t('wchLinkFwContinue');
@@ -304,19 +268,107 @@ export async function downloadProject(store: ProjectStore, project: MrsProject):
   } catch {
     // the firmware check must never block or crash a download
   }
+  if (isCancelled()) return cancelled();
+
+  // SDI Printf (.template SDIPrintf=true). MRS's own mechanism is NOT
+  // OpenOCD's `sdi_printf` (that re-enumerates the link and kills the
+  // session); it is MRSFunc_FlashOperationExB with flags RESET|SDIPrintf.
+  // The vendor sequence resets the target and enables the link's SDI
+  // forwarder in one DLL session — verified on a CH394Q EVT: the boot banner
+  // appears on the WCH-Link CDC port. The pass runs AFTER the OpenOCD
+  // download so the flash itself stays on the tested OpenOCD path.
+  const sdiPrintf = String(project.template.values['SDIPrintf'] ?? '').trim().toLowerCase() === 'true';
+  let sdiChipId = 0;
+  let sdiClk = 1;
+  let sdiDbg = 0;
+  let sdiAddr = 0;
+  if (sdiPrintf) {
+    const db = scanChipDb(chipDbRoot(install.resourcesDir));
+    const control = db.available ? chipForTemplate(db, project.template.values) : undefined;
+    sdiChipId = control && control.id > 0 ? control.id : 0;
+    const clk = Number((project.template.values['CLKSpeed'] ?? '1').trim());
+    sdiClk = clk === 2 || clk === 3 ? clk : 1;
+    sdiDbg = (project.template.values['DebugInterfaceMode'] ?? '0').trim() === '1' ? 1 : 0;
+    const parsed = /^0x/i.test(address) ? parseInt(address.slice(2), 16) : parseInt(address, 10);
+    sdiAddr = Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  // Power-off-reset download (mrvc.flash.resetMode=powerOff): de-energise
+  // the target with a short OpenOCD pass, wait the configured delay, and let
+  // the main session bring the rail back up (the script's first powerOn
+  // step) — the "one power-down, power-up and download in ONE OpenOCD
+  // session" flow. Runs AFTER the guard and firmware checks so the USB
+  // device is exclusively ours, like every other link access. The plain
+  // WCH-Link cannot switch the rail at all (WCH docs: LinkE/DAPLink/LinkW
+  // only) — the known linkId from the firmware check gates that case with
+  // an explicit modal instead of two OpenOCD passes that cannot work.
+  if (powerOff) {
+    const notice = powerLinkUnsupportedNotice(fwCheck);
+    if (notice) {
+      await vscode.window.showWarningMessage(notice, { modal: true });
+      return false;
+    }
+    if (!(await powerOffBeforeDownload(project, install, cfg, token))) return isCancelled() ? cancelled() : false;
+  }
+  if (isCancelled()) return cancelled();
 
   store.setActive(project);
   const task = new vscode.Task(
-    { type: 'mrvc-flash', task: 'flash', project: project.projectName },
+    { type: 'mrvc-flash', task: 'flash', project: project.projectName, root: project.root },
     `MRVC: download - ${project.projectName}`,
     'MRVC',
     new vscode.ProcessExecution(openocd, plan.args, { cwd: project.root })
   );
   task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated, clear: true };
-  const code = await executeFlashTask(task);
+  // NO -l on the main download (progress belongs in the terminal); the
+  // power-off pass has its own log classifier.
+  const code = await executeFlashTask(task, token);
+  if (isCancelled()) return cancelled();
   if (code !== 0) {
     vscode.window.showErrorMessage(t('downloadFailed', project.projectName, code ?? 'unknown'));
     return false;
+  }
+  // SDI Printf: MRS's native reset+enable pass (see core/wlink `sdiPrint`).
+  // The VSCode SDI PRINT monitor is deliberately NOT opened here — the user
+  // may keep their own serial tool (e.g. SSCOM) on the WCH-Link CDC port, and
+  // an automatic open would collide with it. To capture the boot banner, open
+  // MRVC's monitor manually BEFORE the download: this pass is the reset that
+  // produces it. A failure is reported but never turns the (already
+  // successful) download into a failure.
+  if (sdiPrintf) {
+    if (sdiChipId > 0) {
+      try {
+        const r = await runWlinkOp(install, 'sdiPrint', {
+          chipId: sdiChipId,
+          clkSpeed: sdiClk,
+          dbgMode: sdiDbg,
+          flashAddress: sdiAddr,
+          flashPath: hex,
+        });
+        if (!r.ok) {
+          noteSdiPrintfFailed(r.error ?? `code ${r.result ?? '?'}`);
+          await vscode.window.showWarningMessage(t('sdiPrintfPassFailed', project.projectName, r.error ?? `code ${r.result ?? '?'}`));
+        } else {
+          noteSdiPrintfEnabled();
+        }
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        noteSdiPrintfFailed(detail);
+        await vscode.window.showWarningMessage(t('sdiPrintfPassFailed', project.projectName, detail));
+      }
+    } else {
+      // The download requested SDI Printf but the chip db gave no control id,
+      // so the reset+enable pass cannot run. Record it as a failed attempt:
+      // otherwise a stale `enabled`/`notRequested` from an earlier download
+      // would claim this download succeeded when it never touched the link.
+      const detail = t('sdiPrintfNoChipId', project.projectName);
+      noteSdiPrintfFailed(detail);
+      await vscode.window.showWarningMessage(detail);
+    }
+  } else {
+    // a plain download never disables the link's sticky SDI switch, but the
+    // row should at least show that THIS download did not request it
+    noteSdiPrintfNotRequested();
   }
   return true;
 }

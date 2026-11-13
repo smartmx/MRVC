@@ -109,7 +109,7 @@ export class SyncPage {
     this.panel.webview.html = this.render();
   }
 
-  private async onMessage(m: { command: string; items?: Array<{ suffix: string; type: 'bool' | 'enum'; value: string; enumBase?: string }> }): Promise<void> {
+  private async onMessage(m: { command: string; items?: Array<{ suffix: string; type: 'bool' | 'enum'; value: string; enumBase?: string; defaultChoice?: boolean }> }): Promise<void> {
     if (m.command !== 'applySync' || !Array.isArray(m.items) || !m.items.length) return;
     const projects = this.store.all;
     if (!projects.length) return;
@@ -143,7 +143,16 @@ export class SyncPage {
                 continue; // C project: C++-only option
               }
               if (item.type === 'bool') cp.setOptionBool(item.suffix, item.value === '1', true);
-              else cp.setOptionValue(item.suffix, item.value === 'default' ? undefined : (item.enumBase ?? '') + item.value);
+              else {
+                // 'default' means "inherit" for fields without a real CDT
+                // `default` choice (setOptionValue(undefined) — which, for an
+                // existing enumerated option, preserves its value by design).
+                // Where the choice EXISTS (align / debugging.level /
+                // debugging.format) it must be written explicitly, otherwise
+                // the tick would be a silent no-op (round-11 P3-2).
+                const v = item.value === 'default' && !item.defaultChoice ? undefined : (item.enumBase ?? '') + item.value;
+                cp.setOptionValue(item.suffix, v);
+              }
               applied++;
             }
             if (applied) cp.save();
@@ -240,10 +249,17 @@ export class SyncPage {
       baseProject: base?.projectName ?? '',
       cppOnlyNote: cppCount ? `${cppCount} option(s) apply to C++ projects only` : '',
     };
-    // field metadata for the collector: key -> {suffix, type, enumBase}
-    const fieldMeta: Record<string, { suffix: string; type: string; enumBase?: string }> = {};
+    // field metadata for the collector: key -> {suffix, type, enumBase,
+    // defaultChoice} — defaultChoice marks a field whose 'default' is a REAL
+    // CDT enumerated choice (round-11 P3-2)
+    const fieldMeta: Record<string, { suffix: string; type: string; enumBase?: string; defaultChoice?: boolean }> = {};
     for (const r of rows) {
-      fieldMeta[r.field.key] = { suffix: r.field.suffix as string, type: r.field.type, enumBase: r.field.enumBase };
+      fieldMeta[r.field.key] = {
+        suffix: r.field.suffix as string,
+        type: r.field.type,
+        enumBase: r.field.enumBase,
+        defaultChoice: (r.field.options ?? []).some(([k]) => k === 'default'),
+      };
     }
 
     return `<!DOCTYPE html>
@@ -283,7 +299,7 @@ document.getElementById('apply').addEventListener('click', () => {
     const key = b.dataset.sync;
     const meta = FIELD_META[key];
     const valEl = document.querySelector('[data-val="' + key + '"]');
-    return { suffix: meta.suffix, type: meta.type, enumBase: meta.enumBase, value: meta.type === 'bool' ? (valEl.checked ? '1' : '0') : valEl.value };
+    return { suffix: meta.suffix, type: meta.type, enumBase: meta.enumBase, defaultChoice: meta.defaultChoice, value: meta.type === 'bool' ? (valEl.checked ? '1' : '0') : valEl.value };
   });
   vscode.postMessage({ command: 'applySync', items });
 });

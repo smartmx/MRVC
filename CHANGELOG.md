@@ -1,5 +1,120 @@
 # MRVC 更新日志
 
+## V0.3.0（2026-11-13）
+
+### 变更
+
+- **树单击工程行即激活（0.3.0）**：Project Explorer 里**单击工程行即设为活动工程**（选择=激活，
+  Info/编译/下载随动）；挂在既有的 500ms 防抖选择处理器上，同一工程重复选择不重复触发（root
+  比对防重入）。
+- **工程树作用域刷新（0.3.0）**：文件监视与编译结束后的刷新**不再整树重建**——watcher 事件只记录
+  "发生变化的目录"，树只重读对应节点（源文件所在目录 / 编译输出目录）；编译任务运行期间树保持
+  冻结，任务结束后只刷新被触及工程的输出目录节点。链接文件夹的蓝→白→蓝整树闪烁因此消失。
+  全树刷新仅保留在：手动 Refresh、工程集合变化、配置文件（.project/.cproject/.template）变更
+  （后者需要重新解析工程，属于必要的工程级刷新）。
+- **编译/下载进度提示与手动结束（0.3.0）**：工程行内 **Build / Rebuild / Download**（含右键
+  **Build Project And Download**）运行期间弹出可取消的进度通知（正在编译 / 重新编译 / 下载
+  “工程名”）。通知覆盖 makefile 生成到任务结束的整个等待期；点取消会终止当前 `make` 或
+  OpenOCD 任务——重建先终止 clean 阶段并跳过后续 build，编译并下载则同时停止后续下载。
+  Clean 保持原有行为，不显示进度通知。
+- **SDI PRINT 监视器（读取端）**：树标题工具组新增 **SDI PRINT Monitor**（命令面板含 停止 命令）。
+  勾选 **SDI Printf** 的工程在**主下载成功后**自动执行 **WCH-Link 原生“复位+使能”pass**：通过
+  MRS 同款 `MRSFunc_FlashOperationExB`（flags = RESET|SDIPrintf = 0x11）在**一次 DLL 会话**内
+  复位目标并写入 SDI printf 开关（MRS 官方实现即此路径；`McuCompiler_SetSDIPrn` 的参数是
+  **禁能位**，0 = 使能）。此前尝试的 OpenOCD `sdi_printf enable` **不可用**：它让 Link 重新
+  枚举 USB、当场杀死所在会话（真机日志停在 `SDI_PRINTF ENABLE`，没有 init/reset），也无法在
+  同一次会话里完成“复位 + 使能”。pass **不再自动打开 VSCode 串口监视器**（用户可能正用
+  SSCOM 等外部串口工具占用 WCH-Link 的 CDC 口，自动开会与之冲突）；要抓复位后的启动输出，
+  请在**下载前手动打开 SDI PRINT Monitor**（EVT 例程 banner 只在 main 开头打印，晚开会错过）。
+  pass 失败只告警，不影响已成功的下载。之后芯片的 printf 经 Link
+  解码从其 CDC 串口持续输出。监视器在 VSCode 终端里实时显示该输出：串口**只认
+  `VID_1A86/PID_8010`（"WCH-Link SERIAL (COMx)"）**，板载/独立 CH343/CH340 等 USB 串口绝不会
+  被自动选中；多台 Link 弹选择框；`mrvc.sdiPrint.port` 可显式指定、`mrvc.sdiPrint.baud`
+  为打开参数（SDI 流与波特率无关）。读取实现内置 **serialport 11**（MRS2 自带串口终端同款，
+  N-API 预编译 win32-x64 / linux-x64 / darwin，随包发货）。串口打不开时终端**保留错误信息**
+  （并提示可能被其他串口工具占用），不再瞬间消失。**下载成功后只执行上述原生 pass，不自动
+  打开监视器**；监视器由用户按需手动启动（下载前启动即可捕获启动输出）。
+- **修复：下载设置复选框保存丢失**：下载设置页的导航项 `<div class="nav-item" data-page="dlset">`
+  在 DOM 中先于页面容器，收集脚本的裸 `[data-page="dlset"]` 选择器命中导航项——复选框查找全空，
+  8 个布尔**恒写 false** 却仍提示"保存成功"（下拉/文本走 getElementById 不受影响）。修复=选择器
+  限定 `.page[data-page="dlset"]`，并加行为级回归（提取真实 emitted collectDl 对 nav-shadow DOM
+  求值，裸选择器必 FAIL）。
+- **修复：属性页 Apply 会删 enumerated 选项的 value 属性（导致 MRS 打不开工程）**：CDT/MRS 给
+  enumerated 选择存的是 **base 中缀形态**（`…option.base.target.rvGcc.8`），MRVC 的枚举读取只认
+  `…option.target.rvGcc.` 前缀、解析不出 → 下拉框回落到第一项"Project default"→ **Apply 时把
+  `value` 属性整个删除**；而 MRS 自己的解析器对 rvGcc 选项**无保护地 `value.match(...)`**——属性
+  缺失即扩展崩溃，工程树挂载失败，**该工程在 MRS2/MRS3 里也打不开**。已修复：枚举读取识别 base
+  形态（下拉正确显示当前值）；enumerated 选项的清除**永不删除 value 属性**（MRS 硬约束）。
+  受影响工程（TCP_SERVER / MACRAW / TCP_CLIENT，属性 Apply 过即中招）的 `.cproject` 已按其
+  GCC8 工具链补回 `value` 属性，可直接打开。**本轮再加一道结构性保险**：Apply 先按渲染时的
+  快照逐字段比对，**只写入用户真正改动的字段**——未改动选项在 `.cproject` 里保持逐字节不变
+  （回归探针：整表原值回发后文件字节相同）；下拉框不认识的既有枚举值渲染为 `(current)` 并
+  原值回写，绝不被第一项覆盖；原本不存在的选项在未触碰时也不会被"顺手创建"。**写前还有结构门禁**：
+  `.cproject` 的原始 XML 先过严格校验（标签栈 + 根外文本/裸标记 + 标记位置 + 字符数据/属性值
+  的词法规则：裸 `&`、未声明实体、属性值裸 `<`、字符数据 `]]>`、注释 `--`、非法 XML 1.0 字符与
+  非法字符引用如 `&#0;`，以及**非法 UTF-8 字节**——按 fatal 模式解码，绝不把坏字节静默替换成
+  U+FFFD 再写回），不合法时直接报错并指向「检测并修复工程配置」，一个字节都不写。
+- **修复：工程树 Refresh 按钮不刷新工程内的文件列表**：刷新命令只重扫工作区的"工程根集合"，
+  工程集合没变时不会发出变更事件，VS Code 继续显示缓存的子节点——在工程里新增/删除文件后
+  （例如删掉旧日志）点刷新毫无效果。现在刷新结束**无条件**发事件，树对每个展开的目录重新
+  `readdir`。
+- **检测并修复工程配置**：工程右键/命令面板新增 **Audit And Repair Project Configuration
+  （检测并修复工程配置）**。体检项：①enumerated 选项缺 `value` 属性（本次 MRS 打不开事故的
+  通用化——**可自动修复**：移除该选项，CDT 语义=继承默认，MRS 读者不再看到坏元素）②`.template`
+  Address 非 0x 格式（**可自动修复**：清空，下载回退自动推断）③rvGcc 值形态异常④`.project`/
+  `.cproject` XML 结构/语法损坏（标签栈 + **根外文本/裸标记检查** + **CDATA/DOCTYPE/XML 声明
+  的位置约束** + 重复属性 + **字符数据与属性值的词法规则**：裸 `&`、未声明实体、属性值裸 `<`、
+  字符数据 `]]>`、注释 `--`、**非法 XML 1.0 字符**（原始控制字符、`&#0;`/surrogate/noncharacter
+  等非法码点）与**非法 UTF-8 字节**——严格 XML 解析器拒绝、而宽松解析器"能读"的形态都会被报出；
+  DOCTYPE 内部子集的 `<!ENTITY>` 声明会被识别，合法文档不误报）⑤`.project` name 与文件夹名不一致（③④⑤仅报告）。修复前**逐文件
+  备份**到 `.vscode/mrvc/repair-backup/<时间戳>/`，模态列出全部问题、显式确认才写入。
+- **使用 MounRiver IDE 打开**：工程右键新增 **Open With MounRiver IDE（使用 MounRiver IDE 打开）**——用当前生效的 MRS 安装
+  打开该工程的 **`<工程名>.wvproj`**（MRS 以 .wvproj 工程文件为打开入口，而非文件夹）；
+  启动参数与 MRS 安装器注册的 Shell 右键同款：**两个独立参数 `-m` + 工程文件**
+  （扩展内部自用的 `-m=` 连写形态在真机只设标题、不挂工作区——窗口空载，已实证避开）。
+  **Windows 实际形态**：PowerShell `Start-Process -WorkingDirectory <工程根> -ArgumentList
+  '-m','"<.wvproj 绝对路径>"'`（绝对路径**带内嵌双引号**），脚本经 `-EncodedCommand`
+  （base64 UTF-16LE）送达——PS 5.1 的 -ArgumentList 不给元素加引号，内嵌引号保证含空格的
+  绝对路径仍作为单个参数到达；MRS 自身要求绝对路径（相对文件名会弹 "The following file path
+  is not absolute"，真机实证），`-Command` 通道会剥掉内层引号，故必须走 EncodedCommand。
+  **POSIX**：`sh -c '"$1" "$2" "$3" >/dev/null 2>&1 &'` 传**绝对路径**，引号天然支持空格。
+  启动器自动解析：Windows `MounRiver Studio {2,3}.exe` / Linux `mounriver-studio {2,3}`
+  （根或 bin/，名字带空格） / macOS `Contents/MacOS/Electron`。启动经**分离包装**——任务瞬间
+  完成，MRS 独立存活，不在任务列表留下常驻实例（GUI 与窗口同寿命，常驻任务会堆叠并弹出旧实例
+  选择框）；包装任务失败（含 executeTask 拒绝/瞬间退出）经执行身份缓冲的监听器可靠上报；
+  当前生效配置为纯工具链（无 IDE）或工程缺 .wvproj 时明确报错。
+- **掉电复位 + 电源输出**：工程右键/命令面板新增 **Power-Off Reset（掉电复位）**——经 WCH-Link
+  电源轨对目标 **断电 → 延时 → 上电**（OpenOCD `pow3v3/pow5v off|on`，本机 fork 实证；两路共用
+  电源状态，只发实际供电一路）。设置 `mrvc.flash.resetMode=powerOff` 后**下载自动走断电流程**：
+  断电一次 → 延时 → 上电与烧写在**同一 OpenOCD 会话**完成；`mrvc.flash.powerOutput` 选 3.3V/5V、
+  `mrvc.flash.powerOffDelayMs`（0–10000，默认 100）控制断电时长。适用于 NRST 被调试接口复用的
+  1/2-wire 芯片——模式切换由属性页 FFI dbgMode 完成，掉电复位使其生效。**型号门禁**：可控电源输出
+  仅 WCH-LinkE / DAPLink / LinkW 支持（官方手册口径）——普通版 WCH-Link 在命令/下载前被模态明确拦截，
+  不再跑两个注定失败的 OpenOCD 段；无 pow 命令的旧 fork 日志（`invalid command name`）按真失败处理。
+  **成功证据**：断电/上电两段都以本次日志中的标记行（`MRVC_POWER_OFF_OK` / `MRVC_POWER_ON_OK`，
+  紧跟在电源轨命令之后输出）为 done 判据，exit 0 本身不算——未编译工程没有 `obj/` 时 OpenOCD
+  不写日志也会 exit 0，过去会被误判为"复位完成"而电源轨从未动过；日志目录现自动创建，日志被
+  索引器/杀软占用时改用本次唯一文件名，旧日志不会污染判定。**任务未启动**（拿不到进程结束事件）
+  一律判失败——即使日志里出现标记也只可能是陈旧内容。
+- **下载瞬态重试**：**使能与掉电复位各内部段**经 OpenOCD `-l` 日志识别 WCH-Link 重新枚举类瞬态
+  失败（`wlink open error` / `unknown wch-link` / USB 上下文的 open 失败），自动退避重试（最多
+  2 次）；**主下载不带 `-l`**——`--log_output` 会把进度 echo 整体重定向进文件、任务终端只剩横幅
+  （0.2.9 的"看起来没反应"回归），主下载保持终端实时进度、不重试（重枚举风险已由前置段的分类器
+  与 1.2s 等待吸收）；传给 OpenOCD 的日志路径一律**正斜杠**（Jim Tcl 吃反斜杠——此前会在工程根
+  落下扁平怪名日志文件）。已知边界：文件名含 "link" 的打开错误会被误判为瞬态（代价=内部段一次
+  多余重试）。
+- **Info 信息视图**：工程列表下方新增 **Info** 视图，四行显示 ①当前生效 MRS 配置（IDE 安装还是
+  纯工具链、MRS2/MRS3、安装路径、偏好回退状态；点击行直达 MRVC 设置）②当前选中工程名
+  ③该工程的工具链（名称与前缀；与构建链同源——`mrvc.customToolchains` 合并后的生效安装，
+  自定义工具链也正确显示）④**SDI Printf 状态**：WCH-Link/CommunicationLib 只提供写命令
+  （`McuCompiler_SetSDIPrn`）、**没有回读接口**，所以该行只反映 MRVC 本次会话下载时“复位+使能”
+  步骤的结果（已使能 / 上次失败 / 本次下载未使能 / 未知；重载窗口后回到未知，打开监视器时
+  若找不到 WCH-Link 串口也会重置为未知），
+  点击行打开 SDI PRINT 监视器。工程切换、`mrvc.*` 配置修改后**自动刷新**。
+- **编译链路零重复解析**：生效安装的解析本就按设置键缓存（不改设置不重验）；本轮再补
+  工程级工具链解析 memo（同输入直接复用，`mrvc.*` 配置变更即失效），并新增计数 seam
+  断言"设置不变时重复编译不再触发安装重探测"。POSIX 架构核对保持每次编译执行（警告不消失）。
+
 ## V0.2.9（2026-11-10）
 
 ### 变更

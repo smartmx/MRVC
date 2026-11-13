@@ -100,6 +100,12 @@ export class BuildManager {
 
   constructor(private store: ProjectStore) {}
 
+  /** test seam (round16 P2): is the single-build guard still held? A failed
+   * or cancelled rebuild clean must release it before any build task exists. */
+  buildInFlightForTests(root: string): boolean {
+    return this.building.has(path.resolve(root).toLowerCase());
+  }
+
   /**
    * Build every loaded project sequentially. A failing project never stops
    * the run — every project is attempted, results are summarized at the end.
@@ -373,7 +379,7 @@ export class BuildManager {
         finish(e.exitCode);
       });
       const task = new vscode.Task(
-        { type: 'mrvc-clean-all' },
+        { type: 'mrvc-clean-all', project: p.projectName, root: p.root },
         'MRVC: Clean All',
         'MRVC',
         wrapperExecution(
@@ -474,30 +480,53 @@ export class BuildManager {
         if (e.execution !== exec) return;
         finish(e.exitCode);
       });
-      const wrapper = this.writeBuildWrapper(p.root, p.buildDir, resolveMakeExe(install), buildMakeArgs('build', jobs, buildVerbosity()), buildRecordFile(p.root), install.label);
-      const task = new vscode.Task(
-        { type: 'mrvc-build-all' },
-        'MRVC: Build All',
-        'MRVC',
-        wrapperExecution(wrapper, [toolchainBinDir, install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter)),
-        ['$mrvcgcc']
-      );
-      task.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
-      vscode.tasks.executeTask(task).then(
-        (e) => {
-          exec = e;
-          entry.exec = e;
-          const hit = early.find(([x]) => x === e);
-          if (hit && !settled) finish(hit[1]);
-        },
-        () => {
-          if (settled) return;
+      let task: vscode.Task;
+      try {
+        const wrapper = this.writeBuildWrapper(p.root, p.buildDir, resolveMakeExe(install), buildMakeArgs('build', jobs, buildVerbosity()), buildRecordFile(p.root), install.label);
+        task = new vscode.Task(
+          { type: 'mrvc-build-all', project: p.projectName, root: p.root },
+          'MRVC: Build All',
+          'MRVC',
+          wrapperExecution(wrapper, [toolchainBinDir, install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter)),
+          ['$mrvcgcc']
+        );
+        task.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
+      } catch (e) {
+        // wrapper write / task construction failed before any process existed:
+        // release the guard here or the project stays "already building" for
+        // the rest of the window (round17 P3)
+        if (!settled) {
           settled = true;
           sub.dispose();
           this.building.delete(key);
-          resolve(fail('task failed to start'));
+          resolve(fail(msg(e)));
         }
-      );
+        return;
+      }
+      try {
+        vscode.tasks.executeTask(task).then(
+          (e) => {
+            exec = e;
+            entry.exec = e;
+            const hit = early.find(([x]) => x === e);
+            if (hit && !settled) finish(hit[1]);
+          },
+          () => {
+            if (settled) return;
+            settled = true;
+            sub.dispose();
+            this.building.delete(key);
+            resolve(fail('task failed to start'));
+          }
+        );
+      } catch (e) {
+        if (!settled) {
+          settled = true;
+          sub.dispose();
+          this.building.delete(key);
+          resolve(fail(msg(e)));
+        }
+      }
     });
   }
 
@@ -526,13 +555,36 @@ export class BuildManager {
     // through the first half of the build (round: user report)
     this.store.suspendTreeRefresh();
     try {
-      await this.runInner(kind, project, opts, buildKey);
+      // A one-project build/rebuild shows a cancellable notification for the
+      // WHOLE run (makefile generation included); cancelling it terminates the
+      // running task process. Clean keeps its old silent behaviour.
+      if (kind === 'clean') {
+        await this.runInner(kind, project, opts, buildKey);
+        return;
+      }
+      const title =
+        kind === 'rebuild'
+          ? t('progressRebuildProject', project.projectName)
+          : opts?.andDownload
+            ? t('progressBuildDownloadProject', project.projectName)
+            : t('progressBuildProject', project.projectName);
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+        (_progress, token) => this.runInner(kind, project, opts, buildKey, token)
+      );
     } finally {
       this.store.resumeTreeRefresh();
     }
   }
 
-  private async runInner(kind: BuildKind, project: MrsProject, opts: RunOptions | undefined, buildKey: string): Promise<void> {
+  private async runInner(
+    kind: BuildKind,
+    project: MrsProject,
+    opts: RunOptions | undefined,
+    buildKey: string,
+    token?: vscode.CancellationToken
+  ): Promise<void> {
+    if (token?.isCancellationRequested) return;
 
     const install = getInstall();
     const tc = project.toolchain(install, vscode.workspace.getConfiguration('mrvc').get('toolchain', 'auto'));
@@ -557,6 +609,10 @@ export class BuildManager {
       return;
     }
     void genResult;
+    if (token?.isCancellationRequested) {
+      vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
+      return;
+    }
 
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const jobs = cfg.get<number>('build.parallelJobs', 0) || defaultJobs();
@@ -566,58 +622,70 @@ export class BuildManager {
     }
     const makeArgs = buildMakeArgs(kind, jobs, buildVerbosity());
 
-    // from here on a make may run: hold the guard until its process ends
+    // from here on a make may run: hold the guard until the WHOLE rebuild /
+    // build flow ends — including a failed or cancelled clean, a wrapper
+    // write that throws, and the task-construction window. executeBuildTask
+    // also releases it when the make process itself ends (double delete is
+    // harmless); the outer finally is what keeps the project from staying
+    // locked after a clean failure/cancel before any build task exists.
     this.building.set(buildKey, {});
-
-    const envPath = [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter);
-    const target = kind === 'clean' ? 'MRVC: clean' : kind === 'rebuild' ? 'MRVC: rebuild' : 'MRVC: build';
-    // verbosity flags for the clean wrappers (build/clean target stripped —
-    // the wrapper appends its own)
-    const cleanFlags = buildMakeArgs('clean', jobs, buildVerbosity()).slice(0, -1);
-    const shell =
-      kind === 'clean'
-        ? // a clean must not trample the last build's record — run make via
-          // the clean wrapper (no record writes, same metacharacter safety)
-          wrapperExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags, install.label), envPath)
-        : wrapperExecution(
-            this.writeBuildWrapper(project.root, project.buildDir, makeExe, makeArgs, buildRecordFile(project.root), install.label),
-            envPath
-          );
+    try {
+      const envPath = [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter);
+      const target = kind === 'clean' ? 'MRVC: clean' : kind === 'rebuild' ? 'MRVC: rebuild' : 'MRVC: build';
+      // verbosity flags for the clean wrappers (build/clean target stripped —
+      // the wrapper appends its own)
+      const cleanFlags = buildMakeArgs('clean', jobs, buildVerbosity()).slice(0, -1);
+      const shell =
+        kind === 'clean'
+          ? // a clean must not trample the last build's record — run make via
+            // the clean wrapper (no record writes, same metacharacter safety)
+            wrapperExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags, install.label), envPath)
+          : wrapperExecution(
+              this.writeBuildWrapper(project.root, project.buildDir, makeExe, makeArgs, buildRecordFile(project.root), install.label),
+              envPath
+            );
     const task = new vscode.Task(
-      { type: 'mrvc-build', task: target, project: project.projectName },
+      { type: 'mrvc-build', task: target, project: project.projectName, root: project.root },
       project.projectName ? `${target} - ${project.projectName}` : target,
       'MRVC',
       shell,
       ['$mrvcgcc']
     );
-    task.group = vscode.TaskGroup.Build;
-    task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, focus: false, clear: true };
+      task.group = vscode.TaskGroup.Build;
+      task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, focus: false, clear: true };
 
-    if (kind === 'rebuild') {
-      // visible clean task first, then the full build — a failed clean must
-      // not masquerade as a successful rebuild
+      if (kind === 'rebuild') {
+        // visible clean task first, then the full build — a failed clean must
+        // not masquerade as a successful rebuild
       const cleanTask = new vscode.Task(
-        { type: 'mrvc-clean', project: project.projectName },
+        { type: 'mrvc-clean', project: project.projectName, root: project.root },
         `MRVC: clean - ${project.projectName}`,
-        'MRVC',
-        wrapperExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags, install.label), envPath),
-        []
-      );
-      cleanTask.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
-      const cleanCode = await this.executeAndWait(cleanTask, 'mrvc-clean', this.building.get(buildKey));
-      if (cleanCode !== 0 && cleanCode !== undefined) {
-        vscode.window.showErrorMessage(t('rebuildCleanFailed', cleanCode));
-        return;
+          'MRVC',
+          wrapperExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags, install.label), envPath),
+          []
+        );
+        cleanTask.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
+        const cleanCode = await this.executeAndWait(cleanTask, 'mrvc-clean', this.building.get(buildKey), token);
+        if (token?.isCancellationRequested) {
+          vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
+          return;
+        }
+        if (cleanCode !== 0 && cleanCode !== undefined) {
+          vscode.window.showErrorMessage(t('rebuildCleanFailed', cleanCode));
+          return;
+        }
       }
-    }
 
-    this.store.reloadActive();
-    try {
+      this.store.reloadActiveQuiet();
       if (opts?.andDownload) {
         // MRS2 buildAndDownload semantics (buildSuccessCallback): the download
         // runs only after a successful build — a failed or cancelled build
         // stops here.
-        const code = await this.executeBuildTask(buildKey, task);
+        const code = await this.executeBuildTask(buildKey, task, token);
+        if (token?.isCancellationRequested) {
+          vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
+          return;
+        }
         if (code !== 0) {
           vscode.window.showErrorMessage(t('buildFailedNoDownload', project.projectName, code ?? 'unknown'));
           return;
@@ -625,7 +693,7 @@ export class BuildManager {
         // downloadProject surfaces its own failures; this catch is the last
         // net so no rejection escapes after an otherwise successful build
         try {
-          await downloadProject(this.store, project);
+          await downloadProject(this.store, project, token);
         } catch (e) {
           vscode.window.showErrorMessage(t('downloadThrew', project.projectName, msg(e)));
         }
@@ -633,7 +701,10 @@ export class BuildManager {
       }
       // fire-and-forget build: the guard releases when THIS make process ends,
       // not when run() returns — handled inside executeBuildTask
-      await this.executeBuildTask(buildKey, task);
+      await this.executeBuildTask(buildKey, task, token);
+      if (token?.isCancellationRequested) {
+        vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
+      }
     } finally {
       this.building.delete(buildKey);
     }
@@ -648,23 +719,48 @@ export class BuildManager {
 
   /** Execute a task and resolve when ITS process ends (matched by execution
    * identity, so concurrent tasks of the same type cannot cross-fire). */
-  private executeAndWait(task: vscode.Task, defType: string, entry?: { exec?: vscode.TaskExecution }): Promise<number | undefined> {
+  private executeAndWait(
+    task: vscode.Task,
+    defType: string,
+    entry?: { exec?: vscode.TaskExecution },
+    token?: vscode.CancellationToken
+  ): Promise<number | undefined> {
     return new Promise<number | undefined>((resolve) => {
       let settled = false;
       let exec: vscode.TaskExecution | undefined;
+      let cancelRequested = token?.isCancellationRequested ?? false;
+      let sub: vscode.Disposable | undefined;
+      let tokenSub: vscode.Disposable | undefined;
       // pre-resolution end events are buffered and matched on resolution
       // (same cross-fire hazard as the other task waiters)
       const early: Array<[vscode.TaskExecution, number | undefined]> = [];
-      const sub = vscode.tasks.onDidEndTaskProcess((e) => {
+      const finish = (code: number | undefined): void => {
+        if (settled) return;
+        settled = true;
+        sub?.dispose();
+        tokenSub?.dispose();
+        resolve(code);
+      };
+      const terminate = (): void => {
+        if (!exec) return;
+        try {
+          void Promise.resolve(exec.terminate()).catch(() => undefined);
+        } catch {
+          // terminate is best-effort; the process may already have exited
+        }
+      };
+      sub = vscode.tasks.onDidEndTaskProcess((e) => {
         if (settled || e.execution.task.definition.type !== defType) return;
         if (!exec) {
           early.push([e.execution, e.exitCode]);
           return;
         }
         if (e.execution !== exec) return;
-        settled = true;
-        sub.dispose();
-        resolve(e.exitCode);
+        finish(e.exitCode);
+      });
+      tokenSub = token?.onCancellationRequested(() => {
+        cancelRequested = true;
+        terminate();
       });
       vscode.tasks.executeTask(task).then(
         (e) => {
@@ -673,19 +769,12 @@ export class BuildManager {
           // exists — during a rebuild's clean phase the entry would
           // otherwise hold no exec and "Terminate Build" silently no-ops
           if (entry) entry.exec = e;
+          // cancellation may have been requested before executeTask resolved
+          if (cancelRequested) terminate();
           const hit = early.find(([x]) => x === e);
-          if (hit && !settled) {
-            settled = true;
-            sub.dispose();
-            resolve(hit[1]);
-          }
+          if (hit) finish(hit[1]);
         },
-        () => {
-          if (settled) return;
-          settled = true;
-          sub.dispose();
-          resolve(undefined);
-        }
+        () => finish(undefined)
       );
     });
   }
@@ -698,45 +787,56 @@ export class BuildManager {
    * never started. Same execution-identity matching as executeAndWait, so
    * concurrent tasks of the same type cannot cross-fire.
    */
-  private executeBuildTask(key: string, task: vscode.Task): Promise<number | undefined> {
+  private executeBuildTask(key: string, task: vscode.Task, token?: vscode.CancellationToken): Promise<number | undefined> {
     const entry = this.building.get(key);
     return new Promise<number | undefined>((resolve) => {
       let settled = false;
       let exec: vscode.TaskExecution | undefined;
+      let cancelRequested = token?.isCancellationRequested ?? false;
+      let sub: vscode.Disposable | undefined;
+      let tokenSub: vscode.Disposable | undefined;
       // pre-resolution end events are buffered and matched on resolution
       // (same cross-fire hazard as the other task waiters)
       const early: Array<[vscode.TaskExecution, number | undefined]> = [];
-      const sub = vscode.tasks.onDidEndTaskProcess((e) => {
+      const finish = (code: number | undefined): void => {
+        if (settled) return;
+        settled = true;
+        sub?.dispose();
+        tokenSub?.dispose();
+        this.building.delete(key);
+        resolve(code);
+      };
+      const terminate = (): void => {
+        if (!exec) return;
+        try {
+          void Promise.resolve(exec.terminate()).catch(() => undefined);
+        } catch {
+          // terminate is best-effort; the process may already have exited
+        }
+      };
+      sub = vscode.tasks.onDidEndTaskProcess((e) => {
         if (settled || e.execution.task.definition.type !== 'mrvc-build') return;
         if (!exec) {
           early.push([e.execution, e.exitCode]);
           return;
         }
         if (e.execution !== exec) return;
-        settled = true;
-        sub.dispose();
-        this.building.delete(key);
-        resolve(e.exitCode);
+        finish(e.exitCode);
+      });
+      tokenSub = token?.onCancellationRequested(() => {
+        cancelRequested = true;
+        terminate();
       });
       vscode.tasks.executeTask(task).then(
         (e) => {
           exec = e;
           if (entry) entry.exec = e;
+          // cancellation may have been requested before executeTask resolved
+          if (cancelRequested) terminate();
           const hit = early.find(([x]) => x === e);
-          if (hit && !settled) {
-            settled = true;
-            sub.dispose();
-            this.building.delete(key);
-            resolve(hit[1]);
-          }
+          if (hit) finish(hit[1]);
         },
-        () => {
-          if (settled) return;
-          settled = true;
-          sub.dispose();
-          this.building.delete(key);
-          resolve(undefined);
-        }
+        () => finish(undefined)
       );
     });
   }

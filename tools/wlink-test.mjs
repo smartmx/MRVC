@@ -48,7 +48,7 @@ const ARGS = { chipId: 6, clkSpeed: 1, dbgMode: 0 };
   // MRSFunc_* spellings — every operation failed with "does not contain a
   // method named ..." before the DLL was reached. Invariant: every method the
   // script calls on [McuLink] must be declared in the SAME script.
-  for (const op of ['queryMcuId', 'queryRpt', 'enableRpt', 'disableRpt', 'disableDbg', 'clearCodeFlash', 'getMemType', 'setMemType']) {
+  for (const op of ['queryMcuId', 'queryRpt', 'enableRpt', 'disableRpt', 'disableDbg', 'clearCodeFlash', 'getMemType', 'setMemType', 'sdiPrint']) {
     const text = buildPsScript(COMM, op, { chipId: 6, clkSpeed: 1, dbgMode: 0, eraseMode: 0, memVal: 1 });
     const called = [...text.matchAll(/\[McuLink\]::(\w+)\(/g)].map((m) => m[1]);
     const declared = [...text.matchAll(/public static extern int (\w+)\(/g)].map((m) => m[1]);
@@ -62,6 +62,25 @@ const ARGS = { chipId: 6, clkSpeed: 1, dbgMode: 0 };
   check('clearCodeFlash: erase mode 0=pin / 1=power', buildPsScript(COMM, 'clearCodeFlash', { ...ARGS, eraseMode: 1 }).includes('ClearCodeFlash(6, 1, 1)'));
   check('setMemType: passes the select index', buildPsScript(COMM, 'setMemType', { ...ARGS, memVal: 3 }).includes('SetMemType(6, 1, 3)'));
   check('queryMcuId: runtime guard skips SetTargetChip', buildPsScript(COMM, 'queryMcuId', ARGS).includes("-ne 'queryMcuId'"));
+  {
+    // SDI Printf: MRS's own post-flash sequence, reduced to
+    // RESET(1)|SDIPrintf(16) — MRSFunc_FlashOperationExB(6, 1, 17, addr, hex).
+    // OpenDevice MUST come before SetTargetChip (the device has to be open
+    // for the vendor command); the generic SetTargetChip prelude is skipped.
+    const s = buildPsScript(COMM, 'sdiPrint', { ...ARGS, flashAddress: 0x08000000, flashPath: 'E:/prj/obj/LED.hex' });
+    const bodyStart = s.indexOf('[McuLink]::GetDeviceVersion(');
+    const targetInBody = s.indexOf('[McuLink]::SetTargetChip(6, 0)', bodyStart);
+    check(
+      'sdiPrint: OpenDevice -> GetDeviceVersion -> SetTargetChip -> FlashOperationExB(flags 0x11)',
+      s.indexOf('[McuLink]::OpenDevice()') >= 0 &&
+        s.indexOf('[McuLink]::OpenDevice()') < bodyStart &&
+        bodyStart < targetInBody &&
+        targetInBody < s.indexOf('[McuLink]::FlashOperationExB(6, 1, 17, 134217728, ', bodyStart) &&
+        s.includes(`'E:/prj/obj/LED.hex'`)
+    );
+    check('sdiPrint: generic SetTargetChip prelude excluded', s.includes("-ne 'sdiPrint'"));
+    check('sdiPrint: success = DLL return 0', s.includes('$r.ok = ($v -eq 0)'));
+  }
   {
     // review round2 §3: CompareVersion can throw — the init sequence must
     // close the device in a finally, mirroring the POSIX in-process path.
@@ -334,6 +353,74 @@ try {
     const k = fakeKoffi({ MRSFunc_DisableDbgInterface: 3 });
     const r = await runWlinkOpPosix(INS, 'disableDbg', ARGS7, k, 'linux');
     check('posix disableDbg: code 3 -> "does not support" wording', describeResult('disableDbg', r).includes('does not support'));
+  }
+
+  // 2b. sdiPrint (POSIX koffi): an independent device session, flags 0x11,
+  // CloseDevice in a finally. The Windows PS script is pinned separately above.
+  {
+    const k = fakeKoffi({
+      McuCompiler_OpenDevice: 0,
+      McuCompiler_GetDeviceVersion: 0,
+      McuCompiler_SetTargetChip: 0,
+      MRSFunc_FlashOperationExB: 0,
+      McuCompiler_CloseDevice: 0,
+    });
+    const r = await runWlinkOpPosix(
+      INS,
+      'sdiPrint',
+      { ...ARGS7, flashAddress: 0x08000000, flashPath: '/tmp/LED.hex' },
+      k,
+      'linux'
+    );
+    check('posix sdiPrint: success is FlashOperationExB return 0', r.ok === true && r.result === 0);
+    check(
+      'posix sdiPrint: Open -> GetDeviceVersion -> SetTargetChip -> FlashOperationExB(17) -> Close',
+      JSON.stringify(k.calls.map((c) => c[0])) ===
+        JSON.stringify([
+          'McuCompiler_OpenDevice',
+          'McuCompiler_GetDeviceVersion',
+          'McuCompiler_SetTargetChip',
+          'MRSFunc_FlashOperationExB',
+          'McuCompiler_CloseDevice',
+        ])
+    );
+    check(
+      'posix sdiPrint: flash args carry chip/clk/0x11/address/path',
+      JSON.stringify(k.calls.find((c) => c[0] === 'MRSFunc_FlashOperationExB').slice(1)) ===
+        JSON.stringify([7, 1, 17, 0x08000000, '/tmp/LED.hex'])
+    );
+    check('posix sdiPrint: no generic SetTargetChip prelude call', k.calls.filter((c) => c[0] === 'McuCompiler_SetTargetChip').length === 1);
+  }
+  {
+    const k = fakeKoffi({
+      McuCompiler_OpenDevice: 0,
+      McuCompiler_GetDeviceVersion: 0,
+      McuCompiler_SetTargetChip: 0,
+      MRSFunc_FlashOperationExB: 7,
+      McuCompiler_CloseDevice: 0,
+    });
+    const r = await runWlinkOpPosix(INS, 'sdiPrint', { ...ARGS7, flashAddress: 0x08000000, flashPath: '/tmp/LED.hex' }, k, 'linux');
+    check('posix sdiPrint: a non-zero DLL result is not success', r.ok === false && r.result === 7);
+  }
+  {
+    const k = fakeKoffi({
+      McuCompiler_OpenDevice: 0,
+      McuCompiler_GetDeviceVersion: 0,
+      McuCompiler_SetTargetChip: 0,
+      MRSFunc_FlashOperationExB: () => {
+        throw new Error('boom');
+      },
+      McuCompiler_CloseDevice: 0,
+    });
+    const r = await runWlinkOpPosix(INS, 'sdiPrint', { ...ARGS7, flashAddress: 0x08000000, flashPath: '/tmp/LED.hex' }, k, 'linux');
+    check('posix sdiPrint: a throwing export becomes an error result', r.ok === false && r.error === 'boom');
+    check('posix sdiPrint: CloseDevice still runs after a throw', k.calls.some((c) => c[0] === 'McuCompiler_CloseDevice'));
+  }
+  {
+    const k = fakeKoffi({ McuCompiler_OpenDevice: 3, McuCompiler_CloseDevice: 0 });
+    const r = await runWlinkOpPosix(INS, 'sdiPrint', { ...ARGS7, flashAddress: 0x08000000, flashPath: '/tmp/LED.hex' }, k, 'linux');
+    check('posix sdiPrint: OpenDevice failure is reported', r.ok === false && /OpenDevice failed/.test(r.error ?? ''));
+    check('posix sdiPrint: OpenDevice failure does not call CloseDevice', !k.calls.some((c) => c[0] === 'McuCompiler_CloseDevice'));
   }
 
   // 3. degradation paths

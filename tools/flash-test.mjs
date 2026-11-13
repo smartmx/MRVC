@@ -12,7 +12,8 @@ import { fileURLToPath } from 'url';
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DEVELOP_DIR = path.dirname(here); // .../develop
-const { prepareFlash, ADDRESS_RE } = require(path.join(DEVELOP_DIR, 'out', 'core', 'flash.js'));
+const { prepareFlash, ADDRESS_RE, transientOpenOcdFailure, openocdLogArgs } = require(path.join(DEVELOP_DIR, 'out', 'core', 'flash.js'));
+const { preparePowerPass, clampPowerOffDelay, powerPassVerdict } = require(path.join(DEVELOP_DIR, 'out', 'core', 'powerCycle.js'));
 const { scanChipDb, chipDbRoot, seriesForTemplate, chipForTemplate, chipTargetMismatch, guardLinkedChip } = require(path.join(DEVELOP_DIR, 'out', 'core', 'chipdb.js'));
 const { inferFlashAddress, hexBaseAddress, displayTargetPath } = require('../out/core/flash.js');
 const { encodingForAcp } = require('../out/core/platformEncoding.js');
@@ -39,7 +40,10 @@ const bsBase = { ...base, firmware: 'E:' + String.raw`\prj\obj with space\LED.he
 // 1. default plan (verify + reset)
 {
   const plan = prepareFlash(base);
-  check('args: board cfg first, script second', JSON.stringify(plan.args) === JSON.stringify(['-f', 'C:/MRS/wch-riscv.cfg', '-f', plan.scriptPath]));
+  check(
+    'args: board cfg first, script second (NO -l — the main download keeps its terminal progress)',
+    JSON.stringify(plan.args) === JSON.stringify(['-f', 'C:/MRS/wch-riscv.cfg', '-f', plan.scriptPath])
+  );
   check('script written into the build dir', path.dirname(plan.scriptPath) === path.resolve(scratch));
   const cfg = readCfg(scratch);
   const lines = cfg.split('\n').filter((l) => l.trim());
@@ -57,6 +61,59 @@ const bsBase = { ...base, firmware: 'E:' + String.raw`\prj\obj with space\LED.he
   check('backslash firmware path emitted as forward slashes', cfg.includes('program "E:/prj/obj with space/LED.hex"'));
   check('no backslash remains in the program line', !/program "[^"]*\\/.test(cfg));
   check('backslash case still carries the address offset', cfg.includes('0x00000000 verify reset exit'));
+}
+
+// 1.2 SDI Printf (0.3.0): the switch is NOT part of the flash script. MRS's
+// own mechanism is the native DLL reset+enable pass
+// (MRSFunc_FlashOperationExB with flags RESET|SDIPrintf = 0x11), run after
+// the OpenOCD download; OpenOCD's `sdi_printf` re-enumerates the link and
+// kills its session (real hardware 2026-11-12). The cfg must never contain
+// the line.
+{
+  fs.rmSync(scratch, { recursive: true, force: true });
+  prepareFlash({ ...base, sdiPrintf: true });
+  check('sdi: plain branch cfg has no sdi_printf line', !readCfg(scratch).includes('sdi_printf'));
+  fs.rmSync(scratch, { recursive: true, force: true });
+  prepareFlash({ ...base, sdiPrintf: true, eraseAll: true });
+  check('sdi: eraseAll branch cfg has no sdi_printf line', !readCfg(scratch).includes('sdi_printf'));
+}
+
+// 1.3 Power-off-reset download (0.3.0): the powerOn option puts the rail
+// switch back up as the FIRST script step of BOTH branches — config-time
+// execution, before wlink_set_address/init, so the chip is up when the
+// session opens (the off pass + delay de-energised it)
+{
+  fs.rmSync(scratch, { recursive: true, force: true });
+  prepareFlash({ ...base, powerOn: '3v3' });
+  let lines = readCfg(scratch).split('\n').filter((l) => l.trim());
+  check('power: rail-ON line first in the plain branch', lines[0] === 'pow3v3 on' && lines[1] === 'wlink_set_address 0x00000000');
+  fs.rmSync(scratch, { recursive: true, force: true });
+  prepareFlash({ ...base, powerOn: '5v', eraseAll: true });
+  lines = readCfg(scratch).split('\n').filter((l) => l.trim());
+  check('power: 5v rail-ON line first in the eraseAll branch', lines[0] === 'pow5v on' && lines[1] === 'wlink_set_address 0x00000000');
+  fs.rmSync(scratch, { recursive: true, force: true });
+  prepareFlash(base);
+  check('power: no rail line without the option', !readCfg(scratch).includes('pow3v3') && !readCfg(scratch).includes('pow5v'));
+}
+
+// 1.4 transient link-open failure classifier (0.3.0): the strings a
+// re-enumerating WCH-Link produces are retryable; script/target errors are
+// NOT (a download writes flash — blind retries on real errors are wrong)
+{
+  check('transient: wlink open error', transientOpenOcdFailure('Error: wlink open error!\n'));
+  check('transient: unknown wch-link', transientOpenOcdFailure('Info : unknown wch-link device found'));
+  check('transient: unable to open the USB device', transientOpenOcdFailure('Error: unable to open USB device'));
+  check('transient: case-insensitive WCH-Link', transientOpenOcdFailure('Couldn\u0027t open the WCH-Link'));
+  // tightened (round-10 P3-4): generic open verbs WITHOUT wch/usb/link context
+  // are deterministic file errors — never retried
+  check('not transient: config file open error', !transientOpenOcdFailure("couldn't open mrvc_flash.cfg"));
+  check('not transient: firmware file open error', !transientOpenOcdFailure('Could not open file missing.hex'));
+  check('not transient: target examination failure', !transientOpenOcdFailure('Error: target examination failed'));
+  // NOTE: an rvGcc-style over-broad classification is gone; the remaining
+  // known false-positive shape is a file whose NAME contains "link" —
+  // accepted (cost: ONE wasted retry on the internal passes).
+  check('not transient: invalid flash address', !transientOpenOcdFailure('Error: invalid address 0x00000000 for bank'));
+  check('not transient: empty log', !transientOpenOcdFailure(''));
 }
 
 // 2. verify/reset combinations

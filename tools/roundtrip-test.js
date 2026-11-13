@@ -46,6 +46,25 @@ const raw = fs.readFileSync(path.join(scratch, '.cproject'), 'utf-8');
 check('declaration preserved (leading blank lines kept as in the source)', /^\s*<\?xml/.test(raw));
 check('list values quoted', raw.includes('&quot;TEST_MACRO=1&quot;'));
 
+// --- enumerated options keep their value attr on clear (2026-11-12 damage) ---
+// CDT/MRS ALWAYS store a value attribute on enumerated options and MRS's
+// reader does value.match(...) UNGUARDED — the old clear path deleted the
+// attribute and MRS refused to OPEN the project at all (rvGcc in
+// TCP_SERVER/MACRAW/TCP_CLIENT, repaired 2026-11-12).
+{
+  const gccId = 'target.rvGcc';
+  const before = cp.optionValue(gccId); // set by the LED fixture (an rvGcc choice)
+  cp.setOptionValue(gccId, undefined); // legacy "project default"
+  check(
+    'enumerated clear KEEPS the value attribute (MRS reader crashes without it)',
+    cp.optionValue(gccId) === before && before !== undefined
+  );
+  // non-enumerated (boolean) options still clear to no attribute
+  cp.setOptionBool('warnings.allwarn', true, true);
+  cp.setOptionValue('warnings.allwarn', undefined);
+  check('non-enumerated clear still drops the attribute', cp.optionValue('warnings.allwarn') === undefined);
+}
+
 // --- linked folder round trip ---
 const target = path.join(path.dirname(LED_PROJ), 'SRC', 'RVMSIS');
 const link = addLinkedFolder(scratch, 'TestLink', target);

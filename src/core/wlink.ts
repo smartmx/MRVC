@@ -130,7 +130,13 @@ export type WlinkOp =
   | 'disableDbg'
   | 'clearCodeFlash'
   | 'getMemType'
-  | 'setMemType';
+  | 'setMemType'
+  /** reset the target with SDI printf enabled — MRS's own post-flash step
+   *  (MRSFunc_FlashOperationExB with flags RESET|SDIPrintf). Needed because
+   *  the link only forwards printf data after this vendor sequence; plain
+   *  SetSDIPrn or OpenOCD's sdi_printf leave the link in a state where the
+   *  next reset does not reach the CDC port. */
+  | 'sdiPrint';
 
 export interface WlinkArgs {
   /** chip id from the series flash.json */
@@ -146,6 +152,12 @@ export interface WlinkArgs {
   /** the install's wchlink.wcfg — required by the queryMcuId init sequence
    * (Windows transport; POSIX derives it from the install) */
   wcfgPath?: string;
+  /** sdiPrint: .template Address as a number (unused by the flag set but
+   *  required by the DLL signature) */
+  flashAddress?: number;
+  /** sdiPrint: resolved target file (unused by the flag set but required by
+   *  the DLL signature) */
+  flashPath?: string;
 }
 
 /**
@@ -178,6 +190,11 @@ public static class McuLink {
     decl('OpenDevice', 'McuCompiler_OpenDevice', '') +
     decl('CloseDevice', 'McuCompiler_CloseDevice', '') +
     decl('CompareVersion', 'McuCompiler_CompareVersion', 'string path, ref int a, ref int b') +
+    // sdiPrint only: MRSFunc_FlashOperationExB is the same entry MRS2's
+    // DownloadOperation binds; flags = RESET(1) | SDIPrintf(16) performs the
+    // one sequence the WCH link needs before it forwards SDI data.
+    decl('GetDeviceVersion', 'McuCompiler_GetDeviceVersion', 'ref int a, ref int b') +
+    decl('FlashOperationExB', 'MRSFunc_FlashOperationExB', 'int chipId, int clk, int flags, int address, string path') +
     `
 }
 '@;
@@ -218,7 +235,7 @@ export function buildPsScript(commLib: CommLib, op: WlinkOp, args: WlinkArgs): s
     psDeclarations() +
     `$r = @{op='${op}'};\n` +
     `try {\n` +
-    `  if ('${op}' -ne 'queryMcuId') { ` +
+    `  if ('${op}' -ne 'queryMcuId' -and '${op}' -ne 'sdiPrint') { ` +
     `[void][McuLink]::SetTargetChip(${chipId}, ${dbgMode}); }\n`;
   let body: string;
   switch (op) {
@@ -252,6 +269,25 @@ export function buildPsScript(commLib: CommLib, op: WlinkOp, args: WlinkArgs): s
     case 'setMemType': {
       const val = args.memVal ?? 0;
       body = `  $v = [McuLink]::SetMemType(${chipId}, ${clkSpeed}, ${val}); $r.result = $v; $r.ok = ($v -eq 0);\n`;
+      break;
+    }
+    case 'sdiPrint': {
+      // flags 0x11 = RESET | SDIPrintf: the DLL resets the target and leaves
+      // the link forwarding SDI printf. This is the minimal slice of MRS2's
+      // FlashOperationExB (program/verify/erase flags omitted) — the full
+      // call was verified on hardware to print the CH394Q boot banner.
+      const addr = args.flashAddress ?? 0;
+      const hexPath = String(args.flashPath ?? '').replace(/'/g, "''");
+      body =
+        `  if ([McuLink]::OpenDevice() -ne 0) { $r.error = 'McuCompiler_OpenDevice failed'; }\n` +
+        `  else {\n` +
+        `    try {\n` +
+        `      $ga = 0; $gb = 0; [void][McuLink]::GetDeviceVersion([ref]$ga, [ref]$gb);\n` +
+        `      [void][McuLink]::SetTargetChip(${chipId}, ${dbgMode});\n` +
+        `      $v = [McuLink]::FlashOperationExB(${chipId}, ${clkSpeed}, 17, ${addr}, '${hexPath}');\n` +
+        `      $r.result = $v; $r.ok = ($v -eq 0);\n` +
+        `    } finally { [void][McuLink]::CloseDevice(); }\n` +
+        `  }\n`;
       break;
     }
     default:
@@ -365,7 +401,9 @@ export async function runWlinkOpPosix(
     const ClearCodeFlash = bind('MRSFunc_ClearCodeFlash', 3);
     // same call sequence as the Windows P/Invoke script: SetTargetChip first
     // for everything except the raw chip-id query
-    if (op !== 'queryMcuId') SetTargetChip(args.chipId, args.dbgMode);
+    if (op !== 'queryMcuId' && op !== 'sdiPrint') {
+      SetTargetChip(args.chipId, args.dbgMode);
+    }
     let ok = false;
     let result: number | undefined;
     let initState: WlinkInitState | undefined;
@@ -433,6 +471,27 @@ export async function runWlinkOpPosix(
         result = SetMemType(args.chipId, args.clkSpeed, args.memVal ?? 0);
         ok = result === 0;
         break;
+      case 'sdiPrint': {
+        // MRS parity: the reset+SDI sequence needs its own device session,
+        // and SetTargetChip must run AFTER OpenDevice (unlike the config ops
+        // above, which are handed an already-open device by the caller).
+        const OpenDevice = bind('McuCompiler_OpenDevice', 0);
+        const CloseDevice = bind('McuCompiler_CloseDevice', 0);
+        const GetDeviceVersion = lib.func('McuCompiler_GetDeviceVersion', 'int', ['int *', 'int *']);
+        const FlashOperationExB = lib.func('MRSFunc_FlashOperationExB', 'int', ['int', 'int', 'int', 'int', 'string']);
+        if (OpenDevice() !== 0) {
+          return { op, ok: false, error: 'McuCompiler_OpenDevice failed' };
+        }
+        try {
+          GetDeviceVersion(Buffer.alloc(4), Buffer.alloc(4));
+          SetTargetChip(args.chipId, args.dbgMode);
+          result = FlashOperationExB(args.chipId, args.clkSpeed, 17, args.flashAddress ?? 0, args.flashPath ?? '');
+          ok = result === 0;
+        } finally {
+          CloseDevice();
+        }
+        break;
+      }
       default:
         throw new Error(`unknown wlink op: ${op}`);
     }
@@ -554,6 +613,20 @@ export function linkInfoFor(linkId: number): { name: string; chipType: string } 
     default:
       return { name: 'WCH-Link', chipType: 'CH549' };
   }
+}
+
+/**
+ * Does this link support power-OUTPUT control (the pow3v3/pow5v rail
+ * switching the power-off reset needs)? Per WCH's own manuals only
+ * WCH-LinkE / WCH-DAPLink / WCH-LinkW have it — the plain WCH-Link does not
+ * (its 3.3 V target feed is not switchable, and there is no 5 V rail at
+ * all). Unknown ids answer undefined: never guessed into either direction.
+ */
+export function linkSupportsPowerOutput(linkId: number | undefined): boolean | undefined {
+  if (linkId === undefined) return undefined;
+  if (linkId === 2 || linkId === 18 || linkId === 4 || linkId === 5 || linkId === 133) return true;
+  if (linkId === 0 || linkId === 1) return false;
+  return undefined;
 }
 
 /**
@@ -799,6 +872,8 @@ export function describeResult(op: WlinkOp, r: WlinkResult): string {
       return v >= 10 && v < 100 ? `Memory assign: group ${Math.floor(v / 10)}, option ${v % 10}` : `Memory assign query failed (code ${v})`;
     case 'setMemType':
       return r.ok ? 'Memory assign applied' : `Memory assign failed (code ${v})`;
+    case 'sdiPrint':
+      return r.ok ? 'SDI printf enabled (target reset)' : `SDI printf reset failed (code ${v})`;
     default:
       return `${op}: ${v}`;
   }

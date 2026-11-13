@@ -452,41 +452,61 @@ const last = () => messages[messages.length - 1];
       !!proj && fakeWatchers.some((w) => /obj/.test(w.pattern)),
       proj ? '' : ' — last message: ' + (messages[messages.length - 1]?.text ?? '(none)')
     );
-    let fires = 0;
-    store.onDidChange(() => fires++);
+    // scoped refresh contract (round19): watcher bumps NEVER fire the full
+    // store — they record the changed DIRECTORY and the tree re-reads only
+    // that node. Suspend folds dirs into the pending set; resume flushes
+    // them merged through the same debounced event.
+    const dirEvents = [];
+    store.onTreeDirsChanged((dirs) => dirEvents.push(dirs));
+    let fullFires = 0;
+    store.onDidChange(() => fullFires++);
     const outW = fakeWatchers.find((w) => w.pattern.includes('obj'));
+    const srcW = fakeWatchers.find((w) => /c,h,cpp/.test(w.pattern));
     const bumpObj = (name) => outW.handlers.change.forEach((fn) => fn({ fsPath: path.join(projRoot, 'obj', name) }));
+    const createSrc = (name) => srcW.handlers.create.forEach((fn) => fn({ fsPath: path.join(projRoot, 'src', name) }));
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-    // unsuspended: an obj write bumps -> 400ms debounce -> exactly one fire
+    const objDir = path.join(projRoot, 'obj');
+    const srcDir = path.join(projRoot, 'src');
+    // unsuspended: an obj write notes its dir -> 400ms debounce -> exactly
+    // one scoped event, and the full-store channel stays silent
     bumpObj('a.o');
     await wait(520);
-    const afterFree = fires;
-    check('watch: an unsuspended bump fires exactly once (debounced)', afterFree === 1);
+    check(
+      'watch: an unsuspended bump emits one scoped dir event (debounced)',
+      JSON.stringify(dirEvents) === JSON.stringify([[objDir]]) && fullFires === 0,
+      JSON.stringify(dirEvents)
+    );
     // round22 §5.5 negative probe: a bump whose debounce is ALREADY queued,
-    // followed immediately by suspend — the queued fire must be cancelled
+    // followed immediately by suspend — the queued flush must be cancelled
     bumpObj('pending.o');
     store.suspendTreeRefresh();
     await wait(520);
-    check('watch: a pre-suspension pending debounce stays suppressed', fires === afterFree);
-    // suspended: a whole build's worth of obj writes fires NOTHING
+    check('watch: a pre-suspension pending debounce stays suppressed', dirEvents.length === 1);
+    // suspended: a whole build's worth of obj writes emits NOTHING
     for (let i = 0; i < 5; i++) {
       bumpObj('b' + i + '.o');
       await wait(60);
     }
-    check('watch: suspended bumps fire nothing during the build', fires === afterFree);
-    // resume: catch-up refresh is DELAYED 1 s (coalesced with the task-end
-    // refresh that fires immediately in the real wiring)
+    createSrc('new.c'); // a source dir change folds into the same pending set
+    check('watch: suspended bumps emit nothing during the build', dirEvents.length === 1);
+    // resume: the flush is debounced, not immediate
     store.resumeTreeRefresh();
     await wait(120);
-    check('watch: resume does not fire immediately (coalesced)', fires === afterFree);
-    // round23 §5.1: the catch-up must SURVIVE a re-suspend (Build All: the
-    // catch-up window of member N overlaps member N+1's task start)
+    check('watch: resume does not flush immediately (debounced)', dirEvents.length === 1);
+    // round23 §5.1: dirs folded while suspended must SURVIVE a re-suspend
+    // (Build All: member N's flush window overlaps member N+1's task start)
     store.suspendTreeRefresh();
-    await wait(1100);
-    check('watch: catch-up scheduled before a re-suspend is not lost', fires === afterFree);
+    await wait(600);
+    check('watch: pending dirs folded across the re-suspend are not lost', dirEvents.length === 1);
     store.resumeTreeRefresh();
-    await wait(1200);
-    check('watch: catch-up preserved across the re-suspend fires once', fires === afterFree + 1);
+    await wait(600);
+    check(
+      'watch: resume flushes the merged dir set once (no full-tree fire)',
+      dirEvents.length === 2 &&
+        JSON.stringify(dirEvents[1].slice().sort()) === JSON.stringify([objDir, srcDir].sort()) &&
+        fullFires === 0,
+      JSON.stringify(dirEvents)
+    );
     // round2 §3: deleting .cproject (legality broken) turns the loaded
     // project into a zombie — the watcher's delete handler and Refresh must
     // both drop it (previously only .project deletion did)
@@ -495,6 +515,73 @@ const last = () => messages[messages.length - 1];
     projWatcher.handlers.delete.forEach((fn) => fn({ fsPath: path.join(projRoot, '.cproject') }));
     check('watch: deleting .cproject drops the zombie from the store', store.get(projRoot) === null || store.get(projRoot) === undefined);
     store.dispose();
+  }
+
+  // ============ 0.3.0-3: install probe cache + toolchain memo ============
+  {
+    setHostPlatformForTests('linux');
+    const projects = require('../out/vscode/projects.js');
+    // unique settings state -> exactly ONE selectInstall probe, then cache hits
+    settings['mrs2InstallPath'] = INST2;
+    settings['mrs3InstallPath'] = '';
+    settings['toolchainOnlyPath'] = '';
+    settings['mrsVersion'] = 'auto';
+    const before = projects.installProbeCountForTests();
+    const sel1 = projects.selectMrsInstall();
+    const after1 = projects.installProbeCountForTests();
+    check('cache: first selectMrsInstall probes once', !!sel1.install && after1 === before + 1);
+    const sel2 = projects.selectMrsInstall();
+    const sel3 = projects.selectMrsInstall();
+    check('cache: unchanged settings hit the cache (no re-probe)', sel2 === sel1 && sel3 === sel1 && projects.installProbeCountForTests() === after1);
+    // changing any key input re-probes exactly once, then caches again
+    settings['mrsVersion'] = 'mrs2';
+    const sel4 = projects.selectMrsInstall();
+    const after2 = projects.installProbeCountForTests();
+    check('cache: a settings change re-probes once', !!sel4.install && after2 === after1 + 1);
+    check('cache: still cached after the change', projects.selectMrsInstall() === sel4 && projects.installProbeCountForTests() === after2);
+
+    // toolchain memo (plain binaries — the arch gate stays quiet on linux)
+    const plainTc = (name, dirName, gccName) => {
+      const bin = inside(ROOT, 'memo-tc-' + dirName + '/bin');
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, gccName), '');
+      return {
+        name,
+        dir: path.dirname(bin),
+        compilerC: path.join(bin, gccName),
+        compilerCpp: '', linkerC: '', linkerCpp: '', debugger: '', objcopy: '', objdump: '', size: '',
+        prefix: gccName.replace(/gcc$/, ''),
+      };
+    };
+    const memoInst = {
+      root: inside(ROOT, 'memo-inst'), resourcesDir: '', kind: 'ide', components: '', makeBin: '',
+      openocdExe: '', openocdCfg: '', linkUtilityExe: '',
+      toolchains: [plainTc('GCC12', 'gcc12', 'riscv-wch-elf-gcc')],
+      flavor: 'mrs3', label: 'MounRiver Studio 3',
+    };
+    const { MrsProject } = require('../out/vscode/projects.js');
+    const projRoot = inside(ROOT, 'memo-proj');
+    fs.mkdirSync(projRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(projRoot, '.project'),
+      '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>memo-proj</name></projectDescription>'
+    );
+    fs.writeFileSync(
+      path.join(projRoot, '.cproject'),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="c" name="obj" artifactName="${ProjName}">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry flags="VALUE_WORKSPACE_PATH" name=""/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+    );
+    const memoProj = new MrsProject(projRoot);
+    const tcA = memoProj.toolchain(memoInst, 'auto');
+    const tcB = memoProj.toolchain(memoInst, 'auto');
+    check('memo: repeated toolchain() with the same inputs hits the memo', tcA !== null && tcA === tcB);
+    memoProj.expireToolchainMemo();
+    const tcC = memoProj.toolchain(memoInst, 'auto');
+    check('memo: expireToolchainMemo re-resolves to the same toolchain', tcC !== null && tcC.name === tcA.name);
+    const tcD = memoProj.toolchain(memoInst, 'GCC12');
+    // selectToolchain returns the install's own ToolchainInfo, so 'auto' and
+    // 'GCC12' converge on the same element — only the CONTENT can be asserted
+    check('memo: a different request resolves the same toolchain', tcD !== null && tcD.name === tcA.name);
+    check('memo: null-install inputs are memoized too', memoProj.toolchain(null, 'auto') === memoProj.toolchain(null, 'auto'));
   }
 
   setHostPlatformForTests(REAL_HOST);

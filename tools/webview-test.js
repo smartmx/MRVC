@@ -82,7 +82,17 @@ const vscodeStub = {
   FileDecoration: class {},
   ThemeColor: class {},
   QuickPickItemKind: { Separator: -1, Default: 0 },
-  EventEmitter: class { constructor() { this.event = undefined; } fire() {} dispose() {} },
+  EventEmitter: class {
+    constructor() {
+      this.listeners = [];
+      this.event = (cb) => {
+        this.listeners.push(cb);
+        return { dispose: () => { const i = this.listeners.indexOf(cb); if (i >= 0) this.listeners.splice(i, 1); } };
+      };
+    }
+    fire(v) { for (const cb of [...this.listeners]) cb(v); }
+    dispose() { this.listeners = []; }
+  },
   RelativePattern: class {},
   ViewColumn: { Active: 1 },
 };
@@ -94,6 +104,9 @@ Module._resolveFilename = function (request, ...args) {
 require.cache['vscode-stub'] = { id: 'vscode-stub', filename: 'vscode-stub', loaded: true, exports: vscodeStub };
 
 const { ConfigView } = require(path.join(__dirname, '..', 'out', 'vscode', 'configView.js'));
+
+// field metadata for the P3-2 assertions (literal path keeps static analysis quiet)
+const { FIELDS } = require('../out/vscode/configView.js');
 
 let failures = 0;
 const check = (name, cond) => {
@@ -122,6 +135,9 @@ const store = {
     projectName: 'LED<x>"</script>', // hostile name: injection probe
     projectDisplayName: 'LED<x>',
     buildDir: path.join(PROJ, 'obj'),
+    // resolveDownloadTarget() stats this path — a real MrsProject always
+    // returns a string (round-13 P3: the mock tripped a Node DEP0187 warning)
+    hexPath: path.join(PROJ, 'obj', 'LED.hex'),
     kernel: undefined,
     template: realTpl,
     cproject: realCp,
@@ -139,6 +155,15 @@ await view.show(store.active);
   const html = stubPanel.webview.html;
   check('HTML rendered (non-empty)', html.length > 5000);
   check('panel title set', stubPanel.title.includes('LED'));
+  // round-11 P3-2: 'default' must only exist where CDT defines it as a real
+  // enumerated choice (align / debugging.level / debugging.format) — the
+  // phantom entries on cpp std / abi version made "Default" a silent no-op
+  {
+    const keys = (k) => ((FIELDS.find((f) => f.key === k) || {}).options || []).map(([v]) => v);
+    check('fields: cpp std exposes the real gnucpp11 choice, no phantom default', keys('cppstd').includes('gnucpp11') && !keys('cppstd').includes('default'));
+    check('fields: cpp abi version uses 0 as its default, no phantom default', keys('cppabi').includes('0') && !keys('cppabi').includes('default'));
+    check('fields: real default choices kept (align / debug level / debug format)', keys('align').includes('default') && keys('dbglevel').includes('default') && keys('dbgformat').includes('default'));
+  }
   check('CSP meta present', html.includes("http-equiv=\"Content-Security-Policy\""));
   check('hostile project name escaped in PROJ_NAME (no </script> leak)', !/>const PROJ_NAME = \"LED<x>\"<\/script>/.test(html) || html.includes('\\u003C'));
   // nonce policy: script-src must not allow 'unsafe-inline' (style-src may),
@@ -177,6 +202,80 @@ await view.show(store.active);
     'apply: chip/dl address inputs locked in lockstep (no rollback)',
     scripts.some((s) => s.includes("getElementById('dl-address')") && s.includes('[data-key="address"]') && s.includes("addEventListener('input'"))
   );
+
+  // ---- collectDl must scope to the PAGE, not the nav item ----
+  // nav items also carry data-page and precede #content in the document;
+  // the bare '[data-page="dlset"]' selector resolved to the nav div, every
+  // checkbox lookup missed, and Apply persisted ALL boxes as false while
+  // still reporting "Saved" (user report 2026-11-12). The behavioral probe
+  // below runs the REAL emitted collectDl against a document whose nav item
+  // shadows the page: only the '.page'-qualified selector can find the boxes.
+  {
+    const main = scripts.find((s) => s.includes('function collectDl'));
+    // checkbox keys ONLY, from the markup (not the script text): select and
+    // text inputs also carry data-dlkey, and collectDl's own selector literal
+    // would match the naive regex
+    const dlKeys = [
+      ...html.replace(/<script[^>]*>[\s\S]*?<\/script>/g, '').matchAll(/<input type="checkbox" data-dlkey="([^"]+)"/g),
+    ].map((m) => m[1]);
+    check('collectDl: page-qualified selector emitted', !!main && main.includes(".page[data-page=\"dlset\"]"));
+    // extract exactly the collectDl function (balanced braces) and run it
+    let fn = '';
+    if (main) {
+      const start = main.indexOf('function collectDl');
+      const open = main.indexOf('{', start);
+      let depth = 0, inStr = '';
+      for (let i = open; i < main.length; i++) {
+        const ch = main[i];
+        if (inStr) {
+          if (ch === inStr && main[i - 1] !== '\\') inStr = '';
+          continue;
+        }
+        if (ch === "'" || ch === '"') inStr = ch;
+        else if (ch === '{') depth++;
+        else if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            fn = main.slice(start, i + 1);
+            break;
+          }
+        }
+      }
+    }
+    if (fn && dlKeys.length) {
+      // user checked every box on the page
+      const checkedSet = new Set(dlKeys);
+      const navItem = { querySelector: () => null }; // the nav subtree has no inputs
+      const page = {
+        querySelector: (sel) => {
+          const m = String(sel).match(/\[data-dlkey="([^"]+)"\]/);
+          return m && checkedSet.has(m[1]) ? { checked: true } : null;
+        },
+      };
+      const doc = {
+        querySelector: (sel) =>
+          sel === '.page[data-page="dlset"]' ? page : sel === '[data-page="dlset"]' ? navItem : null,
+      };
+      let dl = null;
+      try {
+        dl = new Function('document', 'dlEl', fn + '\n;return collectDl();')(doc, () => ({ value: '' }));
+      } catch (e) {
+        check('collectDl: runs against the emitted page (no throw)', false);
+        console.log('   error:', e.message);
+      }
+      const okKeys = !!dl && dlKeys.length === 8 && dlKeys.every((k) => dl[k] === 'true');
+      check(
+        `collectDl: nav shadow does not swallow the page — all checked boxes report true`,
+        okKeys
+      );
+      if (!okKeys) {
+        console.log('   dl =', JSON.stringify(dl));
+        console.log('   dlKeys =', JSON.stringify(dlKeys));
+      }
+    } else {
+      check('collectDl: extracted from the emitted script with dl keys present', false);
+    }
+  }
 
   // ---- cross-page macro conflict detection ----
   const { macroConflicts } = require(path.join(__dirname, '..', 'out', 'vscode', 'configView.js'));
@@ -525,6 +624,271 @@ await view.show(store.active);
     }
     fs.rmSync(mscratch1, { recursive: true, force: true });
     fs.rmSync(mscratch2, { recursive: true, force: true });
+
+    // ---- properties Apply: 'default' on a REAL enum choice (round-11 P3-2) ----
+    // the handler used to map 'default' to setOptionValue(undefined), which
+    // keeps an enumerated value attribute by design — switching a stored
+    // non-default choice back to Default was a silent no-op
+    {
+      const scratchA = path.join(__dirname, '..', '.scratch', 'apply-default');
+      fs.rmSync(scratchA, { recursive: true, force: true });
+      fs.cpSync(PROJ, scratchA, { recursive: true });
+      const projA = {
+        root: scratchA,
+        projectName: 'LED',
+        projectDisplayName: 'LED',
+        buildDir: path.join(scratchA, 'obj'),
+        hexPath: path.join(scratchA, 'obj', 'LED.hex'),
+        kernel: undefined,
+        template: readTemplate(scratchA),
+        cproject: Cproject.load(scratchA),
+        projectFile: readProjectFile(scratchA),
+        toolchain: () => null,
+        logicPathOf: () => undefined,
+        reload() {},
+      };
+      const handlersA = [];
+      const panelA = {
+        html: '',
+        title: '',
+        reveal() {},
+        dispose() {},
+        onDidDispose() { return { dispose() {} }; },
+        webview: {
+          onDidReceiveMessage(h) { handlersA.push(h); return { dispose() {} }; },
+          postMessage() { return Promise.resolve(true); },
+        },
+      };
+      const savedCreate = vscodeStub.window.createWebviewPanel;
+      vscodeStub.window.createWebviewPanel = () => panelA;
+      const viewA = new ConfigView({ active: projA, all: [] }, ctx);
+      await viewA.show(projA);
+      vscodeStub.window.createWebviewPanel = savedCreate;
+      const ENUM = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.target.align.';
+      for (const h of handlersA) h({ command: 'save', values: { align: 'strict' } });
+      await new Promise((r) => setTimeout(r, 300));
+      check('apply: non-default enum written (align=strict)', Cproject.load(scratchA).optionValue('target.align') === ENUM + 'strict');
+      for (const h of handlersA) h({ command: 'save', values: { align: 'default' } });
+      await new Promise((r) => setTimeout(r, 300));
+      check(
+        "apply: switching back to 'default' writes the REAL enum value (no silent clear)",
+        Cproject.load(scratchA).optionValue('target.align') === ENUM + 'default'
+      );
+      fs.rmSync(scratchA, { recursive: true, force: true });
+    }
+
+    // ---- unknown enum choices are echoed back, never replaced (round-11
+    // follow-up to the P1 incident: a stored value our list does not know
+    // must not be silently overwritten by the <select>'s first entry) ----
+    {
+      const scratchC = path.join(__dirname, '..', '.scratch', 'apply-unknown-enum');
+      fs.rmSync(scratchC, { recursive: true, force: true });
+      fs.cpSync(PROJ, scratchC, { recursive: true });
+      const ENUM = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.target.align.';
+      const seeded = Cproject.load(scratchC);
+      seeded.setOptionValue('target.align', ENUM + 'futurechoice');
+      seeded.save();
+      const projC = {
+        root: scratchC,
+        projectName: 'LED',
+        projectDisplayName: 'LED',
+        buildDir: path.join(scratchC, 'obj'),
+        hexPath: path.join(scratchC, 'obj', 'LED.hex'),
+        kernel: undefined,
+        template: readTemplate(scratchC),
+        cproject: Cproject.load(scratchC),
+        projectFile: readProjectFile(scratchC),
+        toolchain: () => null,
+        logicPathOf: () => undefined,
+        reload() {},
+      };
+      const handlersC = [];
+      const panelC = {
+        html: '',
+        title: '',
+        reveal() {},
+        dispose() {},
+        onDidDispose() { return { dispose() {} }; },
+        webview: {
+          onDidReceiveMessage(h) { handlersC.push(h); return { dispose() {} }; },
+          postMessage() { return Promise.resolve(true); },
+        },
+      };
+      const savedCreate2 = vscodeStub.window.createWebviewPanel;
+      vscodeStub.window.createWebviewPanel = () => panelC;
+      const viewC = new ConfigView({ active: projC, all: [] }, ctx);
+      await viewC.show(projC);
+      vscodeStub.window.createWebviewPanel = savedCreate2;
+      check('unknown enum: rendered as a selected "(current)" option', /<option value="futurechoice" selected>\(current\) futurechoice<\/option>/.test(panelC.webview.html));
+      for (const h of handlersC) h({ command: 'save', values: { align: 'futurechoice' } });
+      await new Promise((r) => setTimeout(r, 300));
+      check('unknown enum: Apply echoes it back unchanged', Cproject.load(scratchC).optionValue('target.align') === ENUM + 'futurechoice');
+      fs.rmSync(scratchC, { recursive: true, force: true });
+    }
+
+    // ---- Apply with NOTHING edited must leave .cproject byte-identical ----
+    // (the diff baseline: the handler writes only fields whose posted value
+    // differs from what the page rendered)
+    {
+      const scratchD = path.join(__dirname, '..', '.scratch', 'apply-noop');
+      fs.rmSync(scratchD, { recursive: true, force: true });
+      fs.cpSync(PROJ, scratchD, { recursive: true });
+      const cpFile = path.join(scratchD, '.cproject');
+      const before = fs.readFileSync(cpFile);
+      const projD = {
+        root: scratchD,
+        projectName: 'LED',
+        projectDisplayName: 'LED',
+        buildDir: path.join(scratchD, 'obj'),
+        hexPath: path.join(scratchD, 'obj', 'LED.hex'),
+        kernel: undefined,
+        template: readTemplate(scratchD),
+        cproject: Cproject.load(scratchD),
+        projectFile: readProjectFile(scratchD),
+        toolchain: () => null,
+        logicPathOf: () => undefined,
+        reload() {},
+      };
+      const handlersD = [];
+      const panelD = {
+        html: '',
+        title: '',
+        reveal() {},
+        dispose() {},
+        onDidDispose() { return { dispose() {} }; },
+        webview: {
+          onDidReceiveMessage(h) { handlersD.push(h); return { dispose() {} }; },
+          postMessage() { return Promise.resolve(true); },
+        },
+      };
+      const savedCreate3 = vscodeStub.window.createWebviewPanel;
+      vscodeStub.window.createWebviewPanel = () => panelD;
+      const viewD = new ConfigView({ active: projD, all: [] }, ctx);
+      await viewD.show(projD);
+      vscodeStub.window.createWebviewPanel = savedCreate3;
+      // every control posts back the value it rendered — exactly what the
+      // page does when the user clicks Apply without editing anything
+      const untouched = Object.fromEntries(viewD.initial);
+      check('apply noop: snapshot covers the whole form', Object.keys(untouched).length > 100);
+      for (const h of handlersD) h({ command: 'save', values: untouched });
+      await new Promise((r) => setTimeout(r, 300));
+      const after = fs.readFileSync(cpFile);
+      check('apply noop: no-edit Apply leaves .cproject byte-identical', before.equals(after));
+      fs.rmSync(scratchD, { recursive: true, force: true });
+    }
+
+    // ---- Apply refuses a structurally damaged .cproject (pre-write gate) ----
+    // the lenient parser can read it, a strict one cannot — rewriting it would
+    // cement the damage, so the gate must abort BEFORE any write
+    {
+      const scratchE = path.join(__dirname, '..', '.scratch', 'apply-broken-xml');
+      fs.rmSync(scratchE, { recursive: true, force: true });
+      fs.cpSync(PROJ, scratchE, { recursive: true });
+      const cpFileE = path.join(scratchE, '.cproject');
+      fs.appendFileSync(cpFileE, '\nGARBAGE AFTER ROOT\n');
+      const beforeE = fs.readFileSync(cpFileE);
+      const projE = {
+        root: scratchE,
+        projectName: 'LED',
+        projectDisplayName: 'LED',
+        buildDir: path.join(scratchE, 'obj'),
+        hexPath: path.join(scratchE, 'obj', 'LED.hex'),
+        kernel: undefined,
+        template: readTemplate(scratchE),
+        cproject: Cproject.load(scratchE),
+        projectFile: readProjectFile(scratchE),
+        toolchain: () => null,
+        logicPathOf: () => undefined,
+        reload() {},
+      };
+      const handlersE = [];
+      const panelE = {
+        html: '',
+        title: '',
+        reveal() {},
+        dispose() {},
+        onDidDispose() { return { dispose() {} }; },
+        webview: {
+          onDidReceiveMessage(h) { handlersE.push(h); return { dispose() {} }; },
+          postMessage() { return Promise.resolve(true); },
+        },
+      };
+      const savedCreateE = vscodeStub.window.createWebviewPanel;
+      vscodeStub.window.createWebviewPanel = () => panelE;
+      const viewE = new ConfigView({ active: projE, all: [] }, ctx);
+      await viewE.show(projE);
+      vscodeStub.window.createWebviewPanel = savedCreateE;
+      const savedErr = vscodeStub.window.showErrorMessage;
+      let errorMsgE = '';
+      vscodeStub.window.showErrorMessage = (msg) => {
+        errorMsgE = String(msg);
+      };
+      for (const h of handlersE) h({ command: 'save', values: { align: 'strict' } });
+      await new Promise((r) => setTimeout(r, 300));
+      vscodeStub.window.showErrorMessage = savedErr;
+      check('apply gate: damaged .cproject refused before any write', /damaged/.test(errorMsgE) && fs.readFileSync(cpFileE).equals(beforeE));
+      // second corruption shape: an XML LEXICAL error (bare & in character
+      // data) — the same gate must refuse it (round-13 P2)
+      fs.writeFileSync(cpFileE, fs.readFileSync(cpFileE, 'utf-8').replace('</cconfiguration>', 'AT&T</cconfiguration>'));
+      const beforeE2 = fs.readFileSync(cpFileE);
+      errorMsgE = '';
+      vscodeStub.window.showErrorMessage = (msg) => {
+        errorMsgE = String(msg);
+      };
+      for (const h of handlersE) h({ command: 'save', values: { align: 'strict' } });
+      await new Promise((r) => setTimeout(r, 300));
+      vscodeStub.window.showErrorMessage = savedErr;
+      check(
+        'apply gate: XML lexical error (bare &) refused before any write',
+        /damaged/.test(errorMsgE) && fs.readFileSync(cpFileE).equals(beforeE2)
+      );
+      // third corruption shape: an invalid XML character reference (&#0;) —
+      // round-14 P2; the shape is a legal reference, the CODE POINT is not
+      fs.writeFileSync(cpFileE, fs.readFileSync(cpFileE, 'utf-8').replace('</cconfiguration>', '&#0;</cconfiguration>'));
+      const beforeE3 = fs.readFileSync(cpFileE);
+      errorMsgE = '';
+      vscodeStub.window.showErrorMessage = (msg) => {
+        errorMsgE = String(msg);
+      };
+      for (const h of handlersE) h({ command: 'save', values: { align: 'strict' } });
+      await new Promise((r) => setTimeout(r, 300));
+      vscodeStub.window.showErrorMessage = savedErr;
+      check(
+        'apply gate: invalid character reference refused before any write',
+        /damaged/.test(errorMsgE) && fs.readFileSync(cpFileE).equals(beforeE3)
+      );
+      // fourth corruption shape: invalid UTF-8 bytes — a text-level read
+      // would show U+FFFD and pass, the fatal decode must refuse (round-14 P2)
+      const bytesE = fs.readFileSync(cpFileE);
+      const atE = bytesE.indexOf(Buffer.from('<cconfiguration'));
+      fs.writeFileSync(cpFileE, Buffer.concat([bytesE.subarray(0, atE), Buffer.from([0x80]), bytesE.subarray(atE)]));
+      const beforeE4 = fs.readFileSync(cpFileE);
+      errorMsgE = '';
+      vscodeStub.window.showErrorMessage = (msg) => {
+        errorMsgE = String(msg);
+      };
+      for (const h of handlersE) h({ command: 'save', values: { align: 'strict' } });
+      await new Promise((r) => setTimeout(r, 300));
+      vscodeStub.window.showErrorMessage = savedErr;
+      check(
+        'apply gate: invalid UTF-8 refused before any write',
+        /damaged/.test(errorMsgE) && fs.readFileSync(cpFileE).equals(beforeE4)
+      );
+      fs.rmSync(scratchE, { recursive: true, force: true });
+    }
+
+    // ---- project store: the Refresh button re-renders unchanged workspaces ----
+    // (user report 2026-11-12: files deleted inside a project stayed in the
+    // tree — discovery fires nothing when the project SET is unchanged)
+    {
+      const { ProjectStore } = require('../out/vscode/projects.js');
+      const storeR = new ProjectStore({ subscriptions: [] });
+      let fired = 0;
+      storeR.onDidChange(() => fired++);
+      await storeR.refreshWorkspace();
+      check('refresh: an unchanged workspace still fires a view refresh', fired >= 1);
+      storeR.dispose();
+    }
 
     fs.rmSync(scratch2, { recursive: true, force: true });
     console.log(failures ? `\n${failures} FAILURES` : '\nwebview render verification passed');

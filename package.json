@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "Unofficial, independent project — not developed or supported by WCH or MounRiver. MRVC opens, configures and builds MounRiver (MRS) projects for WCH MCUs directly in VSCode; for development and debugging use.",
-  "version": "0.2.9",
+  "version": "0.3.0",
   "publisher": "smartmx",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -209,6 +209,48 @@
           "description": "Reset target after download.",
           "order": 8
         },
+        "mrvc.sdiPrint.port": {
+          "type": "string",
+          "default": "",
+          "description": "WCH-Link serial port for the SDI PRINT monitor (e.g. COM5). Empty = auto-detect the VID_1A86/PID_8010 CDC port (\"WCH-Link SERIAL\"); board-level CH343/CH340 USB-serial ports are never auto-picked.",
+          "order": 9
+        },
+        "mrvc.sdiPrint.baud": {
+          "type": "number",
+          "default": 115200,
+          "description": "Baud rate the monitor opens the port with (the SDI printf stream itself is baud-independent; this is the port-open parameter).",
+          "order": 10
+        },
+        "mrvc.flash.resetMode": {
+          "type": "string",
+          "enum": ["nrst", "powerOff"],
+          "enumDescriptions": [
+            "Reset through the NRST pin (default).",
+            "Power-off reset: de-energise the target through the WCH-Link's power rail before the download, then let the download session switch it back on. The only reset path for chips whose NRST pin is repurposed by the 1/2-wire debug interface."
+          ],
+          "default": "nrst",
+          "description": "Reset mode for downloads (and the Power-Off Reset command): NRST pin, or the WCH-Link power rail (pow3v3/pow5v power cycle).",
+          "order": 11
+        },
+        "mrvc.flash.powerOutput": {
+          "type": "string",
+          "enum": ["3v3", "5v"],
+          "enumDescriptions": [
+            "3.3 V rail (default).",
+            "5 V rail."
+          ],
+          "default": "3v3",
+          "description": "Voltage the WCH-Link feeds the target with during a power-off reset (both rails share one power state — only the actually-fed rail is switched).",
+          "order": 12
+        },
+        "mrvc.flash.powerOffDelayMs": {
+          "type": "number",
+          "default": 100,
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "How long to keep the target de-energised between the power-off pass and the power-up (download or reset command), in milliseconds.",
+          "order": 13
+        },
         "mrvc.solution": {
           "type": "string",
           "default": "",
@@ -230,6 +272,11 @@
         {
           "id": "mrvc.projectExplorer",
           "name": "Project Explorer",
+          "when": "true"
+        },
+        {
+          "id": "mrvc.info",
+          "name": "Info",
           "when": "true"
         }
       ]
@@ -375,6 +422,21 @@
         "category": "MRVC"
       },
       {
+        "command": "mrvc.openWithMrs",
+        "title": "%command.mrvc.openWithMrs.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.powerOffReset",
+        "title": "%command.mrvc.powerOffReset.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.auditProject",
+        "title": "%command.mrvc.auditProject.title%",
+        "category": "MRVC"
+      },
+      {
         "command": "mrvc.syncProjectName",
         "title": "%command.mrvc.syncProjectName.title%",
         "category": "MRVC"
@@ -422,6 +484,16 @@
       {
         "command": "mrvc.wchToolKit",
         "title": "%command.mrvc.wchToolKit.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.sdiPrintMonitor",
+        "title": "%command.mrvc.sdiPrintMonitor.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.sdiPrintStop",
+        "title": "%command.mrvc.sdiPrintStop.title%",
         "category": "MRVC"
       },
       {
@@ -684,6 +756,11 @@
           "command": "mrvc.wchToolKit",
           "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.mrs3Active",
           "group": "5_tools@7"
+        },
+        {
+          "command": "mrvc.sdiPrintMonitor",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
+          "group": "5_tools@8"
         },
         {
           "command": "mrvc.createProject",
@@ -1091,6 +1168,21 @@
           "command": "mrvc.showCallAnalysis",
           "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@13"
+        },
+        {
+          "command": "mrvc.openWithMrs",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
+          "group": "1_project@14"
+        },
+        {
+          "command": "mrvc.powerOffReset",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
+          "group": "1_project@15"
+        },
+        {
+          "command": "mrvc.auditProject",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
+          "group": "1_project@16"
         },
         {
           "command": "mrvc.changeLinkedFolder",

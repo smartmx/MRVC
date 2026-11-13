@@ -26,6 +26,21 @@ export class TreeNode extends vscode.TreeItem {
     super(label, collapsibleState);
     this.contextValue = nodeType;
   }
+
+  /** copy the mutable TreeItem surface from a freshly computed twin. The
+   *  provider keeps ONE object identity per tree slot (see nodeCache) so a
+   *  scoped onDidChangeTreeData(el) fire reaches VSCode; the content itself
+   *  is recomputed on every render and merged into the cached instance. */
+  updateFrom(fresh: TreeNode): void {
+    this.label = fresh.label;
+    this.collapsibleState = fresh.collapsibleState;
+    this.contextValue = fresh.contextValue;
+    this.description = fresh.description;
+    this.tooltip = fresh.tooltip;
+    this.iconPath = fresh.iconPath;
+    this.command = fresh.command;
+    this.resourceUri = fresh.resourceUri;
+  }
 }
 
 /**
@@ -135,6 +150,23 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   /** lowercased project names shared by more than one loaded project */
   private duplicateNames: Set<string> = new Set();
 
+  /** ONE TreeNode identity per tree slot. getChildren recomputes content on
+   *  every render, but scoped refreshes (onTreeDirsChanged) fire cached
+   *  instances — VSCode matches fired elements by identity, so a fresh twin
+   *  would silently miss. Keyed by project|nodeType|fsPath|linkedName. */
+  private readonly nodeCache = new Map<string, TreeNode>();
+  /** fsPath → nodes at that path (a shared linked folder appears under
+   *  several projects) — the scoped-refresh lookup index */
+  private readonly nodesByPath = new Map<string, Set<TreeNode>>();
+  /** last-rendered child nodes per expanded parent — lets recordChildren
+   *  prune leaf identities that vanished (deleted/renamed/cleaned obj) so
+   *  long sessions don't accumulate stale TreeNodes (round20 P3) */
+  private readonly childrenByParent = new Map<TreeNode, Set<TreeNode>>();
+  /** last-rendered child fsPaths per expanded parent — lets a scoped refresh
+   *  detect "the parent's list is missing a directory that now exists"
+   *  (deleted-then-recreated obj) without re-rendering it on every event */
+  private readonly renderedChildren = new Map<TreeNode, Set<string>>();
+
   /** MRS2-original tree icons (media/), same art the MRS2 explorer uses */
   private readonly icons: { project: vscode.Uri; solution: vscode.Uri };
 
@@ -150,12 +182,156 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         counts.set(key, (counts.get(key) ?? 0) + 1);
       }
       this.duplicateNames = new Set([...counts.entries()].filter(([, n]) => n > 1).map(([k]) => k));
+      // drop cached identities of projects that are gone (removed / renamed)
+      // and of solutions that are gone (closed / re-added with a fresh object
+      // — a remove→add must NOT keep rendering the old member list, round20 P2)
+      const validRoots = new Set(store.all.map((p) => ProjectStore.key(p.root)));
+      const validSolFiles = new Set(store.solutionList.map((s) => MrsSolution.key(s.file)));
+      for (const [key, el] of this.nodeCache) {
+        const projectGone = !!el.project && !validRoots.has(ProjectStore.key(el.project.root));
+        const solutionGone = !!el.solution && !validSolFiles.has(MrsSolution.key(el.solution.file));
+        if (projectGone || solutionGone) {
+          this.nodeCache.delete(key);
+          this.renderedChildren.delete(el);
+          this.childrenByParent.delete(el);
+          if (el.fsPath) this.unindexNode(el);
+        }
+      }
       this.refresh();
     });
+    // watcher-scoped refreshes: only the nodes at the changed directories
+    store.onTreeDirsChanged?.((dirs) => this.refreshDirs(dirs));
+  }
+
+  private static nodeKey(el: TreeNode): string {
+    const proj = el.project ? ProjectStore.key(el.project.root) : '';
+    // solution identity rides on the .wvsln FILE: two solutions may share a
+    // directory, and a remove→add reuses the path but must be a fresh node
+    const sol = el.solution ? MrsSolution.key(el.solution.file) : '';
+    return `${proj}|${el.nodeType}|${el.fsPath ?? ''}|${el.linkedName ?? ''}|${sol}`;
+  }
+
+  /** return the cached identity for this tree slot, merging the freshly
+   *  computed content into it (or registering the fresh node on first render) */
+  private cached<T extends TreeNode>(fresh: T): T {
+    const key = ProjectTreeProvider.nodeKey(fresh);
+    const hit = this.nodeCache.get(key);
+    if (!hit || hit === fresh) {
+      this.nodeCache.set(key, fresh);
+      if (fresh.fsPath) {
+        const pathKey = ProjectStore.key(fresh.fsPath);
+        const set = this.nodesByPath.get(pathKey) ?? new Set<TreeNode>();
+        set.add(fresh);
+        this.nodesByPath.set(pathKey, set);
+      }
+      return fresh;
+    }
+    hit.updateFrom(fresh);
+    return hit as T;
+  }
+
+  private unindexNode(el: TreeNode): void {
+    if (!el.fsPath) return;
+    const pathKey = ProjectStore.key(el.fsPath);
+    const set = this.nodesByPath.get(pathKey);
+    if (!set) return;
+    set.delete(el);
+    if (!set.size) this.nodesByPath.delete(pathKey);
   }
 
   refresh(): void {
     this._onDidChange.fire(undefined);
+  }
+
+  /** scoped refresh: re-read ONLY the tree nodes at these paths — a watcher
+   *  saw a file appear/disappear in that directory, or the build output dir
+   *  changed. Nodes VSCode has never rendered have no cached identity and
+   *  need no refresh: they fetch fresh children when expanded. Two extra
+   *  cases keep the tree correct without a full fire:
+   *  - the directory EXISTS but has no rendered node yet (first-time obj/,
+   *    a freshly created source dir): fire the nearest cached ANCESTOR so
+   *    the new row appears in its parent's children (round19 P2);
+   *  - a fired node's own directory no longer exists (obj deleted, folder
+   *    removed): also fire its parent so the stale row disappears. */
+  refreshDirs(dirs: string[]): void {
+    const fired = new Set<TreeNode>();
+    for (const dir of dirs) {
+      const exists = fs.existsSync(dir);
+      const dirKey = ProjectStore.key(dir);
+      const set = this.nodesByPath.get(dirKey);
+      if (set && set.size) {
+        for (const el of set) fired.add(el);
+        if (exists) {
+          // the row may be missing from a parent rendered BEFORE the dir
+          // reappeared (deleted-then-recreated obj): fire the parents whose
+          // last render did not include it — never on every event
+          const parents = this.nodesByPath.get(ProjectStore.key(path.dirname(dir)));
+          if (parents) {
+            for (const p of parents) {
+              const rendered = this.renderedChildren.get(p);
+              if (rendered && !rendered.has(dirKey)) fired.add(p);
+            }
+          }
+        }
+      } else if (exists) {
+        // no node rendered at this path yet (first-time obj, a freshly
+        // created source dir): fire the nearest cached ANCESTOR so the new
+        // row appears in its parent's children (round19 P2)
+        let cur = dir;
+        for (;;) {
+          const parent = path.dirname(cur);
+          if (parent === cur) break;
+          cur = parent;
+          const parentSet = this.nodesByPath.get(ProjectStore.key(cur));
+          if (parentSet && parentSet.size) {
+            for (const el of parentSet) fired.add(el);
+            break;
+          }
+        }
+      }
+    }
+    for (const el of fired) {
+      this._onDidChange.fire(el);
+      if (el.fsPath && !fs.existsSync(el.fsPath)) {
+        const parentSet = this.nodesByPath.get(ProjectStore.key(path.dirname(el.fsPath)));
+        if (parentSet) {
+          for (const p of parentSet) {
+            if (!fired.has(p)) {
+              fired.add(p);
+              this._onDidChange.fire(p);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /** remember which child nodes/paths a parent's last render contained.
+   *  The node set drives leaf-cache pruning (a child absent from the new
+   *  render has vanished — its TreeNode identity is dropped); the path set
+   *  lets scoped refresh detect "the parent is missing a directory that
+   *  now exists" (deleted-then-recreated obj). */
+  private recordChildren(parent: TreeNode, nodes: TreeNode[]): TreeNode[] {
+    const next = new Set(nodes);
+    const prev = this.childrenByParent.get(parent);
+    if (prev) {
+      for (const old of prev) {
+        if (next.has(old)) continue;
+        // leaf vanished (deleted / renamed / build artifact cleaned): drop
+        // its cache identity so long sessions don't accumulate stale nodes
+        const key = ProjectTreeProvider.nodeKey(old);
+        if (this.nodeCache.get(key) === old) this.nodeCache.delete(key);
+        this.renderedChildren.delete(old);
+        this.unindexNode(old);
+      }
+    }
+    this.childrenByParent.set(parent, next);
+    const paths = new Set<string>();
+    for (const n of nodes) {
+      if (n.fsPath) paths.add(ProjectStore.key(n.fsPath));
+    }
+    this.renderedChildren.set(parent, paths);
+    return nodes;
   }
 
   getTreeItem(el: TreeNode): vscode.TreeItem {
@@ -228,22 +404,22 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       const memberKeys = new Set(solutions.flatMap((s) => s.members.map((m) => ProjectStore.key(m.root))));
       const standalone = this.store.all.filter((p) => !memberKeys.has(ProjectStore.key(p.root)));
       if (!solutions.length && !standalone.length) {
-        return [new TreeNode('empty', t('noMrsProjectNode'), vscode.TreeItemCollapsibleState.None)];
+        return [this.cached(new TreeNode('empty', t('noMrsProjectNode'), vscode.TreeItemCollapsibleState.None))];
       }
       const nodes: TreeNode[] = solutions.map(
-        (s) => new TreeNode('solution', s.name, vscode.TreeItemCollapsibleState.Expanded, s.dir, undefined, undefined, s)
+        (s) => this.cached(new TreeNode('solution', s.name, vscode.TreeItemCollapsibleState.Expanded, s.dir, undefined, undefined, s))
       );
       for (const p of standalone) {
         // projects start collapsed: auto-expanding every linked folder makes
         // multi-project workspaces unreadable
-        nodes.push(new TreeNode('project', p.projectName, vscode.TreeItemCollapsibleState.Collapsed, p.root, p));
+        nodes.push(this.cached(new TreeNode('project', p.projectName, vscode.TreeItemCollapsibleState.Collapsed, p.root, p)));
       }
       return nodes;
     }
     if (el.nodeType === 'solution' && el.solution) {
       // member projects render exactly like top-level projects
       return el.solution.members.map(
-        (p) => new TreeNode('project', p.projectName, vscode.TreeItemCollapsibleState.Collapsed, p.root, p)
+        (p) => this.cached(new TreeNode('project', p.projectName, vscode.TreeItemCollapsibleState.Collapsed, p.root, p))
       );
     }
     const proj = el.project;
@@ -258,13 +434,15 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       for (const link of proj.projectFile.linkedResources) {
         if (link.type === 2) {
           nodes.push(
-            new TreeNode(
-              'linkedFolder',
-              link.name,
-              fs.existsSync(link.location) ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
-              link.location,
-              proj,
-              link.name
+            this.cached(
+              new TreeNode(
+                'linkedFolder',
+                link.name,
+                fs.existsSync(link.location) ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
+                link.location,
+                proj,
+                link.name
+              )
             )
           );
         }
@@ -291,7 +469,7 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
           const ex = (isNodeExcluded(a.full) ? 1 : 0) - (isNodeExcluded(b.full) ? 1 : 0);
           return ex || a.e.name.localeCompare(b.e.name);
         })
-        .map(({ e, full }) => new TreeNode('folder', e.name, vscode.TreeItemCollapsibleState.Collapsed, full, proj));
+        .map(({ e, full }) => this.cached(new TreeNode('folder', e.name, vscode.TreeItemCollapsibleState.Collapsed, full, proj)));
       nodes.push(...realFolders);
       // root-level files (11.c etc.) — the scanner compiles them, the tree
       // must show them too; project management files (.wvproj/.template/
@@ -303,14 +481,14 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
           const ex = (isNodeExcluded(a.full) ? 1 : 0) - (isNodeExcluded(b.full) ? 1 : 0);
           return ex || a.e.name.localeCompare(b.e.name);
         })
-        .map(({ e, full }) => new TreeNode('file', e.name, vscode.TreeItemCollapsibleState.None, full, proj));
+        .map(({ e, full }) => this.cached(new TreeNode('file', e.name, vscode.TreeItemCollapsibleState.None, full, proj)));
       nodes.push(...rootFiles);
       // the output node only exists while the directory does — deleting obj
       // (MRVC menu or Explorer) must make it disappear on the next render
       if (fs.existsSync(proj.buildDir)) {
-        nodes.push(new TreeNode('products', proj.cproject.configName, vscode.TreeItemCollapsibleState.Collapsed, proj.buildDir, proj));
+        nodes.push(this.cached(new TreeNode('products', proj.cproject.configName, vscode.TreeItemCollapsibleState.Collapsed, proj.buildDir, proj)));
       }
-      return nodes;
+      return this.recordChildren(el, nodes);
     }
 
     if (el.nodeType === 'products' && el.fsPath) {
@@ -321,13 +499,16 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         // ignore
       }
       // build artifacts: no build-config context menu (exclusion etc.)
-      return entries
-        .filter((e) => e.isFile())
-        .map((e) => {
-          const n = new TreeNode('file', e.name, vscode.TreeItemCollapsibleState.None, path.join(el.fsPath!, e.name), proj);
-          n.contextValue = 'outputFile';
-          return n;
-        });
+      return this.recordChildren(
+        el,
+        entries
+          .filter((e) => e.isFile())
+          .map((e) => {
+            const n = this.cached(new TreeNode('file', e.name, vscode.TreeItemCollapsibleState.None, path.join(el.fsPath!, e.name), proj));
+            n.contextValue = 'outputFile';
+            return n;
+          })
+      );
     }
 
     if ((el.nodeType === 'linkedFolder' || el.nodeType === 'folder') && el.fsPath) {
@@ -350,25 +531,30 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
           .filter((r) => r.parentLogic === parentLogic)
           .map((r) => r.name)
       );
-      return entries
-        .filter((e) => !e.name.startsWith('.') && !removedHere.has(e.name))
-        .map((e) => ({ e, full: path.join(el.fsPath!, e.name) }))
-        .sort((a, b) => {
-          const ex = (isNodeExcluded(a.full) ? 1 : 0) - (isNodeExcluded(b.full) ? 1 : 0);
-          if (ex) return ex;
-          if (a.e.isDirectory() !== b.e.isDirectory()) return a.e.isDirectory() ? -1 : 1;
-          return a.e.name.localeCompare(b.e.name);
-        })
-        .map(
-          ({ e, full }) =>
-            new TreeNode(
-              e.isDirectory() ? 'folder' : 'file',
-              e.name,
-              e.isDirectory() ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
-              full,
-              proj
-            )
-        );
+      return this.recordChildren(
+        el,
+        entries
+          .filter((e) => !e.name.startsWith('.') && !removedHere.has(e.name))
+          .map((e) => ({ e, full: path.join(el.fsPath!, e.name) }))
+          .sort((a, b) => {
+            const ex = (isNodeExcluded(a.full) ? 1 : 0) - (isNodeExcluded(b.full) ? 1 : 0);
+            if (ex) return ex;
+            if (a.e.isDirectory() !== b.e.isDirectory()) return a.e.isDirectory() ? -1 : 1;
+            return a.e.name.localeCompare(b.e.name);
+          })
+          .map(
+            ({ e, full }) =>
+              this.cached(
+                new TreeNode(
+                  e.isDirectory() ? 'folder' : 'file',
+                  e.name,
+                  e.isDirectory() ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
+                  full,
+                  proj
+                )
+              )
+          )
+      );
     }
     return [];
   }

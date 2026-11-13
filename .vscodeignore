@@ -45,3 +45,10 @@ vendor-ffi/node_modules/koffi/build/koffi/openbsd_x64/**
 vendor-ffi/node_modules/koffi/build/koffi/win32_arm64/**
 vendor-ffi/node_modules/koffi/build/koffi/win32_ia32/**
 vendor-ffi/node_modules/koffi/build/koffi/win32_x64/**
+
+# vendor-serial ships the serialport runtime for the SDI PRINT monitor — the
+# tree is already pruned at source level (three prebuild dirs: win32-x64,
+# linux-x64, darwin-x64+arm64); only the npm bookkeeping is excluded here
+vendor-serial/package.json
+vendor-serial/package-lock.json
+vendor-serial/node_modules/.package-lock.json

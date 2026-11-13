@@ -6,8 +6,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ProjectStore, MrsProject, MrsSolution, msg, installGate, getInstall, selectMrsInstall } from './vscode/projects';
 import { ProjectTreeProvider, TreeDecorations } from './vscode/tree';
+import { InfoTreeProvider } from './vscode/infoTree';
 import { BuildManager } from './vscode/tasks';
 import { flashProject, openLinkUtility, openMrsTerminal } from './vscode/flash';
+import { powerOffResetCmd } from './vscode/powerCycle';
+import { auditRepairCmd } from './vscode/auditCmd';
 import { ConfigView } from './vscode/configView';
 import { addLinkedFolderCmd, removeLinkedFolderCmd, changeLinkedFolderPathCmd, revealProducts } from './vscode/linkedFolders';
 import {
@@ -33,6 +36,9 @@ import { setProjectCpp } from './core/projectType';
 import { SyncPage } from './vscode/syncPage';
 import { MacroBatchPage } from './vscode/macroBatch';
 import { comTransmitCmd, hexBinToolCmd, ispToolCmd, touchkeyToolCmd, uiDesignerCmd, wchToolKitCmd } from './vscode/mrsTools';
+import { openWithMrsCmd } from './vscode/openMrs';
+import { initSdiMonitor, sdiPrintMonitorCmd, sdiPrintStopCmd } from './vscode/sdiMonitor';
+import { onSdiPrintfStatusChanged } from './core/sdiState';
 import { ensureIntellisenseConfig, applyCacheOverrides, resolveProjectForFile, switchContext, maybePromptCppTools } from './vscode/intellisense';
 import { addProjectToSolutionCmd, addProjectsByBatchCmd, setBuildOrderCmd, closeSolutionCmd, modifySolutionToolchainCmd, recoverSolutionPath } from './vscode/solutionLife';
 import { generateCMakeListCmd, exportAsCMakeCmd } from './vscode/cmakeExport';
@@ -133,6 +139,27 @@ function startExtension(context: vscode.ExtensionContext): void {
   const treeView = vscode.window.createTreeView('mrvc.projectExplorer', { treeDataProvider: tree, dragAndDropController: undefined });
   context.subscriptions.push(treeView);
 
+  // the Info view mirrors the effective configuration builds reuse (0.3.0-2):
+  // refreshed by store changes (active project, project list) and by ANY
+  // mrvc.* configuration change, so the view always matches the next build
+  const info = new InfoTreeProvider(store);
+  const infoView = vscode.window.createTreeView('mrvc.info', { treeDataProvider: info });
+  context.subscriptions.push(infoView);
+  context.subscriptions.push(store.onDidChange(() => info.refresh()));
+  // the SDI Printf row reflects MRVC's own last write (no hardware read-back
+  // exists); refresh the Info view as soon as a download pass changes it
+  context.subscriptions.push(onSdiPrintfStatusChanged(() => info.refresh()));
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('mrvc')) {
+        // a custom-toolchain edit can change resolutions without any memo
+        // key input changing — drop the per-project memos, refresh the view
+        store.expireToolchainMemos();
+        info.refresh();
+      }
+    })
+  );
+
   // lazy workspace init (0.2.8): opening a folder must NOT start MRVC —
   // no scan, no compile databases, no cpptools prompt — until the user
   // actually engages the extension. Memoized so every entry point (view
@@ -206,6 +233,13 @@ function startExtension(context: vscode.ExtensionContext): void {
       const proj = sel?.project;
       if (!proj?.root || !proj.projectName) return;
       const key = proj.root.toLowerCase();
+      // clicking a project row ACTIVATES it (0.3.0 user request): the Info
+      // view and every store.active consumer follow immediately — build/
+      // flash were already per-node, this makes "selected" mean "active".
+      const active = store.active;
+      if (!active || active.root.toLowerCase() !== key) {
+        store.setActive(proj as MrsProject);
+      }
       if (ctxProject?.key === key) return;
       ctxProject = { key, root: proj.root, projectName: proj.projectName };
       switchContext(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '', proj.root, proj.projectName);
@@ -307,6 +341,8 @@ function startExtension(context: vscode.ExtensionContext): void {
     'mrvc.hexBinTool',
     'mrvc.comTransmit',
     'mrvc.wchToolKit',
+    'mrvc.sdiPrintMonitor', // pure serial-port surface; no project store touch
+    'mrvc.sdiPrintStop',
     'mrvc.openSettings',
     'mrvc.resetInstallGuidance',
     // syncSettings/batchMacros are NOT exempt (round2 §1.1): their pages
@@ -437,6 +473,20 @@ function startExtension(context: vscode.ExtensionContext): void {
   // MRS3-only tool: the menu item is gated on mrvc.mrs3Active (kept in sync with
   // the active installation below)
   reg('mrvc.wchToolKit', () => wchToolKitCmd());
+  // SDI PRINT monitor: pure serial-port surface (no project store), wired up
+  // with its terminal-close tracking
+  initSdiMonitor(context);
+  reg('mrvc.sdiPrintMonitor', () => sdiPrintMonitorCmd());
+  reg('mrvc.sdiPrintStop', () => sdiPrintStopCmd());
+  // open the project folder in the currently effective MRS IDE (project
+  // context menu; launcher resolved per install flavor, folder path arg only)
+  reg('mrvc.openWithMrs', (item?: unknown) => openWithMrsCmd(store, item as never));
+  // power-off reset (掉电复位): WCH-Link rail power cycle via two short
+  // OpenOCD sessions — project context menu + command palette
+  reg('mrvc.powerOffReset', (item?: unknown) => void powerOffResetCmd(store, item as { project?: unknown }));
+  // audit & repair project configuration (enumerated-value damage, address
+  // format, …): modal findings list, explicit confirm before any write
+  reg('mrvc.auditProject', (item?: unknown) => void auditRepairCmd(store, item as { project?: unknown }));
   reg('mrvc.generateSolution', async () => {
     const all = store.all;
     if (!all.length) {
@@ -586,28 +636,39 @@ function startExtension(context: vscode.ExtensionContext): void {
   // while one of OUR build/clean/flash tasks runs, suspend the watcher-driven
   // tree refreshes: make's obj/ write storm would otherwise re-render the
   // tree every debounce window and blink the linked-folder decorations
-  // white↔blue for the whole build; the end handler below does the single
-  // real refresh for the artifacts
+  // white↔blue for the whole build. After the LAST task ends, only the
+  // products nodes of the touched roots re-read their children — never a
+  // whole-tree fire (the async decoration pass repaints linked folders
+  // white→blue on a full rebuild; user report 2026-11-13).
   let buildTasksActive = 0;
+  const dirtyRoots = new Set<string>();
   const isTreeHeavyTask = (type: string): boolean =>
     type === 'mrvc-build' || type === 'mrvc-build-all' || type === 'mrvc-clean' || type === 'mrvc-clean-all' || type === 'mrvc-flash';
   context.subscriptions.push(
     vscode.tasks.onDidStartTaskProcess((e) => {
-      if (isTreeHeavyTask(e.execution.task.definition.type) && ++buildTasksActive === 1) store.suspendTreeRefresh();
+      if (isTreeHeavyTask(e.execution.task.definition.type) && ++buildTasksActive === 1) {
+        dirtyRoots.clear();
+        store.suspendTreeRefresh();
+      }
     })
   );
-  // build dir watcher: refresh products after a build finishes (single and
-  // batch tasks alike — artifacts land outside the source-file watcher).
-  // Skipped while another batch member is still running (the final resume's
-  // catch-up refresh covers the batch with ONE render, round22 §5.5).
   context.subscriptions.push(
     vscode.tasks.onDidEndTaskProcess((e) => {
       const t = e.execution.task.definition.type;
-      if (isTreeHeavyTask(t)) {
-        if (buildTasksActive > 0 && --buildTasksActive === 0) store.resumeTreeRefresh();
-        if (!store.isTreeRefreshSuspended()) tree.refresh();
-        reportIntellisenseError(ensureIntellisenseConfig(store).error);
+      if (!isTreeHeavyTask(t)) return;
+      const root = e.execution.task.definition.root as string | undefined;
+      if (root) dirtyRoots.add(root);
+      if (buildTasksActive > 0 && --buildTasksActive === 0) {
+        store.resumeTreeRefresh();
+        if (!store.isTreeRefreshSuspended()) {
+          for (const r of dirtyRoots) {
+            const p = store.all.find((x) => ProjectStore.key(x.root) === ProjectStore.key(r));
+            if (p) store.noteTreeDirs(p.buildDir);
+          }
+        }
+        dirtyRoots.clear();
       }
+      reportIntellisenseError(ensureIntellisenseConfig(store).error);
     })
   );
 

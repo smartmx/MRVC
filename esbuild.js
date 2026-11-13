@@ -12,7 +12,8 @@ const options = {
   // koffi stays external: a native module cannot be bundled. The vsix ships
   // the runtime at vendor-ffi/node_modules/koffi (see .vscodeignore); the
   // wildcard keeps esbuild from bundling that relative require as source.
-  external: ['vscode', 'koffi', '*vendor-ffi'],
+  // serialport (SDI PRINT monitor) follows the same pattern at vendor-serial.
+  external: ['vscode', 'koffi', '*vendor-ffi', 'serialport', '*vendor-serial'],
   format: 'cjs',
   platform: 'node',
   target: 'node16',

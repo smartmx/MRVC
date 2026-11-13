@@ -32,7 +32,7 @@ let hostPlatform: NodeJS.Platform = process.platform;
 export function setHostPlatformForTests(p: NodeJS.Platform): void {
   hostPlatform = p;
 }
-function host(): NodeJS.Platform {
+export function host(): NodeJS.Platform {
   return hostPlatform;
 }
 
@@ -207,6 +207,97 @@ function hasLauncher(root: string, gen: 'mrs2' | 'mrs3'): boolean {
   const binNames = readRootNames(path.join(root, 'bin'));
   const binBase = wanted[0];
   return !!binNames && binNames.some((f) => f.toLowerCase() === binBase.toLowerCase());
+}
+
+/**
+ * The IDE launcher binary of an install, resolved to an absolute path —
+ * '' for a toolchain-only install (there is no IDE to open) and '' when the
+ * launcher is missing. Mirrors hasLauncher's matching, including the
+ * case-insensitive root/bin fallback the Linux .deb layout needs; the
+ * returned name may contain spaces ("mounriver-studio 2"), which spawn()
+ * handles as a single argv[0].
+ */
+export function installLauncherPath(install: MrsInstall): string {
+  if (install.kind !== 'ide') return '';
+  const gen = install.flavor === 'mrs3' ? 'mrs3' : 'mrs2';
+  const wanted = launcherFileNames(gen);
+  if (host() === 'darwin') return path.join(install.root, ...wanted);
+  const rootHit = path.join(install.root, wanted[0]);
+  if (fs.existsSync(rootHit)) return rootHit;
+  const binHit = path.join(install.root, 'bin', wanted[0]);
+  if (fs.existsSync(binHit)) return binHit;
+  // case-insensitive fallback over the actual directory listings
+  const binNames = readRootNames(path.join(install.root, 'bin'));
+  const inBin = binNames?.find((f) => f.toLowerCase() === wanted[0].toLowerCase());
+  if (inBin) return path.join(install.root, 'bin', inBin);
+  const names = readRootNames(install.root);
+  const inRoot = names?.find((f) => f.toLowerCase() === wanted[0].toLowerCase());
+  if (inRoot) return path.join(install.root, inRoot);
+  return '';
+}
+
+/**
+ * CLI arguments that make the MRS launcher open a project file.
+ *
+ * TWO separate argv elements, `-m <path>` — the exact form MRS's own
+ * installers register for the shell context menu (install-openwith.bat:
+ * `"<exe>" "-m" "%1"`). The bundled extension's internal `-m=<path>` (equals
+ * form) is NOT equivalent on a real desktop: it opens a window titled after
+ * the project but leaves the workspace EMPTY (explorer blank, and the mrs
+ * extension's getProjectProperties crashes with JSON.parse(undefined) since
+ * no project is in the tree — real-desktop evidence 2026-11-12).
+ */
+export function mrsOpenProjectArgs(wvprojPath: string): string[] {
+  return ['-m', wvprojPath];
+}
+
+/**
+ * The detached Windows launch argv for opening a project: PowerShell
+ * Start-Process, launched with -WorkingDirectory = the project root and the
+ * .wvproj given as an ABSOLUTE path.
+ *
+ * MRS itself refuses a relative .wvproj ("The following file path is not
+ * absolute", 2026-11-12 user report) — the earlier -WorkingDirectory +
+ * relative-basename form was wrong even though it avoided quoting.
+ * PS 5.1's Start-Process -ArgumentList does NOT quote elements, so the
+ * absolute path is passed with EMBEDDED double quotes; probe-verified that
+ * the quotes survive the EncodedCommand channel and the child receives one
+ * argv token even when the path contains spaces (2026-11-12 follow-up).
+ * -FilePath and -WorkingDirectory are real PS parameters: PS binds and
+ * quotes them itself, so space-containing install paths and project roots
+ * are fine.
+ */
+export function mrsWindowsLaunchArgv(launcher: string, wvprojPath: string, workingDir: string): string[] {
+  const psQuote = (s: string): string => "'" + s.replace(/'/g, "''") + "'";
+  // -EncodedCommand (base64 UTF-16LE) instead of -Command: the plain -Command
+  // channel STRIPS the inner quotes when the script is passed through Node's
+  // argv quoting (probe-verified — the whole Start-Process line lost every
+  // quote), while -EncodedCommand delivers the script verbatim.
+  const quotedProject = '"' + wvprojPath + '"';
+  const script =
+    `Start-Process -FilePath ${psQuote(launcher)} -WorkingDirectory ${psQuote(workingDir)} -ArgumentList ${psQuote('-m')},${psQuote(quotedProject)}`;
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return ['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded];
+}
+
+/**
+ * The launch argv for a platform, decided PURELY (every platform is testable
+ * on any host — round-11 P3-1):
+ *   - win32: the PowerShell Start-Process wrapper with -WorkingDirectory +
+ *     the ABSOLUTE .wvproj (embedded quotes — see mrsWindowsLaunchArgv).
+ *   - POSIX: sh -c with "$1" "$2" "$3" — the quoting carries spaces in both
+ *     the launcher and the absolute .wvproj path.
+ */
+export function mrsLaunchSpec(
+  platform: NodeJS.Platform,
+  launcher: string,
+  wvprojPath: string,
+  workingDir: string
+): { argv: string[] } {
+  if (platform === 'win32') {
+    return { argv: mrsWindowsLaunchArgv(launcher, wvprojPath, workingDir) };
+  }
+  return { argv: ['sh', '-c', '"$1" "$2" "$3" >/dev/null 2>&1 &', 'mrvc', launcher, ...mrsOpenProjectArgs(wvprojPath)] };
 }
 
 /**

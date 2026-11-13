@@ -511,9 +511,17 @@ export class Cproject {
       return;
     }
     if (value === undefined) {
+      // an ENUMERATED option keeps its value attribute: CDT/MRS always store
+      // one and MRS's reader does value.match(...) UNGUARDED — a missing
+      // attribute crashed its extension host and made the project unopenable
+      // in MRS itself (rvGcc, TCP_SERVER/MACRAW/TCP_CLIENT, 2026-11-12).
+      // Legacy "project default" therefore only clears LIST values here.
+      const enumerated = opt.attr('valueType') === 'enumerated';
       opt.childrenNamed('listOptionValue').forEach((c) => opt.removeChild(c));
-      opt.attrs['value'] = '';
-      delete opt.attrs['value'];
+      if (!enumerated) {
+        opt.attrs['value'] = '';
+        delete opt.attrs['value'];
+      }
       return;
     }
     opt.setAttr('value', value);
@@ -778,7 +786,11 @@ function guessValueType(suffix: string): string {
   if (/scriptfile/.test(suffix)) return 'stringList';
   if (/flags$/.test(suffix) && /linker/.test(suffix)) return 'stringList';
   if (/otherobjs/.test(suffix)) return 'userObjs';
-  if (/^(optimization\.level|c\.compiler\.std|target\.(isa|abi|codemodel|rvGcc)|debugging\.level|createflash\.choice)/.test(suffix)) {
+  if (
+    /^(optimization\.level|c\.compiler\.std|cpp\.compiler\.(std|abiversion)|target\.(isa|abi|codemodel|rvGcc|align)|debugging\.(level|format)|createflash\.choice)/.test(
+      suffix
+    )
+  ) {
     return 'enumerated';
   }
   return 'boolean';

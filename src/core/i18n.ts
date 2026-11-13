@@ -108,6 +108,14 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   progressDeleteDirs: { en: 'MRVC: Delete Output Directories', 'zh-cn': 'MRVC：删除输出目录' },
   progressCleanAll: { en: 'MRVC: Clean All', 'zh-cn': 'MRVC：清理全部工程' },
   progressCleanSolution: { en: 'MRVC: Clean Solution - {0}', 'zh-cn': 'MRVC：清理解决方案 - {0}' },
+  // one-project progress (project list inline Build / Rebuild / Download)
+  progressBuildProject: { en: 'MRVC: Compiling "{0}"', 'zh-cn': 'MRVC：正在编译“{0}”' },
+  progressRebuildProject: { en: 'MRVC: Rebuilding "{0}"', 'zh-cn': 'MRVC：正在重新编译“{0}”' },
+  progressBuildDownloadProject: {
+    en: 'MRVC: Compiling and downloading "{0}"',
+    'zh-cn': 'MRVC：正在编译并下载“{0}”',
+  },
+  progressDownloadProject: { en: 'MRVC: Downloading "{0}"', 'zh-cn': 'MRVC：正在下载“{0}”' },
 
   // wizard prompts / placeholders
   wizardSeries: { en: 'New MounRiver Project — chip series (1/3)', 'zh-cn': '新建 MounRiver 工程——芯片系列（1/3）' },
@@ -301,6 +309,84 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   openocdCfgNotFound: { en: 'OpenOCD config not found: {0}', 'zh-cn': '未找到 OpenOCD 配置：{0}' },
   linkUtilityNotFound: { en: 'WCH-LinkUtility.exe not found under the MounRiver installation.', 'zh-cn': '在 MounRiver 安装目录下未找到 WCH-LinkUtility.exe。' },
 
+  // open with MRS
+  openWithMrsNoIde: {
+    en: 'The effective configuration is a standalone toolchain (no IDE to open): {0}',
+    'zh-cn': '当前生效配置为纯工具链（无 IDE 可打开）：{0}',
+  },
+  openWithMrsNotFound: {
+    en: 'MRS IDE launcher not found under: {0}',
+    'zh-cn': '未找到 MRS IDE 启动器：{0}',
+  },
+  openWithMrsNoWvproj: {
+    en: 'No .wvproj project file found in: {0}',
+    'zh-cn': '该目录下未找到 .wvproj 工程文件：{0}',
+  },
+  openWithMrsFailed: { en: 'MRVC: failed to launch the MRS IDE ({0}).', 'zh-cn': 'MRVC：启动 MRS IDE 失败（{0}）。' },
+
+  // info view
+  infoNone: { en: '—', 'zh-cn': '—' },
+  infoNoConfig: { en: 'No effective MRS configuration', 'zh-cn': '无生效 MRS 配置' },
+  infoKindToolchain: { en: 'Standalone toolchain', 'zh-cn': '纯工具链' },
+  infoPinFallback: { en: ' preference fell back', 'zh-cn': '（偏好未满足，已回退）' },
+  infoOpenSettings: { en: 'Open MRVC Settings', 'zh-cn': '打开 MRVC 设置' },
+  infoProjectCat: { en: 'Active project', 'zh-cn': '当前工程' },
+  infoToolchainCat: { en: 'Toolchain', 'zh-cn': '工具链' },
+  infoSdiCat: { en: 'SDI Printf', 'zh-cn': 'SDI Printf' },
+  infoSdiEnabled: {
+    en: 'SDI print enabled',
+    'zh-cn': 'SDI print 已使能',
+  },
+  infoSdiFailed: { en: 'Last enable attempt failed', 'zh-cn': '上次使能失败' },
+  infoSdiUnknown: {
+    en: 'Unknown — WCH-Link cannot be read back',
+    'zh-cn': '未知——WCH-Link 不支持回读',
+  },
+  infoSdiNotRequested: {
+    en: 'SDI print not enabled by this download',
+    'zh-cn': '本次下载未使能 SDI print',
+  },
+  infoSdiTooltip: {
+    en:
+      'WCH-Link/CommunicationLib offers only the SDI set command (McuCompiler_SetSDIPrn), no getter. ' +
+      'This row reflects only MRVC\'s own write in this session; it returns to Unknown after a window reload, or when the monitor starts and finds no WCH-Link port. ' +
+      'Click to open the SDI PRINT monitor.',
+    'zh-cn':
+      'WCH-Link/CommunicationLib 只提供 SDI 写命令（McuCompiler_SetSDIPrn），没有读取接口。' +
+      '此处只反映 MRVC 本次会话自己的写入；重载窗口后回到未知，打开监视器时若找不到 WCH-Link 串口也会重置为未知。点击打开 SDI PRINT 监视器。',
+  },
+  infoSdiTooltipNotRequested: {
+    en:
+      'This download did not request SDI Printf (the .template checkbox is off), so MRVC did not touch the link switch. ' +
+      'The switch is sticky — the DLL never disables it on a plain download, so a Link enabled earlier may still be enabled. ' +
+      'Only a link power-cycle or an external tool (WCH-LinkUtility) clears it.',
+    'zh-cn':
+      '本次下载未勾选 SDI Printf，MRVC 没有动 WCH-Link 的开关。' +
+      '该开关是粘滞的——DLL 在普通下载时不会关闭它，所以之前使能过的 Link 可能仍处于使能状态；' +
+      '只有 Link 重新上电或使用 WCH-LinkUtility 等外部工具才会清除。',
+  },
+  infoSdiOpenMonitor: { en: 'Open SDI PRINT Monitor', 'zh-cn': '打开 SDI PRINT 监视器' },
+
+  // SDI PRINT monitor
+  sdiNoPort: {
+    en: 'No WCH-Link serial port found. Connect the WCH-Link (its port is "WCH-Link SERIAL (COMx)") — a board-level CH343/CH340 USB-serial port is not the link.',
+    'zh-cn': '未找到 WCH-Link 串口。请连接 WCH-Link（其串口显示为 "WCH-Link SERIAL (COMx)"）——板载 CH343/CH340 等 USB 串口不是 WCH-Link。',
+  },
+  sdiPickTitle: { en: 'Select the WCH-Link serial port', 'zh-cn': '选择 WCH-Link 串口' },
+  sdiStopNone: { en: 'MRVC: the SDI PRINT monitor is not running.', 'zh-cn': 'MRVC：SDI PRINT 监视器未在运行。' },
+  sdiOpenError: { en: 'serial port error: {0}', 'zh-cn': '串口错误：{0}' },
+  sdiListError: { en: 'failed to list serial ports: {0}', 'zh-cn': '枚举串口失败：{0}' },
+  sdiSerialMissing: {
+    en: 'MRVC: the serialport module is missing from this installation.',
+    'zh-cn': 'MRVC：本安装缺少 serialport 模块。',
+  },
+  sdiConnected: { en: 'connected — waiting for SDI printf output', 'zh-cn': '已连接——等待 SDI printf 输出' },
+  sdiClosed: { en: 'serial port closed', 'zh-cn': '串口已关闭' },
+  sdiPortBusyHint: {
+    en: 'if another serial tool (or a previous monitor) holds this port, close it and start the monitor again.',
+    'zh-cn': '若有其他串口工具（或上一个监视器）正占用该端口，请先关闭后再启动监视器。',
+  },
+
   // build output
   noBuildRecord: {
     en: 'MRVC: no build output recorded for "{0}" yet — build the project first.',
@@ -351,6 +437,14 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     'zh-cn': '已跳过——该工程正在编译中',
   },
   terminateBuild: { en: 'Terminate Build', 'zh-cn': '结束编译' },
+  buildCancelled: {
+    en: 'MRVC: build of "{0}" was cancelled.',
+    'zh-cn': 'MRVC：已取消编译“{0}”。',
+  },
+  downloadCancelled: {
+    en: 'MRVC: download of "{0}" was cancelled.',
+    'zh-cn': 'MRVC：已取消下载“{0}”。',
+  },
   downloadThrew: {
     en: 'MRVC: download did not run for "{0}" — {1}',
     'zh-cn': 'MRVC：" {0} " 的下载未执行——{1}',
@@ -358,6 +452,82 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   downloadFailed: {
     en: 'MRVC: download failed for "{0}" (exit code {1}) — see the task output.',
     'zh-cn': 'MRVC：" {0} "下载失败（退出码 {1}）——请查看任务输出。',
+  },
+
+  // power-off reset (掉电复位) + transient link-open retry
+  powerStageOff: {
+    en: 'power-off',
+    'zh-cn': '断电',
+  },
+  powerStageOn: {
+    en: 'power-on',
+    'zh-cn': '上电',
+  },
+  powerResetDone: {
+    en: 'MRVC: power-off reset completed ({0}).',
+    'zh-cn': 'MRVC：掉电复位完成（{0}）。',
+  },
+  powerResetFailed: {
+    en: 'MRVC: power-off reset failed — the {0} pass exited with {1}.',
+    'zh-cn': 'MRVC：掉电复位失败——{0} 阶段退出码 {1}。',
+  },
+  powerRetry: {
+    en: 'MRVC: WCH-Link re-enumerating — retrying ({0}/{1})…',
+    'zh-cn': 'MRVC：WCH-Link 重新枚举中，正在重试（{0}/{1}）…',
+  },
+  powerLinkUnsupported: {
+    en: 'MRVC: {0} has no power-output control — the power-off reset needs WCH-LinkE / WCH-DAPLink / WCH-LinkW (per WCH\'s manuals the plain WCH-Link cannot switch its target rail).',
+    'zh-cn': 'MRVC：{0} 不支持电源输出控制——掉电复位需要 WCH-LinkE / WCH-DAPLink / WCH-LinkW（官方手册：普通版 WCH-Link 无法开关目标供电）。',
+  },
+  sdiPrintfPassFailed: {
+    en: 'MRVC: download of "{0}" succeeded, but the SDI Printf reset pass failed ({1}) — the monitor may stay empty.',
+    'zh-cn': 'MRVC：" {0} " 下载成功，但 SDI Printf 复位使能失败（{1}）——监视器可能没有输出。',
+  },
+  sdiPrintfNoChipId: {
+    en: 'MRVC: download of "{0}" succeeded, but the chip id is unknown — skipped the SDI Printf reset pass.',
+    'zh-cn': 'MRVC：" {0} " 下载成功，但无法确定芯片 ID——已跳过 SDI Printf 复位使能。',
+  },
+
+  // project-configuration audit & repair
+  auditClean: {
+    en: 'MRVC: project configuration of "{0}" looks healthy — no issues found.',
+    'zh-cn': 'MRVC：" {0} " 的工程配置检查通过，未发现问题。',
+  },
+  auditFound: {
+    en: 'MRVC: {1} configuration issue(s) found in "{0}".',
+    'zh-cn': 'MRVC：" {0} " 发现 {1} 项配置问题。',
+  },
+  auditRepairBtn: {
+    en: 'Repair {0} item(s)',
+    'zh-cn': '修复 {0} 项',
+  },
+  auditRepaired: {
+    en: 'MRVC: repaired {0}. Pre-repair backups: {1}',
+    'zh-cn': 'MRVC：已修复 {0}。修复前备份：{1}',
+  },
+  auditNotFixable: {
+    en: '(report only — no automatic fix)',
+    'zh-cn': '（仅报告，不自动修复）',
+  },
+  'auditF_enum-value-missing': {
+    en: 'Enumerated option "{0}" has no value attribute — MRS\'s reader crashes on it (project unopenable). Fix: remove the option (inherits the default).',
+    'zh-cn': 'enumerated 选项 " {0} " 缺少 value 属性——MRS 解析会崩溃（工程打不开）。修复：移除该选项（继承默认值）。',
+  },
+  'auditF_rvgcc-form': {
+    en: 'rvGcc option value is in an unknown form: {0}',
+    'zh-cn': 'rvGcc 选项的 value 形态无法识别：{0}',
+  },
+  'auditF_project-xml': {
+    en: 'XML not parseable: {0}',
+    'zh-cn': 'XML 无法解析：{0}',
+  },
+  'auditF_project-name': {
+    en: '.project name "{0}" differs from the folder name.',
+    'zh-cn': '.project 的 name " {0} " 与文件夹名不一致。',
+  },
+  'auditF_template-address': {
+    en: '.template Address "{0}" is not 0x-formatted. Fix: clear it (download falls back to inference).',
+    'zh-cn': '.template 的 Address " {0} " 不是 0x 格式。修复：清空（下载回退为自动推断）。',
   },
   buildFailedNoDownload: {
     en: 'MRVC: build failed for "{0}" (exit code {1}) — download skipped.',
@@ -463,6 +633,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   macroConflictBack: { en: 'Go back', 'zh-cn': '返回修改' },
   propertiesSaved: { en: 'MRVC: project properties saved ({0})', 'zh-cn': 'MRVC：工程属性已保存（{0}）' },
   propertiesSaveFailed: { en: 'MRVC: failed to save configuration ({0})', 'zh-cn': 'MRVC：保存配置失败（{0}）' },
+  propertiesXmlInvalid: {
+    en: 'MRVC: the .cproject XML is damaged ({0}) — nothing was written. Run "Audit And Repair Project Configuration" first.',
+    'zh-cn': 'MRVC：.cproject XML 结构已损坏（{0}），未写入任何内容。请先运行「检测并修复工程配置」。',
+  },
 
   // linked folders
   linkedCpUpdateFailed: {

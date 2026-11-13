@@ -27,6 +27,10 @@ const {
   checkBinaryArch,
   toolchainArchProblem,
   launcherFileNames,
+  installLauncherPath,
+  mrsOpenProjectArgs,
+  mrsWindowsLaunchArgv,
+  mrsLaunchSpec,
   conventionalInstalls,
   selectInstall,
   setHostPlatformForTests,
@@ -379,6 +383,118 @@ try {
     fs.rmSync(path.join(noGcc, 'Toolchain', 'RISC-V Embedded GCC', 'bin', 'riscv-none-embed-gcc'));
     const empty = checkToolchainPath(noGcc);
     check('standalone: manifest with no resolvable RISC-V gcc -> "not-toolchain"', !empty.ok && empty.problem === 'not-toolchain');
+  }
+
+  // ============ installLauncherPath (0.3.0 "open with MRS") ============
+  {
+    setHostPlatformForTests('win32');
+    const w3 = fakeIde('fake-l-win3', { host: 'win32', flavor: 'mrs3' });
+    check(
+      'launcher: win mrs3 resolves to the root exe',
+      installLauncherPath({ root: w3.root, kind: 'ide', flavor: 'mrs3' }) === path.join(w3.root, 'MounRiver Studio 3.exe')
+    );
+    check('launcher: toolchain-only install resolves to empty', installLauncherPath({ root: w3.root, kind: 'toolchain', flavor: 'mrs3' }) === '');
+    check('launcher: missing launcher -> empty', installLauncherPath({ root: path.join(ROOT, 'none-win'), kind: 'ide', flavor: 'mrs2' }) === '');
+
+    setHostPlatformForTests('linux');
+    const l3 = fakeIde('fake-l-lin3', { host: 'linux', flavor: 'mrs3', launcherInBin: true });
+    check(
+      'launcher: linux .deb launcher resolves in bin/ (name keeps the space)',
+      installLauncherPath({ root: l3.root, kind: 'ide', flavor: 'mrs3' }) === path.join(l3.root, 'bin', 'mounriver-studio 3')
+    );
+    const l2 = fakeIde('fake-l-lin2', { host: 'linux', flavor: 'mrs2' });
+    check(
+      'launcher: linux root-form launcher resolves',
+      installLauncherPath({ root: l2.root, kind: 'ide', flavor: 'mrs2' }) === path.join(l2.root, 'mounriver-studio 2')
+    );
+
+    setHostPlatformForTests('darwin');
+    const d3 = fakeIde('fake-l-mac3', { host: 'darwin', flavor: 'mrs3' });
+    check(
+      'launcher: darwin resolves Contents/MacOS/Electron',
+      installLauncherPath({ root: d3.root, kind: 'ide', flavor: 'mrs3' }) === path.join(d3.root, 'Contents', 'MacOS', 'Electron')
+    );
+
+    // the project-open contract: TWO separate argv elements `-m <abs .wvproj>`
+    // — the installers' shell-context form (install-openwith.bat). The
+    // extension's internal `-m=<path>` equals-form is NOT equivalent on a
+    // real desktop: window titled after the project but workspace EMPTY
+    // (explorer blank + getProjectProperties JSON.parse(undefined) crash,
+    // 2026-11-12 real-desktop evidence).
+    const args = mrsOpenProjectArgs(path.join(w3.root, 'Demo.wvproj'));
+    check(
+      'open args: -m and the abs .wvproj as two separate arguments',
+      args.length === 2 && args[0] === '-m' && args[1] === path.join(w3.root, 'Demo.wvproj')
+    );
+    check('open args: never the equals form', !args.some((a) => a.startsWith('-m=')));
+
+    // real-argv probe: MRS refuses a RELATIVE .wvproj ("not absolute", user
+    // report 2026-11-12), so the ABSOLUTE path is passed with embedded
+    // quotes — this probe proves it arrives as ONE token even with spaces.
+    if (process.platform === 'win32') {
+      const { spawnSync } = require('child_process');
+      const workDir = path.join(ROOT, 'work dir with spaces');
+      const spaced = path.join(workDir, 'demo.wvproj');
+      fs.mkdirSync(workDir, { recursive: true });
+      fs.writeFileSync(spaced, '');
+      const argv = mrsWindowsLaunchArgv(process.execPath, spaced, workDir);
+      check('open args: wrapper is powershell -EncodedCommand (quote-safe channel)', argv[0] === 'powershell.exe' && argv.includes('-EncodedCommand'));
+      // decode the base64 UTF-16LE script and lock the REAL contract text
+      const script = Buffer.from(argv[argv.length - 1], 'base64').toString('utf16le');
+      check(
+        'open args: decoded script carries the ABSOLUTE .wvproj (quoted) — MRS rejects relative paths',
+        script.includes(`-WorkingDirectory '${workDir}'`) && script.includes(`-ArgumentList '-m','"${spaced}"'`)
+      );
+      // runtime delivery: same Start-Process shape targeting a cmd echo probe
+      // (the spaced absolute path must reach the child as ONE argument)
+      const probeDir = path.join(ROOT, 'argvprobe');
+      fs.mkdirSync(probeDir, { recursive: true });
+      const probeCmd = path.join(probeDir, 'probe.cmd');
+      const outFile = path.join(probeDir, 'argv.json');
+      fs.writeFileSync(probeCmd, `@echo %1^|%~2 > "${outFile}"\r\n`);
+      const probeScript =
+        `Start-Process -FilePath 'cmd.exe' -WorkingDirectory '${workDir}' -ArgumentList '/c','${probeCmd}','-m','"${spaced}"'`;
+      const enc = Buffer.from(probeScript, 'utf16le').toString('base64');
+      fs.rmSync(outFile, { force: true });
+      spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', enc], {
+        encoding: 'utf-8',
+        timeout: 60000,
+      });
+      // Start-Process is async (it reports the LAUNCH, not the completion) —
+      // wait for the probe's output file to appear before asserting
+      let delivered = '';
+      for (let i = 0; i < 40 && !fs.existsSync(outFile); i++) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+      }
+      if (fs.existsSync(outFile)) delivered = fs.readFileSync(outFile, 'utf-8').trim();
+      check(
+        'open args: Start-Process delivers the spaced ABSOLUTE path as one argv token',
+        delivered === `-m|${spaced}`
+      );
+    }
+
+    // platform split (round-11 P3-1 + 2026-11-12 fix): BOTH platforms pass
+    // the absolute .wvproj; the Windows wrapper embeds quotes so even a
+    // space-containing file name is no longer refused. The helper is pure,
+    // so every platform is testable on any host.
+    {
+      const spacedProject = path.join(w3.root, 'my demo.wvproj');
+      const win = mrsLaunchSpec('win32', 'C:/MRS/MounRiver Studio 2.exe', spacedProject, w3.root);
+      const winScript = Buffer.from(win.argv[win.argv.length - 1], 'base64').toString('utf16le');
+      check(
+        'launch spec: win32 passes the spaced absolute .wvproj as a quoted argument',
+        win.argv[0] === 'powershell.exe' && winScript.includes(`-ArgumentList '-m','"${spacedProject}"'`)
+      );
+      const linux = mrsLaunchSpec('linux', '/opt/MRS/mounriver-studio2', spacedProject, w3.root);
+      check(
+        'launch spec: POSIX passes the space-containing absolute .wvproj via sh',
+        linux.argv[0] === 'sh' && linux.argv.includes(spacedProject) && linux.argv.includes('/opt/MRS/mounriver-studio2')
+      );
+      const darwin = mrsLaunchSpec('darwin', '/Applications/MRS.app/Contents/MacOS/Electron', spacedProject, w3.root);
+      check('launch spec: darwin also uses the quoted POSIX form', darwin.argv.includes(spacedProject));
+      const plain = mrsLaunchSpec('win32', 'C:/MRS/MRS2.exe', path.join(w3.root, 'demo.wvproj'), w3.root);
+      check('launch spec: win32 plain path uses the encoded PS wrapper', plain.argv[0] === 'powershell.exe');
+    }
   }
 
   // ============ selectInstall: the three-candidate policy ============

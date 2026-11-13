@@ -86,6 +86,51 @@ export interface FlashOptions {
   /** how many flash banks to scrub in eraseAll mode — dual-core board cfgs
    * expose two (core1's bank sits at 0x00005000); default 1 */
   banks?: number;
+  /** .template "SDIPrintf=true" — the WCH-Link's SDI printf decoder enable.
+   *  NOT emitted into the flash script: MRS flips the switch through the
+   *  native DLL (MRSFunc_FlashOperationExB with flags RESET|SDIPrintf), and
+   *  OpenOCD's own `sdi_printf` re-enumerates the link and kills the very
+   *  session it rides in (hardware evidence 2026-11-12: "SDI_PRINTF ENABLE"
+   *  then exit 1 before init). vscode/flash runs the native reset+enable
+   *  pass AFTER the OpenOCD download, with the monitor already reading. */
+  sdiPrintf?: boolean;
+  /** power-off-reset download (mrvc.flash.resetMode=powerOff): switch the
+   * link's target rail back ON at config time — the FIRST script step, so
+   * the chip is up when init runs (the preceding off pass + delay did the
+   * de-energising). Both rails share one power state (fork-verified); only
+   * the actually-fed rail is commanded, mirroring wch-vscode's flow. */
+  powerOn?: PowerVoltage;
+}
+
+/** the WCH-Link's two selectable target-rail voltages (pow3v3 / pow5v) */
+export type PowerVoltage = '3v3' | '5v';
+
+/** argv tail pointing OpenOCD's log at a file — the transient-failure
+ *  classifier (re-enumerating WCH-Link) reads it. ONLY for the internal
+ *  passes (SDI-printf enable / power off-on): the MAIN download must NOT
+ *  take -l — --log_output redirects the whole progress echo into the file,
+ *  silencing the task terminal (the 0.2.9 "looks like a no-op" complaint
+ *  returns). The fork also eats backslashes in the argument (Jim Tcl), so
+ *  callers pass FORWARD-slash paths — the flat "MyProjectsMRS2...log" file
+ *  the user found in the project root is the backslash-eaten form. */
+export function openocdLogArgs(logPath: string): string[] {
+  return ['-l', logPath.replace(/\\/g, '/')];
+}
+
+/**
+ * Does this OpenOCD output look like a TRANSIENT link-open failure (WCH-Link
+ * still re-enumerating after the previous session / replug) rather than a
+ * deterministic one? Mirrors the classification wch-vscode ships for its
+ * power-cycle passes, TIGHTENED to WCH/USB/link context: the bare "cannot
+ * open" verbs also matched firmware/file open errors, which are deterministic
+ * (the cost was a wasted retry on the internal passes). These strings mean
+ * "the USB device was not openable YET" and a short backoff + retry succeeds.
+ */
+const TRANSIENT_OPEN_RE =
+  /wlink open error|unknown wch-link|(?:unable to open|couldn't open|cannot open|can't open|failed to open)[^;\r\n]*(?:usb|wch[- ]?link|link\b)/i;
+
+export function transientOpenOcdFailure(logText: string): boolean {
+  return TRANSIENT_OPEN_RE.test(logText);
 }
 
 export interface FlashPlan {
@@ -149,6 +194,9 @@ export function prepareFlash(opts: FlashOptions): FlashPlan {
   // quotes — "E:\x\y" becomes E:xy) + quotes to keep spaces one argument
   const fwPosix = opts.firmware.replace(/\\/g, '/');
   const steps: string[] = [];
+  // power-off-reset download: the rail goes back up at config time, BEFORE
+  // anything else in the session (the off pass + delay de-energised it)
+  if (opts.powerOn) steps.push(`pow${opts.powerOn} on`);
   if (opts.eraseAll) {
     // explicit expansion of OpenOCD's program proc (extracted verbatim from
     // openocd.exe — its unconditional `init` means we cannot prepend an
@@ -202,5 +250,7 @@ export function prepareFlash(opts: FlashOptions): FlashPlan {
   // path with Chinese characters would not open. ASCII content is
   // byte-identical in GBK.
   fs.writeFileSync(scriptPath, encodeArtifact(steps.join('\n') + '\n'));
+  // NO -l here (see openocdLogArgs): the main download keeps its terminal
+  // progress; the internal passes (enable / power) carry their own logs.
   return { scriptPath, args: ['-f', opts.boardCfg, '-f', scriptPath] };
 }

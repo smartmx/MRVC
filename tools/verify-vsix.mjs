@@ -176,12 +176,21 @@ const WHITELIST = [
   /^extension\/media\/[a-z_]+\.svg$/,
   // the koffi runtime: JS entry + its subtree, POSIX prebuilds included
   /^extension\/vendor-ffi\/node_modules\/koffi\//,
+  // the serialport runtime (SDI PRINT monitor): whole vendored tree ships
+  /^extension\/vendor-serial\//,
 ];
 const leaks = [...zip.keys()].filter((n) => !WHITELIST.some((re) => re.test(n)));
 check(leaks.length === 0, 'every vsix entry matches the content whitelist (no stray files/dirs)', leaks.length ? leaks.join(', ') : `${zip.size} entries all allowed`);
 check([...zip.keys()].some((n) => n === 'extension/vendor-ffi/node_modules/koffi/index.js'), 'koffi JS entry is packaged');
 const prebuilds = [...zip.keys()].filter((n) => /^extension\/vendor-ffi\/node_modules\/koffi\/build\/koffi\/(linux_x64|darwin_arm64)\/koffi\.node$/.test(n));
 check(prebuilds.length === 2, 'koffi POSIX prebuilds are packaged (linux_x64 + darwin_arm64)', prebuilds.map((n) => n.replace('extension/vendor-ffi/node_modules/koffi/build/koffi/', '')).join(', ') || 'none');
+// the serialport runtime: the entry must ship, plus the three pruned
+// N-API prebuild dirs (win32-x64 / linux-x64 / darwin fat binary)
+check([...zip.keys()].some((n) => n === 'extension/vendor-serial/node_modules/serialport/package.json'), 'serialport vendored tree is packaged');
+const spPrebuilds = [...zip.keys()].filter((n) =>
+  /^extension\/vendor-serial\/node_modules\/@serialport\/bindings-cpp\/prebuilds\/(win32-x64|linux-x64|darwin-x64\+arm64)\/node\.napi(\.glibc|\.musl)?\.node$/.test(n)
+);
+check(spPrebuilds.length === 4, 'serialport N-API prebuilds are packaged (win32-x64, linux-x64 glibc+musl, darwin)', [...new Set(spPrebuilds.map((n) => n.split('/prebuilds/')[1]))].join(', ') || 'none');
 // the extension icon must be present AND a real 128x128 PNG (IHDR: bytes
 // 16..20 = width, 20..24 = height, byte 25 = color type 6 = RGBA); the
 // length guard covers the WHOLE IHDR read so a truncated 9..25-byte file

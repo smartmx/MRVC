@@ -22,6 +22,14 @@ export class MrsProject {
   template!: TemplateData;
   /** lazily computed kernel info; null = stale, undefined = no kernel */
   private kernelInfo: { kernelName: string; isMaster?: boolean; mate?: string } | null | undefined = null;
+  /** memoized selectToolchain result (0.3.0-3): builds, the info view and
+   *  the terminal all resolve the same pure lookup repeatedly — a hit skips
+   *  it. The POSIX arch check in toolchain() deliberately stays OUTSIDE the
+   *  memo (its warning must never disappear). Cleared on reload() and on
+   *  mrvc.* configuration changes (custom toolchains can change without any
+   *  memo-key input changing). */
+  private toolchainMemoKey = '';
+  private toolchainMemoValue: ToolchainInfo | null = null;
 
   constructor(root: string) {
     this.root = root;
@@ -30,10 +38,18 @@ export class MrsProject {
 
   reload(): void {
     this.kernelInfo = null;
+    this.toolchainMemoKey = '';
+    this.toolchainMemoValue = null;
     this.projectFile = readProjectFile(this.root);
     this.projectName = this.projectFile.name || path.basename(this.root);
     this.cproject = Cproject.load(this.root);
     this.template = readTemplate(this.root);
+  }
+
+  /** drop the memoized toolchain (config-change invalidation) */
+  expireToolchainMemo(): void {
+    this.toolchainMemoKey = '';
+    this.toolchainMemoValue = null;
   }
 
   get buildDir(): string {
@@ -63,7 +79,14 @@ export class MrsProject {
   }
 
   toolchain(install: MrsInstall | null, request: string): ToolchainInfo | null {
-    const tc = selectToolchain(install, request, this.cproject.rvGccVersion, this.cproject.storedPrefix);
+    // memoized pure resolution (0.3.0-3) — the arch judgment below still
+    // runs on every call on purpose
+    const key = `${install?.root ?? ''}|${request}|${this.cproject.rvGccVersion}|${this.cproject.storedPrefix}`;
+    if (key !== this.toolchainMemoKey) {
+      this.toolchainMemoKey = key;
+      this.toolchainMemoValue = selectToolchain(install, request, this.cproject.rvGccVersion, this.cproject.storedPrefix);
+    }
+    const tc = this.toolchainMemoValue;
     if (tc) {
       // mixed-arch packages (mac V2.4: GCC8 x86_64 + GCC12/15 arm64) pass the
       // startup gate with their native toolchains; the toolchain this project
@@ -165,14 +188,21 @@ export class ProjectStore implements vscode.Disposable {
   private _active: MrsProject | null = null;
   private watchers = new Map<string, vscode.Disposable[]>(); // per project root
   private srcWatchers: vscode.Disposable[] = []; // workspace-wide source files
-  private srcRefreshTimer: NodeJS.Timeout | undefined;
   /** build tasks (wired in extension.ts) suspend watcher-driven tree
    *  refreshes: make's obj/ write storm would otherwise re-render the tree
    *  every debounce window and blink the linked-folder decorations
    *  white↔blue for the whole build */
   private treeRefreshSuspendCount = 0;
-  private bumpsWhileSuspended = false;
-  private catchUpTimer: NodeJS.Timeout | undefined;
+  /** scoped tree-refresh channel: watchers no longer fire the whole store —
+   *  they record the DIRECTORY whose tree node must re-read its children
+   *  (the folder a source file appeared in / disappeared from, the build
+   *  output dir) and the tree provider fires only those nodes. A full-store
+   *  fire re-renders every expanded node and makes the async file-decoration
+   *  pass repaint linked folders white→blue (user report 2026-11-13). */
+  private readonly _onTreeDirsChanged = new vscode.EventEmitter<string[]>();
+  readonly onTreeDirsChanged = this._onTreeDirsChanged.event;
+  private pendingTreeDirs = new Set<string>();
+  private treeDirsTimer: NodeJS.Timeout | undefined;
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
@@ -188,6 +218,13 @@ export class ProjectStore implements vscode.Disposable {
     return [...this.projects.values()];
   }
 
+  /** drop every project's toolchain memo — called when any mrvc.* setting
+   *  changes (a custom-toolchain edit can change the resolution without any
+   *  memo-key input changing) */
+  expireToolchainMemos(): void {
+    for (const p of this.projects.values()) p.expireToolchainMemo();
+  }
+
   get solutionList(): MrsSolution[] {
     return [...this.solutions.values()];
   }
@@ -199,80 +236,50 @@ export class ProjectStore implements vscode.Disposable {
   /** called by the task wiring while one of OUR build/clean/flash tasks runs */
   suspendTreeRefresh(): void {
     this.treeRefreshSuspendCount++;
-    // cancel an already-queued debounce: the suspension must cover events
-    // that arrived BEFORE it (round22 §5.5 negative probe)
-    if (this.srcRefreshTimer) {
-      clearTimeout(this.srcRefreshTimer);
-      this.srcRefreshTimer = undefined;
-      this.bumpsWhileSuspended = true;
-    }
-    // a pending 1 s catch-up must SURVIVE the re-suspend (round23 §5.1):
-    // Build All's next member task starts while member N's catch-up window
-    // is still open — merge it back into the suspended-bumps flag so the
-    // final resume re-arms it
-    if (this.catchUpTimer) {
-      clearTimeout(this.catchUpTimer);
-      this.catchUpTimer = undefined;
-      this.bumpsWhileSuspended = true;
+    // fold a pending scoped flush back into the pending set: the dirs stay
+    // pending and are flushed after the build ends (resumeTreeRefresh)
+    if (this.treeDirsTimer) {
+      clearTimeout(this.treeDirsTimer);
+      this.treeDirsTimer = undefined;
     }
   }
 
   /** true while watcher-driven refreshes are suspended (task-end wiring
-   *  skips its own refresh then — the final resume's catch-up covers it) */
+   *  notes its build dirs through the same pending set) */
   isTreeRefreshSuspended(): boolean {
     return this.treeRefreshSuspendCount > 0;
   }
 
   resumeTreeRefresh(): void {
     this.treeRefreshSuspendCount = Math.max(0, this.treeRefreshSuspendCount - 1);
-    if (this.treeRefreshSuspendCount === 0 && this.bumpsWhileSuspended) {
-      // catch-up refresh for external edits that landed mid-build — DELAYED
-      // and coalesced: the task-end wiring refreshes immediately anyway, so
-      // an immediate fire here would only add a second blink right after a
-      // build; 1 s later, and skipped entirely if a new build resumed first
-      this.bumpsWhileSuspended = false;
-      if (this.catchUpTimer) clearTimeout(this.catchUpTimer);
-      this.catchUpTimer = setTimeout(() => {
-        this.catchUpTimer = undefined;
-        // expiry while STILL suspended: preserve the pending flag so the next
-        // resume re-arms the catch-up (round23 §5.1 — Build All's next member
-        // task starts inside member N's catch-up window)
-        if (this.treeRefreshSuspendCount > 0) {
-          this.bumpsWhileSuspended = true;
-          return;
-        }
-        this._onDidChange.fire();
-      }, 1000);
+    if (this.treeRefreshSuspendCount === 0 && this.pendingTreeDirs.size) {
+      this.scheduleTreeDirsFlush();
     }
   }
 
-  /** the debounced tree-refresh entry every watcher funnels into */
-  private bumpTree(): void {
-    if (this.treeRefreshSuspendCount > 0) {
-      this.bumpsWhileSuspended = true;
-      return;
+  /** record directories whose tree nodes must re-read their children.
+   *  While a build is running the dirs only accumulate (the tree stays
+   *  frozen); otherwise they flush through the debounced scoped event. */
+  noteTreeDirs(...dirs: (string | undefined)[]): void {
+    for (const d of dirs) {
+      if (d) this.pendingTreeDirs.add(d);
     }
-    // a fresh bump supersedes any pending 1 s catch-up (round22 §5.8)
-    if (this.catchUpTimer) {
-      clearTimeout(this.catchUpTimer);
-      this.catchUpTimer = undefined;
-    }
-    if (this.srcRefreshTimer) clearTimeout(this.srcRefreshTimer);
-    this.srcRefreshTimer = setTimeout(() => {
-      this.srcRefreshTimer = undefined;
-      // the suspension may have started AFTER this debounce was queued
-      // (round22 §5.5 negative probe) — re-check before firing
-      if (this.treeRefreshSuspendCount > 0) {
-        this.bumpsWhileSuspended = true;
-        return;
-      }
-      this._onDidChange.fire();
-    }, 400);
-    // a pending catch-up is superseded by this fresh bump cycle (round22 §5.8)
-    if (this.catchUpTimer) {
-      clearTimeout(this.catchUpTimer);
-      this.catchUpTimer = undefined;
-    }
+    this.scheduleTreeDirsFlush();
+  }
+
+  private scheduleTreeDirsFlush(delay = 400): void {
+    if (this.treeRefreshSuspendCount > 0) return; // dirs stay pending
+    if (this.treeDirsTimer) return; // a flush is already pending
+    this.treeDirsTimer = setTimeout(() => {
+      this.treeDirsTimer = undefined;
+      // the suspension may have started AFTER this debounce was queued —
+      // keep the dirs pending for the post-build resume
+      if (this.treeRefreshSuspendCount > 0) return;
+      if (!this.pendingTreeDirs.size) return;
+      const dirs = [...this.pendingTreeDirs];
+      this.pendingTreeDirs.clear();
+      this._onTreeDirsChanged.fire(dirs);
+    }, delay);
   }
 
   get(root: string): MrsProject | undefined {
@@ -496,6 +503,12 @@ export class ProjectStore implements vscode.Disposable {
       }
     }
     await this.discoverInWorkspace();
+    // The button means "look at the disk again" — an UNCHANGED project set
+    // fires nothing above, so expanded nodes kept their cached children and
+    // files added/removed inside a project never re-rendered (user report
+    // 2026-11-12: deleted flattened logs stayed in the tree across refreshes).
+    // Fire unconditionally: the tree re-reads every folder in getChildren.
+    this._onDidChange.fire();
   }
 
   reloadActive(): void {
@@ -505,6 +518,17 @@ export class ProjectStore implements vscode.Disposable {
       // project files temporarily broken (mid-save) — ignore
     }
     this._onDidChange.fire();
+  }
+
+  /** re-parse the active project WITHOUT firing a tree refresh — used by the
+   *  build path right before makefile generation (nothing visible changes;
+   *  a full re-render here blinked the whole tree at build start) */
+  reloadActiveQuiet(): void {
+    try {
+      this._active?.reload();
+    } catch {
+      // project files temporarily broken (mid-save) — ignore
+    }
   }
 
   /** reload one project after a direct .project/.cproject edit and notify views */
@@ -600,19 +624,19 @@ export class ProjectStore implements vscode.Disposable {
     };
     // source-file watcher per project root: covers solution members that
     // live OUTSIDE the workspace folders (the workspace-wide watcher in
-    // watchWorkspaceSources cannot see them)
+    // watchWorkspaceSources cannot see them). Content EDITS don't change the
+    // tree (same entry, same flags) — only create/delete do.
     const srcWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{c,h,cpp,hpp,s,S}'));
-    const bump = () => this.bumpTree();
+    const srcBump = (uri: vscode.Uri) => this.noteTreeDirs(path.dirname(uri.fsPath));
     this.watchers.set(key, [
       watcher,
       watcher.onDidChange(onChange),
       watcher.onDidCreate(onChange),
       watcher.onDidDelete(onDelete),
       srcWatcher,
-      srcWatcher.onDidChange(bump),
-      srcWatcher.onDidCreate(bump),
-      srcWatcher.onDidDelete(bump),
-      ...this.watchBuildDir(key, root, bump),
+      srcWatcher.onDidCreate(srcBump),
+      srcWatcher.onDidDelete(srcBump),
+      ...this.watchBuildDir(key, root),
     ]);
   }
 
@@ -620,21 +644,24 @@ export class ProjectStore implements vscode.Disposable {
    * Build-output watcher: the output directory's contents (.o/.hex/...) and
    * its own existence are invisible to both watchers above, yet deletions
    * from the Explorer or the OS must refresh the tree (the products node
-   * renders only while the directory exists). The '{obj,obj/**}' glob
-   * matches the directory itself too, and a build's file storm collapses
-   * into the same debounced refresh as source changes.
+   * renders only while the directory exists). Every event scopes to the
+   * products NODE itself (its fsPath is the build dir) — never the whole
+   * tree.
    */
-  private watchBuildDir(key: string, root: string, bump: () => void): vscode.Disposable[] {
+  private watchBuildDir(key: string, root: string): vscode.Disposable[] {
     const outName = this.projects.get(key)?.cproject.configName ?? 'obj';
+    const buildDir = path.join(root, outName);
     const outWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, `{${outName},${outName}/**}`));
+    const bump = () => this.noteTreeDirs(buildDir);
     return [outWatcher, outWatcher.onDidChange(bump), outWatcher.onDidCreate(bump), outWatcher.onDidDelete(bump)];
   }
 
   /**
    * Workspace-wide watcher over source files: creating/deleting/renaming a
    * .c/.h/... must refresh the tree without a manual refresh (config files
-   * have their own per-project watcher in watchProject). Fires are debounced
-   * because build steps can touch many files at once.
+   * have their own per-project watcher in watchProject). Content edits don't
+   * change the tree; create/delete note the containing DIRECTORY so the tree
+   * re-reads just that node (scoped, debounced).
    */
   private watchWorkspaceSources(): void {
     if (this.srcWatchers.length) return;
@@ -642,8 +669,8 @@ export class ProjectStore implements vscode.Disposable {
       const watcher = vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(folder, '**/*.{c,h,cpp,hpp,s,S}')
       );
-      const bump = () => this.bumpTree();
-      this.srcWatchers.push(watcher, watcher.onDidChange(bump), watcher.onDidCreate(bump), watcher.onDidDelete(bump));
+      const bump = (uri: vscode.Uri) => this.noteTreeDirs(path.dirname(uri.fsPath));
+      this.srcWatchers.push(watcher, watcher.onDidCreate(bump), watcher.onDidDelete(bump));
     }
   }
 
@@ -663,9 +690,9 @@ export class ProjectStore implements vscode.Disposable {
     this.watchers.clear();
     for (const d of this.srcWatchers) d.dispose();
     this.srcWatchers = [];
-    if (this.srcRefreshTimer) clearTimeout(this.srcRefreshTimer);
-    if (this.catchUpTimer) clearTimeout(this.catchUpTimer);
+    if (this.treeDirsTimer) clearTimeout(this.treeDirsTimer);
     this._onDidChange.dispose();
+    this._onTreeDirsChanged.dispose();
   }
 }
 
@@ -705,6 +732,7 @@ export function selectMrsInstall(): InstallSelection {
   const mrs3Default = cfg.inspect<string>('mrs3InstallPath')?.defaultValue;
   const key = [mrs2, mrs3, toolchain, version, mrs2Default, mrs3Default].join('|');
   if (installCache?.key !== key) {
+    installProbeCount++;
     installCache = {
       key,
       selection: selectInstall({
@@ -719,6 +747,14 @@ export function selectMrsInstall(): InstallSelection {
   }
   return installCache.selection;
 }
+
+/** test seam (0.3.0-3): how many times the cached selection actually
+ *  re-invoked selectInstall — repeated builds with unchanged settings must
+ *  not re-validate the installation at all */
+export function installProbeCountForTests(): number {
+  return installProbeCount;
+}
+let installProbeCount = 0;
 
 export function getInstall(): MrsInstall | null {
   const selection = selectMrsInstall();

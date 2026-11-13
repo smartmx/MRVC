@@ -14,6 +14,7 @@ import { TemplateData, readTemplate, writeTemplate } from '../core/templateFile'
 import { ADDRESS_RE, displayTargetPath } from '../core/flash';
 import { resolveDownloadTarget } from './flash';
 import { ChipDb, chipDbRoot, scanChipDb, chipForTemplate } from '../core/chipdb';
+import { strictXmlFileError } from '../core/audit';
 import { WlinkArgs, WlinkOp, describeResult, runWlinkOp } from '../core/wlink';
 import { t } from '../core/i18n';
 
@@ -26,7 +27,12 @@ export interface FieldDef {
   type: FieldType;
   /** cproject option suffix (bool/enum) */
   suffix?: string;
-  /** full CDT enumeration prefix; 'default' short value clears the option */
+  /** full CDT enumeration prefix. A 'default' entry in `options` is a REAL
+   *  CDT choice (align / debugging.level / debugging.format) and is written
+   *  explicitly as enumBase+'default'; without such an entry 'default' means
+   *  "unset" and maps to setOptionValue(undefined), which PRESERVES the
+   *  attribute of an existing enumerated option (MRS's reader crashes on a
+   *  missing one) */
   enumBase?: string;
   options?: Array<[string, string]>;
   get?: (cp: Cproject) => string;
@@ -98,8 +104,10 @@ const tpl = (key: string, page: string, label: string, tplKey: string, readonly 
 
 export const FIELDS: FieldDef[] = [
   // ---- Target Processor ----
+  // NO 'default' choice here: enumerated options must always carry a value
+  // attribute (MRS's reader crashes on a missing one — 2026-11-12), so
+  // 'default' would be a silent no-op after the clear-path guard.
   en('tc', 'target', 'RISC-V Compiler (toolchain)', 'target.rvGcc', [
-    ['default', 'Project default (legacy)'],
     ['8', 'WCH Toolchain (GCC8)'],
     ['12', 'WCH Toolchain (GCC12)'],
     ['15', 'WCH Toolchain (GCC15)'],
@@ -295,7 +303,9 @@ export const FIELDS: FieldDef[] = [
   list('cppincs', 'cpp.inc', 'Include paths (-I), one per line', 'cpp.compiler.include.paths'),
   // ---- C++ Compiler / Optimization ----
   en('cppstd', 'cpp.opt', 'C++ language standard', 'cpp.compiler.std', [
-    ['default', 'gnu++11 (default)'],
+    // the real CDT choice for gnu++11 is `gnucpp11` — real MRS projects store
+    // it, there is no `default` choice for this option (round-11 P3-2)
+    ['gnucpp11', 'gnu++11 (default)'],
     ['gnucpp98', 'gnu++98'],
     ['cpp11', 'c++11'],
     ['cpp14', 'c++14'],
@@ -322,8 +332,9 @@ export const FIELDS: FieldDef[] = [
   bool('cppnocxa', 'cpp.misc', 'Do not use __cxa_atexit (-fno-use-cxa-atexit)', 'cpp.compiler.nousecxaatexit'),
   bool('cppnthreads', 'cpp.misc', 'Do not use thread-safe statics (-fno-threadsafe-statics)', 'cpp.compiler.nothreadsafestatics'),
   en('cppabi', 'cpp.misc', 'ABI version (-fabi-version=)', 'cpp.compiler.abiversion', [
-    ['default', 'Default (0)'],
-    ['0', '0'], ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4'], ['5', '5'],
+    // no `default` choice in the real enum (real projects store `.0`) —
+    // 0 IS the default (round-11 P3-2)
+    ['0', '0 (default)'], ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4'], ['5', '5'],
     ['6', '6'], ['7', '7'], ['8', '8'], ['9', '9'], ['10', '10'], ['11', '11'], ['12', '12'], ['13', '13'],
   ], OPT_BASE + 'cpp.compiler.abiversion.'),
   str('cppother', 'cpp.misc', 'Other compiler flags', 'cpp.compiler.other'),
@@ -511,6 +522,18 @@ function readEnum(cp: Cproject, f: FieldDef): string {
   if (f.enumBase && raw.startsWith(f.enumBase)) {
     return raw.slice(f.enumBase.length);
   }
+  // CDT/MRS store an enumerated CHOICE as the BASE option id —
+  // "...option.base.<suffix><choice>" (one `base.` segment inserted).
+  // Without this recognition the dropdown falls back to its first entry
+  // ('default') and an innocent Apply DELETED the stored value attribute —
+  // MRS's own reader does value.match() unguarded on rvGcc and refused to
+  // open the project at all (TCP_SERVER/MACRAW/TCP_CLIENT, 2026-11-12).
+  if (f.enumBase) {
+    const baseForm = f.enumBase.replace(/\.option\./, '.option.base.');
+    if (baseForm !== f.enumBase && raw.startsWith(baseForm)) {
+      return raw.slice(baseForm.length);
+    }
+  }
   return raw;
 }
 
@@ -524,6 +547,12 @@ export class ConfigView {
   /** the chip db of the project's install — the Download Settings page needs
    *  it to resolve SDK series ids (queryMcuId result) to display names */
   private dlChipDb: ChipDb | undefined;
+  /** Apply's diff baseline: for every control, the value the page rendered.
+   *  Apply posts ALL controls back; only fields whose posted value differs
+   *  from this snapshot are written, so untouched options stay byte-identical
+   *  (and a value our dropdown cannot represent is echoed back, not replaced
+   *  by the browser's first-entry fallback). */
+  private initial = new Map<string, string>();
 
   constructor(
     private store: ProjectStore,
@@ -696,6 +725,13 @@ export class ConfigView {
         if (apply !== t('macroConflictApply')) return;
       }
       try {
+        // PRE-WRITE gate: Apply only ever rewrites a .cproject whose RAW
+        // structure a strict parser accepts (MRS/Eclipse would refuse a file
+        // our lenient parser merely tolerates — and rewriting it would
+        // cement the damage). Audit owns the repair; Apply refuses.
+        const cprojectFile = path.join(project.root, '.cproject');
+        const structureError = strictXmlFileError(cprojectFile, 'cproject');
+        if (structureError) throw new Error(t('propertiesXmlInvalid', structureError));
         // .template fields first (chip identity / download address), batched
         // into one read-modify-write; the address is validated like the flash
         // code does, so a bad value aborts the whole save before any write
@@ -704,6 +740,10 @@ export class ConfigView {
         for (const f of FIELDS) {
           if (!f.tplKey || f.tplReadonly) continue;
           const v = (m.values[f.key] ?? '').trim();
+          // untouched = still shows what the page rendered: skip (an external
+          // edit made meanwhile stays in place)
+          const initialTpl = this.initial.get(f.key);
+          if (initialTpl !== undefined && v === initialTpl.trim()) continue;
           if (v === (tplData.values[f.tplKey] ?? '')) continue;
           if (f.tplKey === 'Address' && v && !ADDRESS_RE.test(v)) {
             throw new Error(`Invalid flash address "${v}" (expected form 0x00000000)`);
@@ -718,6 +758,14 @@ export class ConfigView {
           if (f.tplKey) continue;
           const v = m.values[f.key];
           if (v === undefined) continue;
+          // Apply posts EVERY control's displayed value; only a field whose
+          // posted value differs from the render-time snapshot was actually
+          // edited. Untouched options therefore stay byte-identical — the "I
+          // changed one setting, did everything else survive?" guarantee. A
+          // stored enum choice our list does not know is echoed back by the
+          // synthetic "(current)" option, so it lands here as unchanged too.
+          const initial = this.initial.get(f.key);
+          if (initial !== undefined && v === initial) continue;
           if (f.type === 'bool') {
             // create=true: options absent from .cproject must be created on check
             if (f.suffix) cp.setOptionBool(f.suffix, v === '1', true);
@@ -726,7 +774,21 @@ export class ConfigView {
               f.set(cp, v);
             } else if (f.suffix) {
               if (f.enumBase) {
-                cp.setOptionValue(f.suffix, v === 'default' ? undefined : f.enumBase + v);
+                // an ABSENT option renders as 'default', while the <select>
+                // can only display its first entry — posting that entry back
+                // is the browser fallback, not a user decision: leave the
+                // option absent instead of materialising it
+                const first = (f.options ?? [])[0]?.[0];
+                if (initial === 'default' && !cp.option(f.suffix) && v === first) continue;
+                // 'default' is a REAL CDT enumerated choice for align /
+                // debugging.level / debugging.format — it must be WRITTEN
+                // explicitly: setOptionValue(undefined) never removes an
+                // enumerated value attribute (P1 guard), so mapping it to
+                // "clear" left a stored non-default choice in place (silent
+                // no-op, round-11 P3-2). Fields without a 'default' choice
+                // never post it (the select falls back to its first entry).
+                const defaultChoice = (f.options ?? []).some(([k]) => k === 'default');
+                cp.setOptionValue(f.suffix, v === 'default' && !defaultChoice ? undefined : f.enumBase + v);
               } else {
                 cp.setOptionValue(f.suffix, v === 'default' ? undefined : v);
               }
@@ -736,6 +798,13 @@ export class ConfigView {
           }
         }
         cp.save();
+        // the page and the disk agree now — re-baseline so a second Apply
+        // with no further edits writes nothing
+        for (const f of FIELDS) {
+          const v = m.values[f.key];
+          if (v === undefined) continue;
+          this.initial.set(f.key, f.tplKey ? v.trim() : v);
+        }
         project.reload();
         this.panel.webview.postMessage({ command: 'saved' });
         vscode.window.showInformationMessage(t('propertiesSaved', path.basename(project.root)));
@@ -845,6 +914,7 @@ export class ConfigView {
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     if (f.tplKey) {
       const value = tplData?.values[f.tplKey] ?? '';
+      this.initial.set(f.key, value);
       const ro = f.tplReadonly ? ' readonly style="opacity:.75"' : ' spellcheck="false"';
       return `<div class="fld"><label>${esc(f.label)}</label><input type="text" data-key="${f.key}" value="${esc(value)}"${ro}></div>`;
     }
@@ -854,11 +924,22 @@ export class ConfigView {
     } else {
       value = f.type === 'bool' || f.type === 'enum' ? readEnum(cp, f) : '';
     }
+    // diff baseline for Apply (bool normalized to the checkbox's 1/0)
+    this.initial.set(f.key, f.type === 'bool' ? (value === 'true' ? '1' : '0') : value);
     if (f.type === 'bool') {
       return `<label class="check"><input type="checkbox" data-key="${f.key}" ${value === 'true' ? 'checked' : ''}><span>${esc(f.label)}</span></label>`;
     }
     if (f.type === 'enum') {
-      const opts = (f.options ?? [])
+      // an EXISTING option storing a choice our list does not know (newer MRS
+      // spelling / hand edit) must stay selected and echo its own value back:
+      // without the synthetic entry the <select> falls back to its first
+      // choice and Apply would overwrite the stored value
+      const known = (f.options ?? []).some(([v]) => v === value);
+      const extra =
+        !known && value !== '' && value !== 'default' && f.suffix && cp.option(f.suffix)
+          ? `<option value="${esc(value)}" selected>(current) ${esc(value.slice(0, 60))}</option>`
+          : '';
+      const opts = extra + (f.options ?? [])
         .map(([v, l]) => `<option value="${v}" ${v === value ? 'selected' : ''}>${esc(l)}</option>`)
         .join('');
       return `<div class="fld"><label>${esc(f.label)}</label><select data-key="${f.key}">${opts}</select></div>`;
@@ -883,6 +964,7 @@ export class ConfigView {
 
   private render(project: MrsProject): string {
     const cp = project.cproject;
+    this.initial.clear();
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     // fresh nonce per render: only <script nonce="..."> blocks may run, so a
     // future escaping slip cannot hand crafted script full acquireVsCodeApi
@@ -1151,7 +1233,11 @@ document.querySelectorAll('[data-dlquery]').forEach((b) => b.addEventListener('c
 const tgtBtn = dlEl('dl-targetbtn');
 if (tgtBtn) tgtBtn.addEventListener('click', () => vscode.postMessage({ command: 'pickTarget' }));
 function collectDl() {
-  const wrap = document.querySelector('[data-page="dlset"]');
+  // '.page'-qualified on purpose: the nav items ALSO carry data-page and the
+  // nav comes first in the document — the bare selector used to resolve to
+  // the nav item, every lookup missed and Apply saved all checkboxes as
+  // false while reporting "Saved" (user report 2026-11-12)
+  const wrap = document.querySelector('.page[data-page="dlset"]');
   if (!wrap) return null;
   const v = (id) => dlEl(id)?.value ?? '';
   const c = (k) => (wrap.querySelector('[data-dlkey="' + k + '"]')?.checked ? 'true' : 'false');
