@@ -6,6 +6,7 @@ node_modules/
 !vendor-ffi/node_modules/koffi/
 # the serialport runtime must be tracked too (SDI PRINT monitor, 0.3.0)
 !vendor-serial/node_modules/
+!vendor-serial/node_modules/@serialport/bindings-cpp/node_modules/
 .scratch/
 .mimosa/
 buildlogs/
