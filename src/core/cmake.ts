@@ -18,7 +18,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { Cproject } from './cproject';
+import { Cproject, foldPathOnPlatform } from './cproject';
 import { ToolchainInfo } from './toolchain';
 import { scanSources } from './scan';
 import {
@@ -42,9 +42,9 @@ const toPosix = (p: string): string => p.split(path.sep).join('/');
 /** locate the linked folder a path lives in (or IS): returns
  * [linkName, path-under-target] with '' meaning the link root itself */
 function linkOf(cp: Cproject, p: string): [string, string] | undefined {
-  const key = path.resolve(p).toLowerCase();
+  const key = foldPathOnPlatform(path.resolve(p));
   for (const [name, target] of cp.linkedFolders) {
-    const root = path.resolve(target).toLowerCase();
+    const root = foldPathOnPlatform(path.resolve(target));
     if (key === root) return [name, ''];
     if (key.startsWith(root + path.sep)) return [name, path.relative(path.resolve(target), path.resolve(p))];
   }
@@ -96,6 +96,44 @@ export interface CmakeBuild {
   sourceCount: number;
   includeCount: number;
   isExecutable: boolean;
+}
+
+/**
+ * Path identity for the export self-copy guard: Windows folds case (an
+ * `EXPORT` spelling and the real `export` directory are the same folder);
+ * a symlink/junction alias is caught by the realpath fallback.
+ */
+export function samePathOnDisk(a: string, b: string): boolean {
+  const ra = foldPathOnPlatform(path.resolve(a));
+  const rb = foldPathOnPlatform(path.resolve(b));
+  if (ra === rb) return true;
+  try {
+    return foldPathOnPlatform(fs.realpathSync.native(a)) === foldPathOnPlatform(fs.realpathSync.native(b));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The export subfolder derives from the .project display name, and a
+ * third-party/hand-edited .project is untrusted input: a name like
+ * "../victim" would escape the folder the user picked, and `..` plus
+ * reserved characters can make the overwrite path (fs.rmSync) touch an
+ * unrelated tree. Returns undefined when the name is not usable as a folder.
+ */
+export function safeExportDirName(name: string): string | undefined {
+  const v = name.trim();
+  if (!v || v === '.' || v === '..') return undefined;
+  for (const ch of ['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
+    if (v.includes(ch)) return undefined;
+  }
+  for (let i = 0; i < v.length; i++) {
+    if (v.charCodeAt(i) < 0x20) return undefined;
+  }
+  // Windows silently strips a trailing dot/space, so "LED." and "LED" would
+  // address the same folder — refuse it rather than export to a surprise name
+  if (v.endsWith('.') || v.endsWith(' ')) return undefined;
+  return v;
 }
 
 export interface CmakeOptions {

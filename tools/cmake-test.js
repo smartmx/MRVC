@@ -20,7 +20,18 @@ const check = (name, cond) => {
 
 const { Cproject } = require('../out/core/cproject.js');
 const { locateInstall, selectToolchain } = require('../out/core/toolchain.js');
-const { buildCMakeContent } = require('../out/core/cmake.js');
+const { buildCMakeContent, safeExportDirName, samePathOnDisk } = require('../out/core/cmake.js');
+
+// round38 P3: the self-copy guard must see through Windows case variants
+check('samePathOnDisk: case variant recognised on Windows', process.platform !== 'win32' || samePathOnDisk(path.join(WS, 'export'), path.join(WS, 'EXPORT')));
+check('samePathOnDisk: identical path matches', samePathOnDisk(WS, WS));
+check('samePathOnDisk: distinct paths stay distinct', !samePathOnDisk(path.join(WS, 'a'), path.join(WS, 'b')));
+
+// round37 P2: an untrusted .project display name must never escape the
+// folder the user picked (the export dir is `${projectName}_cmake`)
+check('export name: traversal / separators refused', safeExportDirName('../victim') === undefined && safeExportDirName('a/b') === undefined && safeExportDirName('..') === undefined);
+check('export name: reserved / trailing characters refused', safeExportDirName('LED:1') === undefined && safeExportDirName('LED.') === undefined);
+check('export name: ordinary project name kept', safeExportDirName('  LED  ') === 'LED');
 
 // real EVT tree: dev TEST copy, F:/ layout, or the local E:/WORK tree
 const PROJ = ['F:/CH585/EVT/V1_2/EXAM/LED', 'E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED', 'E:/WORK/CH585/V1_7/EXAM/LED'].find(
@@ -145,6 +156,74 @@ check('regeneration is deterministic', fs.readFileSync(file, 'utf-8') === first)
     dst2
   );
   check('export-in-link: unsafe names + missing targets skipped', fs.existsSync(path.join(dst2, 'LIB', 'a.c')) && !fs.existsSync(path.join(dst2, 'evil')) && !fs.existsSync(path.join(dst2, 'gone')));
+
+  // round39 P3: the guard must not pay a realpath PER ENTRY — patch the fs
+  // module and count native realpath calls across a normal 240-file export
+  {
+    const perfRoot = path.join(xw, 'perf-src');
+    const perfSub = path.join(perfRoot, 'sub');
+    fs.mkdirSync(perfSub, { recursive: true });
+    for (let i = 0; i < 120; i++) {
+      fs.writeFileSync(path.join(perfRoot, `f${i}.c`), '// f\n');
+      fs.writeFileSync(path.join(perfSub, `g${i}.c`), '// g\n');
+    }
+    const origReal = fs.realpathSync.native;
+    let realCalls = 0;
+    fs.realpathSync.native = (...args) => {
+      realCalls++;
+      return origReal.apply(fs, args);
+    };
+    try {
+      const dstOut = path.join(xw, 'perf-dst');
+      realCalls = 0;
+      copyTree(perfRoot, dstOut, dstOut);
+      const copied = fs.readdirSync(path.join(dstOut, 'sub')).length + fs.readdirSync(dstOut).filter((n) => n.endsWith('.c')).length;
+      check('copyTree perf: all 240 files copied', copied === 240);
+      // 1 = the once-per-export skipDir realpath (dst not created yet -> throws,
+      // which still counts); files and the not-yet-existing sub stay at zero,
+      // so with skipReal unknown the sub check fell back to the fold compare
+      check('copyTree perf: 240-file export pays exactly one realpath', realCalls === 1);
+      // the case-variant self-copy guard keeps working through the fold fast path
+      const dstIn = path.join(perfRoot, 'EXPORT');
+      fs.mkdirSync(dstIn, { recursive: true });
+      realCalls = 0;
+      copyTree(perfRoot, dstIn, dstIn);
+      check('copyTree perf: case-variant export dir skipped, no nesting', !fs.existsSync(path.join(dstIn, 'export')) && !fs.existsSync(path.join(dstIn, 'EXPORT')));
+      // 2 = skipDir precompute (dst exists now) + the one non-matching
+      // subdirectory; the matched EXPORT entry itself costs zero
+      check('copyTree perf: matched entry skipped with zero realpath', realCalls === 2);
+    } finally {
+      fs.realpathSync.native = origReal;
+    }
+    fs.rmSync(perfRoot, { recursive: true, force: true });
+  }
+
+  // round40 P3: a junction/symlink ALIAS of the export dir reports
+  // isDirectory()===false — the guard must still recognise it (the old
+  // behaviour copied the alias and died with EPERM)
+  {
+    const jw = path.join(xw, 'junction-case');
+    const realDir = path.join(jw, 'realExport');
+    fs.mkdirSync(realDir, { recursive: true });
+    fs.writeFileSync(path.join(realDir, 'x.c'), '// x\n');
+    fs.writeFileSync(path.join(jw, 'top.c'), '// top\n');
+    const alias = path.join(jw, 'alias');
+    let aliasOk = true;
+    try {
+      fs.symlinkSync(realDir, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch {
+      aliasOk = false; // host refuses symlinks — skip this probe
+    }
+    if (aliasOk) {
+      // realistic shape: the command passes the export dir BOTH as dst and
+      // skipDir; the junction `alias` points at that same dir
+      copyTree(jw, realDir, realDir);
+      check('junction alias: skipped without EPERM', !fs.existsSync(alias + '/alias') && !fs.existsSync(path.join(realDir, 'alias')));
+      check('junction alias: sibling files still copied', fs.existsSync(path.join(realDir, 'top.c')));
+    } else {
+      console.log('SKIP  junction alias probe (host refuses symlinks)');
+    }
+  }
   fs.rmSync(xw, { recursive: true, force: true });
 }
 
@@ -193,6 +272,30 @@ check('regeneration is deterministic', fs.readFileSync(file, 'utf-8') === first)
   check('static lib: no link flags / post-build steps', !rawLib.includes('LINK_FLAGS "') && !rawLib.includes('add_custom_command'));
   check('static lib: result reports library', builtLib.isExecutable === false);
   fs.rmSync(projLib, { recursive: true, force: true });
+}
+
+// ---- picolibc reaches CMAKE link flags (round37 P2) ----
+{
+  const projP = path.join(WS, 'proj-picolibc');
+  fs.cpSync(PROJ, projP, { recursive: true });
+  const cpP = Cproject.load(projP);
+  cpP.setOptionValue('c.linker.picolibc', 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.c.linker.picolibc.minimal');
+  cpP.save();
+  const cpPR = Cproject.load(projP);
+  const fileP = path.join(WS, 'CMakeLists-picolibc.txt');
+  buildCMakeContent(cpPR, tc, fileP);
+  const rawP = fs.readFileSync(fileP, 'utf-8');
+  check(
+    'CMake link flags: picolibc minimal emits __m_ defsyms + specs',
+    rawP.includes('vfprintf=__m_vfprintf') && rawP.includes('vfscanf=__m_vfscanf') && rawP.includes('--specs=picolibc.specs')
+  );
+  check('CMake link flags: nano suppressed while picolibc is active', !rawP.includes('--specs=nano.specs'));
+  const cflagsP = rawP.split(/\r?\n/).find((l) => l.startsWith('set(CMAKE_C_FLAGS')) || '';
+  check(
+    'CMake compile flags: picolibc specs reach CMAKE_C_FLAGS (round38 P2)',
+    cflagsP.includes('--specs=picolibc.specs') && !cflagsP.includes('--specs=nano.specs')
+  );
+  fs.rmSync(projP, { recursive: true, force: true });
 }
 
 fs.rmSync(WS, { recursive: true, force: true });

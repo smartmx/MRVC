@@ -11,7 +11,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ProjectStore, MrsProject, getInstall, msg } from './projects';
-import { buildCMakeContent } from '../core/cmake';
+import { buildCMakeContent, safeExportDirName } from '../core/cmake';
+import { foldPathOnPlatform } from '../core/cproject';
 import { t } from '../core/i18n';
 
 async function pickProject(store: ProjectStore, item?: unknown): Promise<MrsProject | undefined> {
@@ -59,23 +60,52 @@ export async function generateCMakeListCmd(store: ProjectStore, item?: unknown):
 /** entries never copied into an export: build outputs, VCS, MRS metadata */
 const EXPORT_SKIP = new Set(['obj', 'build', '.git', '.svn', '.mrs', '.vscode', '.settings']);
 
+/** self-copy guard for ONE entry (round39 P3): the folded path comparison
+ * costs no syscalls; only a DIRECTORY or a symlink/junction can alias the
+ * export dir, so the realpath fallback is gated on those — plain files
+ * never touch the filesystem twice per entry any more. (A Windows junction
+ * reports isDirectory()===false + isSymbolicLink()===true, so both checks
+ * are required — round40.) */
+function entryIsSkipped(s: string, entry: fs.Dirent, skipKey: string, skipReal: string | undefined): boolean {
+  if (foldPathOnPlatform(path.resolve(s)) === skipKey) return true;
+  if ((!entry.isDirectory() && !entry.isSymbolicLink()) || !skipReal) return false;
+  try {
+    return foldPathOnPlatform(fs.realpathSync.native(s)) === skipReal;
+  } catch {
+    return false;
+  }
+}
+
 function copyTree(src: string, dst: string, skipDir?: string): void {
-  fs.mkdirSync(dst, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    if (entry.name.startsWith('.')) continue;
-    const s = path.join(src, entry.name);
-    // export target chosen INSIDE the project: never copy it into itself
-    // (the partially-filled export dir would recurse into a nested,
-    // incomplete copy of itself)
-    if (skipDir && path.resolve(s) === skipDir) continue;
-    const d = path.join(dst, entry.name);
-    if (entry.isDirectory()) {
-      if (EXPORT_SKIP.has(entry.name)) continue;
-      copyTree(s, d, skipDir);
-    } else {
-      fs.copyFileSync(s, d);
+  // the skip identity is resolved ONCE per export, not once per entry
+  const skipKey = skipDir ? foldPathOnPlatform(path.resolve(skipDir)) : undefined;
+  let skipReal: string | undefined;
+  if (skipDir) {
+    try {
+      skipReal = foldPathOnPlatform(fs.realpathSync.native(skipDir));
+    } catch {
+      skipReal = undefined;
     }
   }
+  const walk = (dir: string, out: string): void => {
+    fs.mkdirSync(out, { recursive: true });
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.')) continue;
+      const s = path.join(dir, entry.name);
+      // export target chosen INSIDE the project: never copy it into itself
+      // (the partially-filled export dir would recurse into a nested,
+      // incomplete copy of itself)
+      if (skipKey && entryIsSkipped(s, entry, skipKey, skipReal)) continue;
+      const d = path.join(out, entry.name);
+      if (entry.isDirectory()) {
+        if (EXPORT_SKIP.has(entry.name)) continue;
+        walk(s, d);
+      } else {
+        fs.copyFileSync(s, d);
+      }
+    }
+  };
+  walk(src, dst);
 }
 
 /** a .project link name becomes a path segment inside the export folder —
@@ -126,8 +156,21 @@ export async function exportAsCMakeCmd(store: ProjectStore, item?: unknown): Pro
   });
   if (!out?.length) return;
 
-  const dirName = `${project.projectName}_cmake`;
-  const dst = path.join(out[0].fsPath, dirName);
+  const safeName = safeExportDirName(project.projectName);
+  if (!safeName) {
+    vscode.window.showErrorMessage(t('cmakeBadName', project.projectName));
+    return;
+  }
+  const dirName = `${safeName}_cmake`;
+  const outRoot = path.resolve(out[0].fsPath);
+  const dst = path.resolve(outRoot, dirName);
+  // belt-and-braces containment: even if the name check above missed a
+  // platform-specific separator, the export must stay one level below the
+  // folder the user chose (never let it address the chosen folder itself)
+  if (path.dirname(dst) !== outRoot) {
+    vscode.window.showErrorMessage(t('cmakeBadName', project.projectName));
+    return;
+  }
   if (fs.existsSync(dst)) {
     const overwrite = await vscode.window.showWarningMessage(t('cmakeExists', dirName), { modal: true }, t('overwrite'));
     if (overwrite !== t('overwrite')) return;

@@ -105,6 +105,20 @@ if (HAS_LED) {
   check('assembly files use the assembler arg set', asm && asm.arguments.includes('assembler-with-cpp'));
   check('directory is the project root', c1.directory === path.resolve(PROJ));
 
+  // round38 P2: cpptools/clangd cannot expand GCC specs, so the picolibc
+  // header directory the specs would add is passed explicitly
+  {
+    const fakeTcDir = path.join(WS, 'fake-toolchain');
+    const piclInc = path.join(fakeTcDir, 'riscv-wch-elf', 'picolibc', 'riscv-wch-elf', 'include');
+    fs.mkdirSync(piclInc, { recursive: true });
+    const cpP = Cproject.load(PROJ);
+    cpP.setOptionValue('c.linker.picolibc', 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.c.linker.picolibc.minimal');
+    const eP = buildCompileEntries(cpP, { ...tc, dir: fakeTcDir }).find((e) => e.file.endsWith('.c'));
+    check('picolibc IntelliSense: picolibc include dir added', eP.arguments.includes('-isystem') && eP.arguments.includes(piclInc));
+    check('picolibc IntelliSense: specs are not handed to cpptools', !eP.arguments.some((a) => a.startsWith('--specs')));
+    fs.rmSync(fakeTcDir, { recursive: true, force: true });
+  }
+
   // vscode-level: write files into the temp workspace
   const { ensureIntellisenseConfig, dbDir, dbFileName, activeCcFile, sharedDbFile, switchContext, resolveProjectForFile } = require(path.join(__dirname, '..', 'out', 'vscode', 'intellisense.js'));
   const store = {

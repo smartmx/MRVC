@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "Unofficial, independent project — not developed or supported by WCH or MounRiver. MRVC opens, configures and builds MounRiver (MRS) projects for WCH MCUs directly in VSCode; for development and debugging use.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "smartmx",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -221,6 +221,20 @@
           "description": "Baud rate the monitor opens the port with (the SDI printf stream itself is baud-independent; this is the port-open parameter).",
           "order": 10
         },
+        "mrvc.mrsValidate.timeoutSec": {
+          "type": "number",
+          "default": 180,
+          "minimum": 30,
+          "description": "MRS 深度校验（使用 MRS 校验工程）的单工程超时秒数。校验即让 MRS 静默完整解析并构建一次工程；首次使用会先做一次组件初始化（较慢），之后为增量构建。超时后进程被终止并按 MRS 会话日志判读。",
+          "order": 14
+        },
+        "mrvc.mrsBuild.timeoutSec": {
+          "type": "number",
+          "default": 600,
+          "minimum": 30,
+          "description": "Build / Rebuild / Clean With MRS IDE（使用 MRS IDE 编译/重新编译/清理）的单工程超时秒数。与 MRVC 自身的 make 构建管线相互独立；MRS 全量构建较慢（大工程可能数分钟），请按需调大。取消或超时会终止 MRS 进程（实测不残留子进程）。",
+          "order": 15
+        },
         "mrvc.flash.resetMode": {
           "type": "string",
           "enum": ["nrst", "powerOff"],
@@ -277,7 +291,8 @@
         {
           "id": "mrvc.info",
           "name": "Info",
-          "when": "true"
+          "when": "true",
+          "size": 160
         }
       ]
     },
@@ -424,6 +439,31 @@
       {
         "command": "mrvc.openWithMrs",
         "title": "%command.mrvc.openWithMrs.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.mrsValidate",
+        "title": "%command.mrvc.mrsValidate.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.mrsValidateAll",
+        "title": "%command.mrvc.mrsValidateAll.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.buildWithMrs",
+        "title": "%command.mrvc.buildWithMrs.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.rebuildWithMrs",
+        "title": "%command.mrvc.rebuildWithMrs.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.cleanWithMrs",
+        "title": "%command.mrvc.cleanWithMrs.title%",
         "category": "MRVC"
       },
       {
@@ -660,7 +700,20 @@
         "category": "MRVC"
       }
     ],
+    "submenus": [
+      {
+        "id": "mrvc.mrsOperations",
+        "label": "%submenu.mrvc.mrsOperations.label%"
+      }
+    ],
     "menus": {
+      "mrvc.mrsOperations": [
+        { "command": "mrvc.buildWithMrs", "group": "1_mrs@1", "when": "view == mrvc.projectExplorer && viewItem == project && mrvc.mrsIdeActive" },
+        { "command": "mrvc.cleanWithMrs", "group": "1_mrs@2", "when": "view == mrvc.projectExplorer && viewItem == project && mrvc.mrsIdeActive" },
+        { "command": "mrvc.rebuildWithMrs", "group": "1_mrs@3", "when": "view == mrvc.projectExplorer && viewItem == project && mrvc.mrsIdeActive" },
+        { "command": "mrvc.mrsValidate", "group": "1_mrs@4", "when": "view == mrvc.projectExplorer && viewItem == project && mrvc.mrsIdeActive" },
+        { "command": "mrvc.openWithMrs", "group": "2_open@1", "when": "view == mrvc.projectExplorer && viewItem == project" }
+      ],
       "view/title": [
         {
           "command": "mrvc.openProject",
@@ -1097,17 +1150,17 @@
         {
           "command": "mrvc.renameProject",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "1_project@6"
+          "group": "3_project@6"
         },
         {
           "command": "mrvc.syncProjectName",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "1_project@7"
+          "group": "3_project@7"
         },
         {
           "command": "mrvc.switchProjectType",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "1_project@8"
+          "group": "3_project@8"
         },
         {
           "command": "mrvc.addLinkedFolder",
@@ -1147,42 +1200,37 @@
         {
           "command": "mrvc.generateCMakeList",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "1_project@9"
+          "group": "3_project@9"
         },
         {
           "command": "mrvc.exportAsCMake",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "1_project@10"
+          "group": "3_project@10"
         },
         {
           "command": "mrvc.restoreRemoved",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "1_project@11"
+          "group": "3_project@11"
         },
         {
           "command": "mrvc.showStackUsage",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "1_project@12"
+          "group": "3_project@12"
         },
         {
           "command": "mrvc.showCallAnalysis",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "1_project@13"
+          "group": "3_project@13"
         },
         {
-          "command": "mrvc.openWithMrs",
+          "submenu": "mrvc.mrsOperations",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "1_project@14"
-        },
-        {
-          "command": "mrvc.powerOffReset",
-          "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "1_project@15"
+          "group": "3_mrs@1"
         },
         {
           "command": "mrvc.auditProject",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "1_project@16"
+          "group": "3_project@20"
         },
         {
           "command": "mrvc.changeLinkedFolder",

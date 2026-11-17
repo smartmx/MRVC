@@ -14,13 +14,20 @@ import { readProjectFile, linkedFolderMap } from './projectFile';
 const OPT_BASE = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.';
 const TOOL_BASE = 'ilg.gnumcueclipse.managedbuild.cross.riscv.tool.';
 
+/** Path/name identity fold: Windows (NTFS) compares case-insensitively,
+ * POSIX does not — /work/Foo and /work/foo are different projects there.
+ * Use this instead of an unconditional toLowerCase() in identity keys. */
+export function foldPathOnPlatform(s: string): string {
+  return process.platform === 'win32' ? s.toLowerCase() : s;
+}
+
 /** Windows path/Name comparison folds case (NTFS is case-insensitive):
  * EVT files sometimes spell exclusion tokens, sourceEntry names or link
  * names with different case than the .project/.cproject counterpart —
  * matching must fold, or "Restore include" silently no-ops and "Exclude"
  * appends a duplicate token. Mirrors scan.ts's fold. */
 function foldName(s: string): string {
-  return process.platform === 'win32' ? s.toLowerCase() : s;
+  return foldPathOnPlatform(s);
 }
 
 export interface SourceEntry {

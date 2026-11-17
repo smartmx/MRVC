@@ -17,7 +17,8 @@
  * compile_commands.json" state.
  */
 import * as path from 'path';
-import { Cproject } from './cproject';
+import * as fs from 'fs';
+import { Cproject, foldPathOnPlatform } from './cproject';
 import { ToolchainInfo } from './toolchain';
 import { scanSources } from './scan';
 import { intellisenseArgs } from './flags';
@@ -31,12 +32,33 @@ export interface CompileCommandEntry {
 const ASM_EXTS = new Set(['s', 'S']);
 const CPP_EXTS = new Set(['cpp', 'C', 'cc', 'cxx']);
 
+/** picolibc headers live under the toolchain's sysroot. GCC expands
+ * `--specs=picolibc.specs` into `-isystem <root>/picolibc/riscv-wch-elf/
+ * include`; cpptools/clangd do not understand specs, so the directory is
+ * added explicitly when the project uses picolibc. */
+function picolibcIncludeDir(tc: ToolchainInfo): string | undefined {
+  const candidates = [
+    path.join(tc.dir, 'riscv-wch-elf', 'picolibc', 'riscv-wch-elf', 'include'),
+    path.join(tc.dir, 'picolibc', 'riscv-wch-elf', 'include'),
+  ];
+  for (const p of candidates) if (fs.existsSync(p)) return p;
+  return undefined;
+}
+
 function makeEntry(cp: Cproject, tc: ToolchainInfo, kind: 'c' | 'cpp' | 'asm', file: string): CompileCommandEntry {
   const compiler = kind === 'cpp' ? tc.compilerCpp : tc.compilerC;
+  const args = intellisenseArgs(cp, kind);
+  if (kind !== 'asm') {
+    const picl = cp.optionEnum(`${kind === 'cpp' ? 'cpp' : 'c'}.linker.picolibc`);
+    if (picl && picl !== 'disabled') {
+      const inc = picolibcIncludeDir(tc);
+      if (inc) args.push('-isystem', inc);
+    }
+  }
   return {
     directory: cp.projectRoot,
     file: path.resolve(file),
-    arguments: [path.resolve(compiler), ...intellisenseArgs(cp, kind), path.resolve(file)],
+    arguments: [path.resolve(compiler), ...args, path.resolve(file)],
   };
 }
 
@@ -45,9 +67,9 @@ function kindOf(logicName: string): 'c' | 'cpp' | 'asm' {
   return ASM_EXTS.has(ext) ? 'asm' : CPP_EXTS.has(ext) ? 'cpp' : 'c';
 }
 
-/** win32-stable file identity (case-insensitive absolute path) */
+/** platform-stable file identity: case-insensitive only on Windows */
 function fileKey(file: string): string {
-  return path.resolve(file).toLowerCase();
+  return foldPathOnPlatform(path.resolve(file));
 }
 
 /**

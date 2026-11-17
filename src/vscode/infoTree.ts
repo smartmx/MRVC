@@ -106,6 +106,23 @@ export class InfoTreeProvider implements vscode.TreeDataProvider<InfoRow> {
     sdiRow.command = { command: 'mrvc.sdiPrintMonitor', title: t('infoSdiOpenMonitor') };
     rows.push(sdiRow);
 
+    // 5. Power-Off Reset action row — a CLICKABLE action, not a status: the
+    // project context menu was getting crowded (user request 2026-11-16), so
+    // the WCH-Link power-cycle lives here instead. The command itself gates
+    // on the link model (plain WCH-Link cannot switch rails) and shows its
+    // own errors; the row is dimmed when there is no active project.
+    const powerRow = new vscode.TreeItem(
+      project ? t('infoPowerOffReset') : t('infoNone'),
+      vscode.TreeItemCollapsibleState.None
+    );
+    powerRow.description = t('infoPowerCat');
+    powerRow.iconPath = new vscode.ThemeIcon('debug-restart');
+    powerRow.tooltip = t('infoPowerTooltip');
+    if (project) {
+      powerRow.command = { command: 'mrvc.powerOffReset', title: t('infoPowerOffReset'), arguments: [{ project }] };
+    }
+    rows.push(powerRow);
+
     return rows;
   }
 }

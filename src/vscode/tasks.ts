@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { ProjectStore, MrsProject, MrsSolution, msg, getInstall } from './projects';
+import { foldPathOnPlatform } from '../core/cproject';
 import { generateMakefiles } from '../core/makefile';
 import { clearOutputDir, removeOutputDir } from '../core/output';
 import { t } from '../core/i18n';
@@ -84,9 +85,22 @@ export function buildMakeArgs(kind: 'build' | 'clean' | 'rebuild', jobs: number,
   return args;
 }
 
-/** the `mrvc.build.verbose` value */
+/** the `mrvc.build.verbose` value (only the known modes are accepted) */
 function buildVerbosity(): string {
-  return vscode.workspace.getConfiguration('mrvc').get<string>('build.verbose', 'normal');
+  const v = vscode.workspace.getConfiguration('mrvc').get<string>('build.verbose', 'normal');
+  return v === 'full' || v === 'concise' ? v : 'normal';
+}
+
+/** `mrvc.build.parallelJobs`: settings.json is user input, so a hand-edited
+ * string ("8;rm ...") must never reach the `-j` argument. 0/absent/invalid =
+ * automatic (CPU count); valid values are capped to a sane integer range. */
+export function sanitizeParallelJobs(raw: unknown, automatic: number): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || !Number.isInteger(raw) || raw <= 0) return automatic;
+  return Math.min(raw, 64);
+}
+
+function parallelJobsSetting(): number {
+  return sanitizeParallelJobs(vscode.workspace.getConfiguration('mrvc').get('build.parallelJobs'), defaultJobs());
 }
 
 export class BuildManager {
@@ -94,8 +108,9 @@ export class BuildManager {
   private buildAllChannel: vscode.OutputChannel | null = null;
   /** projects with a make task in flight (single-build guard): two
    * concurrent `make -jN` runs write the same obj/ and append to the same
-   * build-record file. Keyed by the lowercased project root; the stored
-   * execution lets a repeated trigger terminate the running task. */
+   * build-record file. Keyed by the platform-folded project root (case-
+   * insensitive only on Windows); the stored execution lets a repeated
+   * trigger terminate the running task. */
   private building = new Map<string, { exec?: vscode.TaskExecution }>();
 
   constructor(private store: ProjectStore) {}
@@ -103,7 +118,7 @@ export class BuildManager {
   /** test seam (round16 P2): is the single-build guard still held? A failed
    * or cancelled rebuild clean must release it before any build task exists. */
   buildInFlightForTests(root: string): boolean {
-    return this.building.has(path.resolve(root).toLowerCase());
+    return this.building.has(foldPathOnPlatform(path.resolve(root)));
   }
 
   /**
@@ -113,7 +128,7 @@ export class BuildManager {
   async buildAll(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const toolchainReq = cfg.get<string>('toolchain', 'auto');
-    const jobs = cfg.get<number>('build.parallelJobs', 0) || defaultJobs();
+    const jobs = parallelJobsSetting();
     const analysis = cfg.get<boolean>('build.analysis', false);
     return this.runBatch(this.store.all, {
       progressTitle: t('progressBuildAll'),
@@ -133,7 +148,7 @@ export class BuildManager {
     }
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const toolchainReq = cfg.get<string>('toolchain', 'auto');
-    const jobs = cfg.get<number>('build.parallelJobs', 0) || defaultJobs();
+    const jobs = parallelJobsSetting();
     const analysis = cfg.get<boolean>('build.analysis', false);
     return this.runBatch(members, {
       progressTitle: t('progressBuildSolution', sol.name),
@@ -148,7 +163,7 @@ export class BuildManager {
   async rebuildAll(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('mrvc');
     const toolchainReq = cfg.get<string>('toolchain', 'auto');
-    const jobs = cfg.get<number>('build.parallelJobs', 0) || defaultJobs();
+    const jobs = parallelJobsSetting();
     const analysis = cfg.get<boolean>('build.analysis', false);
     return this.runBatch(this.store.all, {
       progressTitle: t('progressRebuildAll'),
@@ -310,7 +325,7 @@ export class BuildManager {
     const ok = (detail: string): BuildAllResult => ({ project: p.projectName, ok: true, detail });
     // shared guard with run()/buildOne: deleting obj/ under a running make
     // would pull .o/.d files out from under the compiler/linker
-    if (this.building.has(path.resolve(p.root).toLowerCase())) {
+    if (this.building.has(foldPathOnPlatform(path.resolve(p.root)))) {
       return ok(t('buildBusySkip'));
     }
     try {
@@ -349,7 +364,7 @@ export class BuildManager {
   private cleanOneInner(p: MrsProject, install: NonNullable<ReturnType<typeof getInstall>>): Promise<BuildAllResult> {
     // shared guard with run()/buildOne: `make clean` against a running
     // build of the same project would delete .o/.d files mid-compile
-    if (this.building.has(path.resolve(p.root).toLowerCase())) {
+    if (this.building.has(foldPathOnPlatform(path.resolve(p.root)))) {
       return Promise.resolve({ project: p.projectName, ok: true, detail: t('buildBusySkip') });
     }
     if (!fs.existsSync(path.join(p.buildDir, 'makefile'))) {
@@ -452,7 +467,7 @@ export class BuildManager {
     }
     // single-build guard, shared with run(): a batch member and a manual
     // Build of the same project must not both write its obj/
-    const key = path.resolve(p.root).toLowerCase();
+    const key = foldPathOnPlatform(path.resolve(p.root));
     if (this.building.has(key)) return Promise.resolve(fail(t('buildAlreadyRunning', p.projectName)));
     // the entry must carry the execution once it starts, so a manual Build
     // during the batch can offer "Terminate Build" and actually stop it
@@ -538,7 +553,7 @@ export class BuildManager {
     // one make per project at a time — F7 double-press, an inline button
     // double-click, or a per-project Build while Build All runs that project
     // would otherwise start two `make -jN` on the same obj/
-    const buildKey = path.resolve(project.root).toLowerCase();
+    const buildKey = foldPathOnPlatform(path.resolve(project.root));
     if (this.building.has(buildKey)) {
       const inFlight = this.building.get(buildKey)!;
       void vscode.window
@@ -614,8 +629,7 @@ export class BuildManager {
       return;
     }
 
-    const cfg = vscode.workspace.getConfiguration('mrvc');
-    const jobs = cfg.get<number>('build.parallelJobs', 0) || defaultJobs();
+    const jobs = parallelJobsSetting();
     if (kind === 'clean' && !fs.existsSync(path.join(project.buildDir, 'makefile'))) {
       vscode.window.showInformationMessage(t('neverBuilt', project.projectName));
       return;

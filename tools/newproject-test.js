@@ -153,6 +153,8 @@ check('normalize: doubled separator -> root', normalizeParentDirInput('C:\\\\') 
 check('normalize: plain path trimmed', normalizeParentDirInput('F:/MyProjects/') === 'F:/MyProjects');
 check('normalize: plain path untouched', normalizeParentDirInput('F:\\MyProjects') === 'F:\\MyProjects');
 check('normalize: whitespace trimmed', normalizeParentDirInput('  F:\\x  ') === 'F:\\x');
+// round37 P3: the filesystem root must survive trailing-separator trimming
+check('normalize: filesystem root kept', normalizeParentDirInput('/') === '/' && normalizeParentDirInput('//') === '/');
 
 // 7. POSIX template extraction (extractZipArchivePosix) — run the real
 // system unzip when one exists; the fallback-to-bsdtar / no-tool paths

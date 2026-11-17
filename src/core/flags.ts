@@ -396,6 +396,14 @@ function languageStdFlag(cp: Cproject): string {
   }
 }
 
+/** picolibc.specs is a COMPILE-time switch too: it adds the toolchain's
+ * picolibc include directory (-isystem) to cc1/cc1plus, not just the link
+ * libraries. MRS2 adds it per file (getCFileBuildOptions). */
+function picolibcCompileSpec(cp: Cproject, p: 'c' | 'cpp'): string {
+  const v = cp.optionEnum(`${p}.linker.picolibc`);
+  return v && v !== 'disabled' ? ' --specs=picolibc.specs' : '';
+}
+
 /** -D/-U/-I/... for the C compiler (getCCompilerOptions) */
 export function cCompilerOptions(cp: Cproject, skipIncludes = false, style: '1x' | '2x' = '1x'): string {
   let t = '';
@@ -433,6 +441,7 @@ export function cCompilerOptions(cp: Cproject, skipIncludes = false, style: '1x'
   if (cp.optionBool('c.compiler.verbose')) t += ' -v';
   const cOther = cp.optionValue('c.compiler.other');
   if (cOther) t += ` ${resolveOutputMacros(cp, cOther)}`;
+  t += picolibcCompileSpec(cp, 'c');
   return t;
 }
 
@@ -501,6 +510,7 @@ export function cppCompilerOptions(cp: Cproject, skipIncludes = false, style: '1
   if (cp.optionBool('cpp.compiler.verbose')) t += ' -v';
   const other = cp.optionValue('cpp.compiler.other');
   if (other) t += ` ${resolveOutputMacros(cp, other)}`;
+  t += picolibcCompileSpec(cp, 'cpp');
   return t;
 }
 
@@ -597,10 +607,12 @@ function linkerOptionsFor(cp: Cproject, p: 'c' | 'cpp', style: '1x' | '2x' = '1x
   for (const s of resolveList(cp, `${p}.linker.scriptfile`, (v) => v, { style })) {
     t += ` -T "${s}"`;
   }
-  if (cp.optionBool(`${p}.linker.nostart`)) t += ' -nostartfiles';
+  // C Linker model defaults these ON when the option is absent (MRS2's
+  // CLinker.general constructor); the C++ model leaves them OFF.
+  if (cp.optionBool(`${p}.linker.nostart`, p === 'c')) t += ' -nostartfiles';
   if (cp.optionBool(`${p}.linker.nodeflibs`)) t += ' -nodefaultlibs';
   if (cp.optionBool(`${p}.linker.nostdlibs`)) t += ' -nostdlib';
-  if (cp.optionBool(`${p}.linker.gcsections`)) t += ' -Xlinker --gc-sections';
+  if (cp.optionBool(`${p}.linker.gcsections`, p === 'c')) t += ' -Xlinker --gc-sections';
   if (cp.optionBool(`${p}.linker.printgcsections`)) t += ' -Xlinker --print-gc-sections';
   if (cp.optionBool(`${p}.linker.strip`)) t += ' -s';
   // like MRS2, -L entries that cannot be resolved are dropped entirely:
@@ -627,10 +639,19 @@ function linkerOptionsFor(cp: Cproject, p: 'c' | 'cpp', style: '1x' | '2x' = '1x
   t += ` -Wl,-Map,"${mapName}"`;
   if (cp.optionBool(`${p}.linker.cref`)) t += ' -Xlinker --cref';
   if (cp.optionBool(`${p}.linker.printmap`)) t += ' -Xlinker --print-map';
-  if (cp.optionBool(`${p}.linker.usenewlibnano`)) t += ' --specs=nano.specs';
-  if (cp.optionBool(`${p}.linker.useprintffloat`)) t += ' -u _printf_float';
-  if (cp.optionBool(`${p}.linker.usescanffloat`)) t += ' -u _scanf_float';
-  if (cp.optionBool(`${p}.linker.usenewlibnosys`)) t += ' --specs=nosys.specs';
+  // MRS2 semantic: picolibc and newlib-nano are alternatives. Only when
+  // picolibc is disabled do the nano / float switches apply; otherwise the
+  // first letter selects the printf/scanf implementation (d/i/m).
+  const picolibc = cp.optionEnum(`${p}.linker.picolibc`) ?? 'disabled';
+  if (picolibc && picolibc !== 'disabled') {
+    const variant = picolibc.charAt(0);
+    t += ` -Wl,--defsym=vfprintf=__${variant}_vfprintf -Wl,--defsym=vfscanf=__${variant}_vfscanf --specs=picolibc.specs`;
+  } else {
+    if (cp.optionBool(`${p}.linker.usenewlibnano`, p === 'c')) t += ' --specs=nano.specs';
+    if (cp.optionBool(`${p}.linker.useprintffloat`)) t += ' -u _printf_float';
+    if (cp.optionBool(`${p}.linker.usescanffloat`)) t += ' -u _scanf_float';
+  }
+  if (cp.optionBool(`${p}.linker.usenewlibnosys`, p === 'c')) t += ' --specs=nosys.specs';
   if (cp.optionBool(`${p}.linker.verbose`)) t += ' -v';
   const other = cp.optionValue(`${p}.linker.other`);
   if (other) t += ` ${resolveOutputMacros(cp, other)}`;
@@ -657,7 +678,7 @@ export function wchLibsOptions(cp: Cproject, toolchainName: string): string {
   let t = '';
   if (!isWchGcc(toolchainName)) return t;
   if (cp.optionBool(`${cp.isCpp ? 'cpp' : 'c'}.linker.iqmath`)) t += ' -lIQmath_RV32';
-  const picolibc = cp.optionEnum(`${cp.isCpp ? 'cpp' : 'c'}.linker.picolibc`) ?? 'disabled';
+  const picolibc = cp.optionEnum(`${cp.isCpp ? 'cpp' : 'c'}.linker.picolibc`) || 'disabled';
   if (picolibc === 'disabled') {
     if (cp.optionBool(`${cp.isCpp ? 'cpp' : 'c'}.linker.printf`)) t += ' -lprintf';
     if (cp.optionBool(`${cp.isCpp ? 'cpp' : 'c'}.linker.printfloat`)) t += ' -lprintfloat';

@@ -323,5 +323,31 @@ check('cache: products node identity is stable across renders', productsNode2 ==
   check('prune: the deleted leaf is no longer a scoped-refresh target', fired.length === 0);
 }
 
+// 12. recursive subtree pruning (round22 P3): deleting an EXPANDED directory
+//     drops its whole descendant chain from the caches, not just the node
+{
+  const nested = path.join(SRC, 'nested-probe');
+  const deep = path.join(nested, 'deep.c');
+  fs.mkdirSync(nested, { recursive: true });
+  fs.writeFileSync(deep, '');
+  const level = provider.getChildren(folderNode);
+  const nestedNode = level.find((n) => n.fsPath === nested);
+  check('prune-recursive: nested dir rendered', !!nestedNode);
+  const nestedChildren = provider.getChildren(nestedNode);
+  const deepNode = nestedChildren.find((n) => n.fsPath === deep);
+  check('prune-recursive: deep leaf rendered', !!deepNode);
+  fs.rmSync(nested, { recursive: true, force: true });
+  provider.getChildren(folderNode); // re-render: nested dir absent → pruned
+  const fired = [];
+  const sub = provider.onDidChangeTreeData((el) => el && fired.push(el));
+  provider.refreshDirs([nested]);
+  provider.refreshDirs([deep]);
+  sub.dispose();
+  check('prune-recursive: nested dir no longer a scoped-refresh target', fired.length === 0);
+  check('prune-recursive: deep leaf no longer a scoped-refresh target', fired.length === 0);
+  const levelAfter = provider.getChildren(folderNode);
+  check('prune-recursive: nested row gone after parent re-read', !levelAfter.some((n) => n.fsPath === nested));
+}
+
 process.exit(failures ? 1 : 0);
 })();

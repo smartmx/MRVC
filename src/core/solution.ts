@@ -16,6 +16,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { foldPathOnPlatform } from './cproject';
 import { findSolutionFiles } from './discover';
 
 /**
@@ -33,7 +34,7 @@ export function solutionCandidates(roots: string[]): string[] {
   const out: string[] = [];
   for (const root of roots) {
     for (const f of findSolutionFiles(root, 0)) {
-      const key = f.toLowerCase();
+      const key = foldPathOnPlatform(f);
       if (!seen.has(key)) {
         seen.add(key);
         out.push(f);

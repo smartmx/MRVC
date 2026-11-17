@@ -5,22 +5,28 @@
  * launcher binary is resolved per install flavor/generation via
  * installLauncherPath(); the .wvproj is passed as TWO `-m <file>` arguments
  * (mrsOpenProjectArgs; the extension's internal `-m=` equals-form leaves the
- * workspace empty on a real desktop). Windows passes the RELATIVE basename
- * with -WorkingDirectory = the project root (PS Start-Process does not quote
- * -ArgumentList elements — mrsWindowsLaunchArgv), POSIX passes the absolute
- * path through sh quoting (mrsLaunchSpec owns the split). The launch is
- * DETACHED through an instant-completing wrapper (PowerShell Start-Process
- * on Windows, a backgrounded sh on POSIX): an MRS process lives as long as
- * its window, so a tracked task would pile up forever-running instances and
- * surface stale ones ("Select an instance to terminate", 2026-11-12); cmd's
- * `start ""` title argument is additionally mangled by VS Code argv
- * quoting, which rules the pure-cmd form out.
+ * workspace empty on a real desktop). Windows passes the ABSOLUTE path
+ * through a detached PowerShell wrapper (see mrsWindowsLaunchArgv), POSIX
+ * passes it through sh quoting (mrsLaunchSpec owns the split; the task
+ * process IS the IDE and its environment is the full desktop session minus
+ * the ELECTRON_* / VSCODE_* poison prefixes — the round-42 form).
+ *
+ * Platform split, 2026-11-17: Windows stays DETACHED through an
+ * instant-completing PowerShell wrapper (Start-Process) — an MRS process
+ * lives as long as its window, so a tracked task would pile up
+ * forever-running instances and surface stale ones ("Select an instance to
+ * terminate", 2026-11-12). POSIX instead goes FOREGROUND (five detached
+ * wrapper forms — nohup/setsid/env -i variants — all died silently inside
+ * the task while the identical command from a desktop terminal opened the
+ * IDE, see mrsLaunchSpec): the task process IS the IDE, so the task lives
+ * exactly as long as the MRS window and closes when the window closes. The
+ * task terminal streams the IDE's own output (free diagnostics on failure).
  */
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getInstall, MrsProject, ProjectStore } from './projects';
-import { host, installLauncherPath, mrsLaunchSpec } from '../core/toolchain';
+import { host, installLauncherPath, mrsGuiEnv, mrsLaunchSpec } from '../core/toolchain';
 import { waitTaskProcess } from './taskRunner';
 import { t } from '../core/i18n';
 
@@ -33,7 +39,7 @@ import { t } from '../core/i18n';
  * choice would be arbitrary (alphabetical), so refuse rather than open the
  * wrong project.
  */
-function wvprojPath(project: MrsProject): string {
+export function wvprojPath(project: MrsProject): string {
   const canonical = path.join(project.root, project.projectName + '.wvproj');
   if (fs.existsSync(canonical)) return canonical;
   try {
@@ -72,29 +78,30 @@ export function openWithMrsCmd(store: ProjectStore, item?: { project?: unknown }
     vscode.window.showErrorMessage(t('openWithMrsNoWvproj', project.root));
     return;
   }
-  // Detached launch: the IDE must NOT be a tracked task — an MRS process
-  // lives as long as its window, so every click used to pile up a forever-
-  // "running" task and VS Code surfaced stale ones ("Select an instance to
-  // terminate - MRVC: MRVC: open with MRS - <old project>", 2026-11-12 user
-  // report). The wrapper exits right after Start-Process / backgrounding,
-  // so the task completes instantly and MRS outlives it.
-  // The platform split lives in mrsLaunchSpec. Both platforms pass the
-  // ABSOLUTE .wvproj: MRS rejects a relative path outright ("The following
-  // file path is not absolute", 2026-11-12 user report); the Windows wrapper
-  // embeds quotes so a spaced path still arrives as one argv token.
+  // Platform split lives in mrsLaunchSpec (see its header for the 2026-11-17
+  // evidence): Windows detached via PowerShell, POSIX FOREGROUND — the task
+  // process IS the IDE, so the task runs while the MRS window is open and
+  // completes when it closes (no detached pile-up possible on that branch).
+  // Both platforms pass the ABSOLUTE .wvproj: MRS rejects a relative path
+  // outright ("The following file path is not absolute", 2026-11-12 user
+  // report); the Windows wrapper embeds quotes so a spaced path still
+  // arrives as one argv token. mrsGuiEnv stays as the options.env belt for
+  // the Windows branch; on POSIX the poison ELECTRON_*/VSCODE_* variables
+  // are unset BY PREFIX inside the launch script itself (task-env options
+  // merge additively and cannot remove them — see mrsLaunchSpec).
   const spec = mrsLaunchSpec(host(), launcher, wvproj, project.root);
   const task = new vscode.Task(
     { type: 'mrvc-tool', task: 'open-with-mrs', project: project.projectName },
     `open with MRS - ${project.projectName}`,
     'MRVC',
-    new vscode.ProcessExecution(spec.argv[0], spec.argv.slice(1))
+    new vscode.ProcessExecution(spec.argv[0], spec.argv.slice(1), { env: mrsGuiEnv(process.env), cwd: spec.cwd })
   );
   task.presentationOptions = { reveal: vscode.TaskRevealKind.Never };
-  // the wrapper completes instantly; a non-zero exit means the launch itself
-  // failed — never stay silent (reveal: Never would hide it). The listener
-  // is registered INSIDE waitTaskProcess before executeTask(), so an instant
+  // a non-zero exit means the launch itself failed (or the IDE crashed) —
+  // never stay silent (reveal: Never would hide it). The listener is
+  // registered INSIDE waitTaskProcess before executeTask(), so an instant
   // exit cannot be missed, and a rejected executeTask resolves undefined
-  // (round-11 P3-3).
+  // (round-11 P3-3). On POSIX a normal "window closed" ends with exit 0.
   void waitTaskProcess(task, 'mrvc-tool').then((code) => {
     if (code !== 0) {
       vscode.window.showErrorMessage(t('openWithMrsFailed', String(code ?? 'unknown')));

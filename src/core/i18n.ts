@@ -245,6 +245,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   cmakeGenFailed: { en: 'MRVC: CMake generation failed — {0}', 'zh-cn': 'MRVC：CMake 生成失败——{0}' },
   cmakeExportTitle: { en: 'Export folder for "{0}" (a subfolder is created)', 'zh-cn': '为" {0} "选择导出位置（将创建子文件夹）' },
   cmakeExportHere: { en: 'Export here', 'zh-cn': '在此导出' },
+  cmakeBadName: {
+    en: 'MRVC: the project name cannot be used as a folder name (path separators / reserved characters) — export cancelled: {0}',
+    'zh-cn': 'MRVC：工程名不能用作文件夹名（含路径分隔符/保留字符），已取消导出：{0}',
+  },
   cmakeExists: { en: '"{0}" already exists. Overwrite?', 'zh-cn': " {0} 已存在。是否覆盖？" },
   cmakeExported: { en: 'MRVC: exported to {0} — builds with cmake -B build -G "Unix Makefiles".', 'zh-cn': 'MRVC：已导出到 {0}——使用 cmake -B build -G "Unix Makefiles" 构建。' },
   cmakeOpenFolder: { en: 'Open Folder', 'zh-cn': '打开文件夹' },
@@ -324,6 +328,85 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   },
   openWithMrsFailed: { en: 'MRVC: failed to launch the MRS IDE ({0}).', 'zh-cn': 'MRVC：启动 MRS IDE 失败（{0}）。' },
 
+  // MRS deep project check (0.3.1): the real MRS silent build decides
+  mrsValidateNoIde: {
+    en: 'The current MRS configuration is a standalone toolchain (no IDE to validate with): {0}',
+    'zh-cn': '当前生效配置为纯工具链（无 IDE 可用于校验）：{0}',
+  },
+  mrsValidateNoLauncher: {
+    en: 'MRS IDE launcher not found under: {0}',
+    'zh-cn': '未找到 MRS IDE 启动器：{0}',
+  },
+  mrsValidateNoWvproj: {
+    en: 'No .wvproj project file found in: {0}',
+    'zh-cn': '该目录下未找到 .wvproj 工程文件：{0}',
+  },
+  mrsValidateProgress: { en: 'MRVC: validating "{0}" with MRS…', 'zh-cn': 'MRVC：正在用 MRS 校验“{0}”…' },
+  mrsValidateProgressAll: { en: 'MRVC: validating all projects with MRS…', 'zh-cn': 'MRVC：正在用 MRS 校验全部工程…' },
+  mrsValidateBuilt: {
+    en: 'MRVC: MRS accepted "{0}" — the project parsed and built successfully ({1}s).',
+    'zh-cn': 'MRVC：MRS 接受了“{0}”——工程解析并构建成功（{1} 秒）。',
+  },
+  mrsValidateParsed: {
+    en: 'MRVC: MRS accepted "{0}" (project parsed OK) but the build failed ({1}) — the project is legal; check the code/build errors.',
+    'zh-cn': 'MRVC：MRS 接受了“{0}”（工程解析正常）但构建失败（{1}）——工程本身合法，请检查代码/构建错误。',
+  },
+  mrsValidateRejected: {
+    en: 'MRVC: MRS REJECTED "{0}" — {1}',
+    'zh-cn': 'MRVC：MRS 无法接受“{0}”——{1}',
+  },
+  mrsValidateInconclusive: {
+    en: 'MRVC: validation of "{0}" was inconclusive {1}— no completion marker and no error signature. The build may simply be slow; try a longer "mrvc.mrsValidate.timeoutSec".',
+    'zh-cn': 'MRVC：“{0}”的校验无结论{1}——既没有完成标记也没有错误签名。可能只是构建较慢，请调大 "mrvc.mrsValidate.timeoutSec" 后重试。',
+  },
+  mrsValidateTimedOutHint: {
+    en: '(terminated at the timeout) ',
+    'zh-cn': '（超时后已终止进程）',
+  },
+  mrsValidateAllCancelled: {
+    en: 'MRVC: MRS validation cancelled — {0}/{1} projects validated.',
+    'zh-cn': 'MRVC：MRS 校验已取消——已校验 {0}/{1} 个工程。',
+  },
+  mrsValidateAllRejected: {
+    en: 'MRVC: MRS validation finished — {0} of {1} projects were REJECTED by MRS (see the "MRVC MRS Validate" output).',
+    'zh-cn': 'MRVC：MRS 校验完成——{1} 个工程中有 {0} 个被 MRS 拒绝（详见 "MRVC MRS Validate" 输出）。',
+  },
+  mrsValidateAllDone: {
+    en: 'MRVC: MRS validation finished — all {0} projects accepted by MRS ({1}s).',
+    'zh-cn': 'MRVC：MRS 校验完成——全部 {0} 个工程均被 MRS 接受（{1} 秒）。',
+  },
+  mrsValidateAllInconclusive: {
+    en: 'MRVC: MRS validation finished, but {0} of {1} projects had NO clear verdict (timeout / no marker) — see the "MRVC MRS Validate" output and try a larger "mrvc.mrsValidate.timeoutSec".',
+    'zh-cn': 'MRVC：MRS 校验完成，但 {1} 个工程中有 {0} 个没有明确结论（超时/无标记）——详见 "MRVC MRS Validate" 输出，可尝试调大 "mrvc.mrsValidate.timeoutSec"。',
+  },
+  mrsValidateSetupFailed: {
+    en: 'MRVC: failed to prepare the MRS validation run ({0}).',
+    'zh-cn': 'MRVC：MRS 校验运行准备失败（{0}）。',
+  },
+  mrsSilentBusy: {
+    en: 'MRVC: another MRS silent task is already running (validation or MRS IDE build) — wait for it to finish first.',
+    'zh-cn': 'MRVC：已有 MRS 静默任务在运行（校验或 MRS IDE 编译）——请先等它结束。',
+  },
+  mrsLockInitFailed: {
+    en: 'MRVC: the MRS task lock could not be created ({0}) — check permissions/disk space, then retry.',
+    'zh-cn': 'MRVC：MRS 任务锁创建失败（{0}）——请检查权限/磁盘空间后重试。',
+  },
+  mrsBuildTitleBuild: { en: 'MRVC: MRS IDE build — "{0}"…', 'zh-cn': 'MRVC：MRS IDE 编译“{0}”…' },
+  mrsBuildTitleRebuild: { en: 'MRVC: MRS IDE rebuild — "{0}"…', 'zh-cn': 'MRVC：MRS IDE 重新编译“{0}”…' },
+  mrsBuildTitleClean: { en: 'MRVC: MRS IDE clean — "{0}"…', 'zh-cn': 'MRVC：MRS IDE 清理“{0}”…' },
+  mrsBuildOk: {
+    en: 'MRVC: MRS IDE finished "{0}" successfully ({1}s).',
+    'zh-cn': 'MRVC：MRS IDE 已成功完成“{0}”（{1} 秒）。',
+  },
+  mrsBuildCompileFailed: {
+    en: 'MRVC: MRS IDE build of "{0}" failed — see the "MRVC MRS build" terminal for the compiler errors.',
+    'zh-cn': 'MRVC：MRS IDE 编译“{0}”失败——编译错误见 "MRVC MRS build" 终端。',
+  },
+  mrsBuildNoResult: {
+    en: 'MRVC: MRS IDE run for "{0}" ended without a result marker {1}— no completion marker and no error signature. It may simply be slow; try a longer "mrvc.mrsBuild.timeoutSec".',
+    'zh-cn': 'MRVC：“{0}”的 MRS IDE 运行无结果标记{1}——既没有完成标记也没有错误签名。可能只是较慢，请调大 "mrvc.mrsBuild.timeoutSec" 后重试。',
+  },
+
   // info view
   infoNone: { en: '—', 'zh-cn': '—' },
   infoNoConfig: { en: 'No effective MRS configuration', 'zh-cn': '无生效 MRS 配置' },
@@ -366,6 +449,16 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
       '只有 Link 重新上电或使用 WCH-LinkUtility 等外部工具才会清除。',
   },
   infoSdiOpenMonitor: { en: 'Open SDI PRINT Monitor', 'zh-cn': '打开 SDI PRINT 监视器' },
+  infoPowerOffReset: { en: 'Power-Off Reset', 'zh-cn': '掉电复位' },
+  infoPowerCat: { en: 'WCH-Link power rail', 'zh-cn': 'WCH-Link 电源轨' },
+  infoPowerTooltip: {
+    en:
+      'Click to power-cycle the target through the WCH-Link rail (OFF → delay → ON). ' +
+      'Only LinkE / DAPLink / LinkW support rail switching; the plain WCH-Link is blocked with a notice.',
+    'zh-cn':
+      '点击经 WCH-Link 电源轨对目标断电→延时→上电。' +
+      '仅 LinkE / DAPLink / LinkW 支持电源轨切换；普通版 WCH-Link 会弹窗说明。',
+  },
 
   // SDI PRINT monitor
   sdiNoPort: {
@@ -637,6 +730,20 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     en: 'MRVC: the .cproject XML is damaged ({0}) — nothing was written. Run "Audit And Repair Project Configuration" first.',
     'zh-cn': 'MRVC：.cproject XML 结构已损坏（{0}），未写入任何内容。请先运行「检测并修复工程配置」。',
   },
+  propertiesPathMalformed: {
+    en: 'MRVC: malformed path entries — nothing was written:\n{0}',
+    'zh-cn': 'MRVC：以下路径格式有误，未写入任何内容：\n{0}',
+  },
+  propertiesPathUnknown: {
+    en: '{0} new path entr(y/ies) use an unknown macro — a typo silently breaks the build:',
+    'zh-cn': '有 {0} 条新路径使用了未知宏（拼写错误会让构建静默失败）：',
+  },
+  propertiesPathMissing: {
+    en: '{0} new path entr(y/ies) point to a file or folder that does not exist right now (build artifacts may appear after a build):',
+    'zh-cn': '有 {0} 条新路径指向的文件/目录当前不存在（构建产物路径可能在编译后才出现）：',
+  },
+  propertiesPathContinue: { en: 'Continue', 'zh-cn': '仍然保存' },
+  propertiesPathBack: { en: 'Go back', 'zh-cn': '返回修改' },
 
   // linked folders
   linkedCpUpdateFailed: {
@@ -691,6 +798,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
 
   // sync page
   syncingSettings: { en: 'MRVC: syncing {0} setting(s)', 'zh-cn': 'MRVC：正在同步 {0} 项设置' },
+  syncBusy: {
+    en: 'MRVC: a Sync Setting batch is already running — wait for it to finish',
+    'zh-cn': 'MRVC：已有一轮 Sync Setting 正在执行，请等它结束后再操作',
+  },
 
   // macro batch page
   macroBatchHint: {

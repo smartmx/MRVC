@@ -12,7 +12,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ProjectStore, getInstall, MrsProject } from './projects';
-import { Cproject } from '../core/cproject';
+import { Cproject, foldPathOnPlatform } from '../core/cproject';
 import { ToolchainInfo, withRealSuffix } from '../core/toolchain';
 import { buildCompileEntries, partitionByReference, contextDatabases, versionAtLeast, CompileCommandEntry } from '../core/intellisense';
 import { t } from '../core/i18n';
@@ -495,7 +495,7 @@ export function dbDir(workspaceRoot: string): string {
  * EVT trees, the absolute path is the disambiguator */
 export function dbFileName(projectRoot: string, projectName: string): string {
   let h = 5381;
-  const norm = path.resolve(projectRoot).toLowerCase();
+  const norm = foldPathOnPlatform(path.resolve(projectRoot));
   for (let i = 0; i < norm.length; i++) h = ((h << 5) + h + norm.charCodeAt(i)) | 0;
   return `${projectName.replace(/[^\w.-]+/g, '_')}-${(h >>> 0).toString(16)}.json`;
 }
@@ -686,7 +686,7 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
     // only change) matches that set; anything else (older MRVC layouts,
     // hand edits, a changed file set) is re-seeded from the active/first
     // project's database.
-    const contextKeys = new Set((databases[0] ?? []).map((e) => e.file.toLowerCase()));
+    const contextKeys = new Set((databases[0] ?? []).map((e) => foldPathOnPlatform(e.file)));
     const seedActive = (): void => {
       const seed = loaded.find((p) => p === store.active) ?? loaded[0];
       if (!seed) return;
@@ -703,7 +703,7 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
     } else {
       try {
         const cur = JSON.parse(fs.readFileSync(activeFile, 'utf-8')) as Array<{ file: string }>;
-        const sameShape = cur.length === contextKeys.size && cur.every((e) => contextKeys.has(path.resolve(e.file).toLowerCase()));
+        const sameShape = cur.length === contextKeys.size && cur.every((e) => contextKeys.has(foldPathOnPlatform(path.resolve(e.file))));
         if (!sameShape) seedActive();
       } catch {
         seedActive(); // unparsable content — reseed
@@ -719,7 +719,7 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
     let propsUpdated = false;
     const unreadableFolders: string[] = [];
     for (const wf of vscode.workspace.workspaceFolders ?? []) {
-      const isPrimary = wf.uri.fsPath.toLowerCase() === folder.uri.fsPath.toLowerCase();
+      const isPrimary = foldPathOnPlatform(wf.uri.fsPath) === foldPathOnPlatform(folder.uri.fsPath);
       const mine: Record<string, unknown> = {
         name: CONFIG_NAME,
         compileCommands: isPrimary

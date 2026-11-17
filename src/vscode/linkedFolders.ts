@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { ProjectStore, MrsProject } from './projects';
 import { addLinkedFolder, removeLinkedFolder, changeLinkedFolderTarget } from '../core/projectFile';
-import { Cproject } from '../core/cproject';
+import { Cproject, foldPathOnPlatform } from '../core/cproject';
 import { t } from '../core/i18n';
 import { XElement } from '../core/xml';
 
@@ -28,7 +28,7 @@ export async function addLinkedFolderCmd(store: ProjectStore, proj?: MrsProject)
   });
   if (!picks?.length) return;
   const target = picks[0].fsPath;
-  if (path.normalize(target).toLowerCase() === path.normalize(project.root).toLowerCase()) {
+  if (foldPathOnPlatform(path.normalize(target)) === foldPathOnPlatform(path.normalize(project.root))) {
     vscode.window.showErrorMessage(t('cannotLinkSelf'));
     return;
   }

@@ -4,6 +4,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { foldPathOnPlatform } from './core/cproject';
 import { ProjectStore, MrsProject, MrsSolution, msg, installGate, getInstall, selectMrsInstall } from './vscode/projects';
 import { ProjectTreeProvider, TreeDecorations } from './vscode/tree';
 import { InfoTreeProvider } from './vscode/infoTree';
@@ -37,6 +38,7 @@ import { SyncPage } from './vscode/syncPage';
 import { MacroBatchPage } from './vscode/macroBatch';
 import { comTransmitCmd, hexBinToolCmd, ispToolCmd, touchkeyToolCmd, uiDesignerCmd, wchToolKitCmd } from './vscode/mrsTools';
 import { openWithMrsCmd } from './vscode/openMrs';
+import { mrsValidateCmd, mrsValidateAllCmd, buildWithMrsCmd } from './vscode/mrsValidate';
 import { initSdiMonitor, sdiPrintMonitorCmd, sdiPrintStopCmd } from './vscode/sdiMonitor';
 import { onSdiPrintfStatusChanged } from './core/sdiState';
 import { ensureIntellisenseConfig, applyCacheOverrides, resolveProjectForFile, switchContext, maybePromptCppTools } from './vscode/intellisense';
@@ -99,12 +101,16 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  // keep the mrvc.mrs3Active context key in sync with the ACTIVE installation:
-  // MRS3-only menu items (WCH Toolkit) hang off it. Registered here — before the
-  // install gate — so it works whether or not the extension started, and picks
-  // up later changes (the gate's adopt button, the mrsVersion pin buttons).
+  // keep the mrvc.mrs3Active / mrvc.mrsIdeActive context keys in sync with
+  // the ACTIVE installation: MRS3-only menu items (WCH Toolkit) hang off the
+  // former; the MRS deep-check / MRS-IDE-build entries hang off the latter
+  // (they need a real IDE, not a standalone toolchain). Registered here —
+  // before the install gate — so it works whether or not the extension
+  // started, and picks up later changes (the gate's adopt button, the
+  // mrsVersion pin buttons).
   const syncActiveFlavor = (): void => {
     void vscode.commands.executeCommand('setContext', 'mrvc.mrs3Active', selectMrsInstall().install?.flavor === 'mrs3');
+    void vscode.commands.executeCommand('setContext', 'mrvc.mrsIdeActive', selectMrsInstall().install?.kind === 'ide');
   };
   syncActiveFlavor();
   context.subscriptions.push(
@@ -220,7 +226,7 @@ function startExtension(context: vscode.ExtensionContext): void {
       }
     });
     if (!owner) return;
-    const key = owner.root.toLowerCase();
+    const key = foldPathOnPlatform(owner.root);
     if (ctxProject?.key === key) return;
     ctxProject = { key, root: owner.root, projectName: owner.projectName };
     switchContext(vscode.workspace.workspaceFolders[0].uri.fsPath, owner.root, owner.projectName);
@@ -232,12 +238,12 @@ function startExtension(context: vscode.ExtensionContext): void {
       const sel = e.selection[0] as unknown as { project?: { root?: string; projectName?: string } } | undefined;
       const proj = sel?.project;
       if (!proj?.root || !proj.projectName) return;
-      const key = proj.root.toLowerCase();
+      const key = foldPathOnPlatform(proj.root);
       // clicking a project row ACTIVATES it (0.3.0 user request): the Info
       // view and every store.active consumer follow immediately — build/
       // flash were already per-node, this makes "selected" mean "active".
       const active = store.active;
-      if (!active || active.root.toLowerCase() !== key) {
+      if (!active || foldPathOnPlatform(active.root) !== key) {
         store.setActive(proj as MrsProject);
       }
       if (ctxProject?.key === key) return;
@@ -299,7 +305,7 @@ function startExtension(context: vscode.ExtensionContext): void {
       // A removed project just clears the context.
       const ctx = ctxProject;
       if (ctx) {
-        const still = store.all.find((p) => p.root.toLowerCase() === ctx.key);
+        const still = store.all.find((p) => foldPathOnPlatform(p.root) === ctx.key);
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (still && folder) {
           switchContext(folder.uri.fsPath, still.root, still.projectName);
@@ -481,6 +487,15 @@ function startExtension(context: vscode.ExtensionContext): void {
   // open the project folder in the currently effective MRS IDE (project
   // context menu; launcher resolved per install flavor, folder path arg only)
   reg('mrvc.openWithMrs', (item?: unknown) => openWithMrsCmd(store, item as never));
+  // MRS deep project check (0.3.1): the real MRS silent build decides whether
+  // the project is legal on the MRS side (single project + all projects)
+  reg('mrvc.mrsValidate', (item?: unknown) => void mrsValidateCmd(store, item as { project?: unknown }));
+  reg('mrvc.mrsValidateAll', () => void mrsValidateAllCmd(store));
+  // Build / Rebuild / Clean through the real MRS IDE (silent mode, task
+  // terminal) — an independent path alongside the MRVC make pipeline
+  reg('mrvc.buildWithMrs', (item?: unknown) => void buildWithMrsCmd(store, 'build', item as { project?: unknown }));
+  reg('mrvc.rebuildWithMrs', (item?: unknown) => void buildWithMrsCmd(store, 'rebuild', item as { project?: unknown }));
+  reg('mrvc.cleanWithMrs', (item?: unknown) => void buildWithMrsCmd(store, 'clean', item as { project?: unknown }));
   // power-off reset (掉电复位): WCH-Link rail power cycle via two short
   // OpenOCD sessions — project context menu + command palette
   reg('mrvc.powerOffReset', (item?: unknown) => void powerOffResetCmd(store, item as { project?: unknown }));

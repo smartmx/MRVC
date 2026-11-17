@@ -118,8 +118,11 @@ try {
   // 1. no custom toolchains -> the installed GCC12 is shown
   settings = { toolchain: 'auto' };
   let rows = view.getChildren();
-  check('info: four rows (config / project / toolchain / SDI Printf)', rows.length === 4);
+  check('info: five rows (config / project / toolchain / SDI Printf / Power-Off Reset)', rows.length === 5);
   check('info: SDI Printf row is present and starts unknown', rows[3].description === 'SDI Printf' && !!rows[3].label);
+  const powerRow = rows[4];
+  check('info: Power-Off Reset row is present with the WCH-Link rail category', powerRow.description === 'WCH-Link power rail' && powerRow.command && powerRow.command.command === 'mrvc.powerOffReset' && powerRow.command.arguments[0].project === store.active);
+  check('info: Power-Off Reset tooltip mentions rail switching', /power-cycle/.test(powerRow.tooltip));
   const { noteSdiPrintfEnabled, noteSdiPrintfFailed, noteSdiPrintfNotRequested, resetSdiPrintfStatus } = require('../out/core/sdiState.js');
   noteSdiPrintfEnabled(1700000000000);
   rows = view.getChildren();

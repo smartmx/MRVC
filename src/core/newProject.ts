@@ -125,6 +125,10 @@ export function normalizeParentDirInput(raw: string): string {
   const v = raw.trim();
   // one branch covers every drive-root shape: "C:", "C:\", "C:/", "C:\\", "C://"
   if (/^[A-Za-z]:[\\/]*$/.test(v)) return v.slice(0, 2) + '\\';
+  // "/" (POSIX root) or a UNC share root would otherwise lose its trailing
+  // separator and be mistaken for a cancelled pick — keep the root itself
+  if (v && /^[\\/]+$/.test(v)) return path.parse(v).root;
+  if (v && path.parse(v).root === v) return v;
   return v.replace(/[\\/]+$/, '');
 }
 

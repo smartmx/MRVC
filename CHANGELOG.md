@@ -1,5 +1,211 @@
 # MRVC 更新日志
 
+## V0.3.1（2026-11-17）
+
+### 变更
+
+- **Build / Rebuild / Clean With MRS IDE（使用 MRS IDE 编译/重新编译/清理）**：工程右键新增三个**独立**的
+  MRS 侧构建入口——与 MRVC 自身的 make 构建管线（F7/行内按钮/Build All）**完全并存、互不影响**，是
+  “和在 MRS IDE 里点编译完全一致”的精确通道。机制与深度校验同一套：MRS 原生静默模式
+  （`--mrsSilentType=build|rebuild|clean` + `.wvproj` 位置参数）+ 同一持久化隔离数据目录，但**编译日志
+  实时流入专用的 `MRVC MRS <动作> - <工程>` 终端标签页**（gcc 诊断直接可见；MRS 启动噪声已过滤）。成败判读（探针实证）：`Build Finished/编译完成`=成功；
+  `Build Failed/make 错误/gcc error`=**编译失败**（提示看终端）；exthost 崩溃签名=MRS 拒绝工程；
+  无标记=无结果错误；`clean` 无标记即成功（与 MRS 行为一致）。取消/超时终止 MRS 进程——**三个时机
+  实测杀根进程后零 MRS/make 残留**。设置 `mrvc.mrsBuild.timeoutSec`（默认 600，全量构建较慢）。
+  **任务环境必须清洗（用户真机报告"编译卡住"后修复）**：扩展宿主环境里的 `ELECTRON_RUN_AS_NODE`
+  会让 MRS 以纯 Node 模式启动（工作台不启动、构建不执行——探针复现：带毒环境秒退 code 9 零输出；
+  清洗后 11s 构建成功），`VSCODE_IPC_HOOK` 还会把 MRS 指向宿主 VSCode——任务环境现复制宿主环境后
+  删除 `ELECTRON_*`/`VSCODE_*` 两族再注入隔离目录。
+  边界：不产生 MRVC 构建记录（buildContentRecord）；需要完整 IDE 安装（纯工具链配置下菜单自动
+  隐藏）；同一隔离目录同时只允许一个 MRS 静默任务（校验/编译共用互斥锁，第二个触发时明确提示）；
+  编译日志流入**专用的 `MRVC MRS <动作> - <工程>` 终端标签页**，少量 MRS 启动噪声
+  （jump_list/env dump/`[main]` 空行）已过滤。
+- **MRS 深度校验（使用 MRS 校验工程）**：工程右键新增 **Validate Project With MRS（使用 MRS 校验工程）**、
+  命令面板另有 **Validate All Projects With MRS（使用 MRS 校验全部工程）**——**让 MounRiver 本体静默
+  完整解析并构建一次工程**，以 MRS 自己的接受与否作为"工程在 MRS 侧合法"的最终判据（静态三文件
+  契约与 XML 门禁之上的第三层校验；0.3.0 那个"MRS 读 rvGcc 无保护崩溃、静态检查查不出"的事故
+  形态正是被这层覆盖的）。机制：MRS2/MRS3 原生静默模式（`--mrsSilentType=build` + 工程
+  `.wvproj` 位置参数——实测只有这一形态触发静默构建，分离别名形态瞬间退出不构建）+ **独立
+  VSCODE_PORTABLE 数据目录**（`~/.mrvc/mrs-validate/<mrs2|mrs3>`，持久化，首次约 45s 组件初始化
+  一次性付清，之后为增量构建；实测 MRS 不改动 .project/.cproject/.template）。**判定读会话日志**：
+  main.log（Main verbose 通道落盘）出现 `Build Finished / 编译完成` = 工程合法且构建成功；
+  `Build Failed / 编译失败 / make 错误` = 工程合法、代码问题；exthost.log 出现崩溃签名
+  （如 `TypeError reading 'match'`、`Invalid attribute name`）= **MRS 拒绝该工程**（附首个签名）；
+  超时且无签名 = 无结论（可能只是慢，调 `mrvc.mrsValidate.timeoutSec`，默认 180s）。批量模式
+  顺序跑全部工程，进度可取消，结果汇总进 "MRVC MRS Validate" 输出面板。已知边界：静默模式
+  无 parse-only 动作（校验即真实构建，未编译工程首次会全量编译）；**POSIX 静态实证可用**——
+  MRS3 Linux/mac 安装包核心 bundle 含同一套 `mrsSilentType` 处理器（cli.js / electron-main /
+  workbench / ptyHost 四处齐全）、`VSCODE_PORTABLE` 隔离（electron-main 7 处）与 mrs-team
+  静默命令（build/clean/rebuild Silent），启动器解析 Linux 根 ELF / mac Electron 均为 GUI 本体
+  （`bin/` 下的 CLI shim 不会被解析到）；MRS2 代 Linux/mac 为纯工具链无 IDE，功能自动隐藏；
+  真机未跑，首次运行若 MRS 弹隐藏模态会持续到超时——由超时终止兜底。
+- **工程属性：链接器页与 MRS 对齐（用户报告）**：`GNU RISC-V Cross C/C++ Linker` 的
+  **Script files (-T)** 改为 MRS2 同款 Add/Edit/Delete 列表——**Add 打开工程树/本机文件
+  选择器**（本机对话框过滤 `.ld`），不再只有纯文本域；**页面归属按 MRS 重排**：General 仅
+  Script files 与六个标准开关（nostartfiles/nodefaultlibs/nostdlib/gc-sections/print-gc-sections/-s），
+  Libraries 仅库名（-l）与搜索路径（-L），**Miscellaneous 收纳其余全部**（Linker flags
+  (-Xlinker [option])、Other objects、Generate map、Cross reference、Print link map、
+  newlib-nano、float printf/scanf、nosys、Verbose、WCH printf/IQMath 与其余 flags）；
+  Libraries/Linker flags 的 Add 为纯输入对话框（MRS 同款），Other objects 为文件选择。
+  同时修复项目树选取的存储拼写：路径以 `${workspace_loc:/${ProjName}/rel}`（MRS 实际
+  存储形态）写入，替换原 `${project}/rel` 意图——后者在渲染模板中未转义会输出
+  `[object Object]`（include 路径列表的项目树添加因此从未生效，一并修复）。
+  **未存储项显示 MRS 模型默认值（用户审计后修正）**：逐项核对 MRS2 的 EP 模型构造函数默认值后，
+  `Generate map` 显示 `"${BuildArtifactFileBaseName}.map"`；Target 页 `Code model` / `Integer ABI`
+  增加 MRS 同款 **Toolchain default** 选项（缺省即选中）、`Architecture` 同款 **Toolchain Default**、
+  `Small data limit` 显示 8、`Tuning` 显示 `default`；C/C++ 语言标准增加 **Toolchain default** 选项，
+  缺省显示 gnu11 / gnu++11；Create flash/listing/print size 三个开关缺省显示为**勾选**（EP 模型
+  enabled=true）；Print size 的 Size format 缺省 Berkeley、Create flash 的 Output file format 缺省
+  Intel HEX。反之 `Linker flags`（`c.linker.flags`）与 `Library search path`（`c.linker.paths`）在
+  MRS 模型里默认就是**空表**——ADC_DMA 截图里的 `-print-memory-usage` 与 `../`、`StdPeriphDriver`
+  是该工程**实际存储**的行，并非默认值，故这两项保持空表显示。未改动时 Apply 不写盘，字节保持原样。
+- **工程属性：Target Processor 页与 MRS 完全对齐（用户报告三项）**：补上遗漏的
+  `Floating point`（None/RVF/RVFD/RVFDQ）下拉与 `Vector Cryptography extensions (RVV)` 勾选——
+  RVV 在 CDT 里是枚举而非布尔，勾选写入 `...option.isa.rvv.zve64x_zvl64b_zvbb`、取消写入
+  MRS 同款空后缀形态 `...option.isa.rvv.`；`Tuning` 从文本框改为 MRS 同款下拉
+  （Toolchain default / Rocket / Generic / Size）；控件顺序按 MRS 重排为
+  RVM、RVA、Floating point、RVC、RVXW、RVB、RVV、Zmmul，Tuning 移到 Code model 之前；
+  各下拉选项补齐真实编译开关提示（`-march=`、`-mabi=`、`-mcmodel=`、`-mtune=`、`-mstrict-align`
+  与 F 扩展命名），与 MRS 选项文案一致；`Code model` 仅保留 MRS 的三项
+  （Toolchain default / Medium Any (-mcmodel=medany) / Medium Low (-mcmodel=medlow)，
+  移除多余的 Medium Medium）；`Align` 的首项按 MRS 原文显示
+  `Toolchain default (-mtune)`。**字符串控件区分单行/多行**：`Small data limit` 与
+  `Generate map` 改为 MRS 同款单行输入框（此前误用多行文本框），其余 “Other ... flags”
+  字段保持 MRS 同款多行文本框（Shift+Enter 换行）。
+- **工程属性：C++ Compiler 五个页面与 MRS 对齐（用户报告）**：`Includes` 补上
+  **Include system paths (-isystem)** 与 **Include files (-include)** 两个列表；`Optimization`
+  按 MRS 重排——**Language standard**（补齐 MRS 全部 17 个 C++ 标准选项与真实 `-std=` 提示，
+  含 `default` Toolchain default）、**ABI version**（选项标签按 MRS：`0 (most conforming)`、
+  `1 (from G++3.2)` 等，含 Toolchain default）从 Miscellaneous 移入，四个 `-fno-*` 方言开关
+  （exceptions/RTTI/__cxa_atexit/thread statics）同步移入；`Warnings` 按 MRS 顺序与文案重排
+  （ABI violations → class privacy → no-except → virtual destructors → uncast NULL →
+  sign promotion → Effective C++，如 `-Wctor-dtor-privacy` 拼写修正）；`Miscellaneous`
+  补上 **Generate assembler listing / Save temporary files (Use with caution!) / Verbose**
+  三个开关。**Defined/Undefined symbols 与 Include paths/system paths/files 全部改为
+  MRS 同款 Add/Edit/Delete 列表控件**（此前是纯文本域），C/C++/汇编三处一致。
+- **工程属性：C++ Linker 补齐为 C Linker 的完整镜像（round34 P3）**：`General` 补上
+  nodefaultlibs / nostdlib / print-gc-sections / strip；`Miscellaneous` 补上
+  **Linker flags (-Xlinker)**、**Generate map**（MRS 默认 `"${BuildArtifactFileBaseName}.map"`、
+  单行输入）、Cross reference、Print link map、float printf/scanf、Verbose，页面归属与 C Linker
+  一一对应。另修复符号列表对话框标题：Defined/Undefined symbols 等 text 模式的弹窗此前回退为
+  “Add include file”，现按类别显示 “Add defined symbol / Add undefined symbol / Add include path”
+  等正确文案。
+- **工程属性：路径类列表在 Apply 时校验（用户请求）**：`${workspace_loc:/${ProjName}/…}`
+  这类路径写错会静默断构建，故 Apply 前先校验**本次新增或修改的行**（工程里原有的行不复查，
+  避免打开旧工程就被提示）：目录类（Include paths / system paths / Library search path 等）、
+  文件类（Include files / Other objects）与链接脚本（Script files）分别按目录/文件/任意存在
+  校验。**语法错误即硬错误**：`${` 未闭合、多余的 `}`、宏名非法、`workspace_loc` 缺 `:` ——
+  聚合列出后直接拒绝写入（不弹确认、一个字节都不写）；**未知宏名**（不在
+  `workspace_loc / ProjName / project / workspace_parent / build_type / config_name /
+  PARENT-n-PROJECT_LOC` 之内）与**解析后不存在的路径**（支持 `workspace_loc:/${ProjName}/…`、
+  `${ProjName}`、`${project}/…`、`${PARENT-n-PROJECT_LOC}/…`、绝对路径与相对工程根路径）
+  则弹模态确认，逐条列出问题后再由用户选择 **仍然保存 / 返回修改**；返回即中止整次 Apply，
+  不产生部分写入。符号/编译选项等文本列表不参与路径校验。
+- **工程右键 MRS Operations 子菜单顺序（用户指定）**：`Open With MounRiver IDE` 移到
+  `Validate Project With MRS` 之下——五项固定为 Build With MRS IDE → Clean With MRS IDE →
+  Rebuild With MRS IDE → Validate Project With MRS → Open With MounRiver IDE（显式
+  group/order 排序，不再按标题字母序）。
+- **工程属性：链接器补上 `Use picolibc`（round35 P3）**：C/C++ Linker 的 Miscellaneous 页
+  在 IQMath 之后新增 MRS2 同款枚举（存储 `c.linker.picolibc` / `cpp.linker.picolibc`，值
+  `disabled / double / integer / minimal`，模型默认 `disabled`；选项文案用 MRS 原文
+  `-Dformat-default=double|integer|minimal`）。未存储时显示 Disabled、未改动时 Apply
+  不写盘；`cppld.libs` 的页面描述修正为仅 `-l` / `-L`（原描述误含 extra objects 与
+  WCH 库，实际字段在 Miscellaneous）。
+- **round37 复审修复**：①**picolibc 链接参数闭环**：构建侧 `linkerOptionsFor` 读取
+  C/C++ 各自的 `picolibc`，启用时生成
+  `-Wl,--defsym=vfprintf=__<d|i|m>_vfprintf -Wl,--defsym=vfscanf=__<d|i|m>_vfscanf
+  --specs=picolibc.specs`，并抑制 newlib-nano / `-u _printf_float` / `-u _scanf_float`
+  （`--specs=nosys.specs` 仍按独立开关）；makefile 与 CMake 共用该函数，两条链路均加断言。
+  ②**C Linker 模型默认值**：未存储时 `-nostartfiles` / `--gc-sections` /
+  `--specs=nano.specs` / `--specs=nosys.specs` 按 MRS2 的 CLinker 构造函数默认开启
+  （C++ 保持关闭），属性页勾选与构建参数一致。③**CMake 导出路径守卫**：导出子目录名经
+  `safeExportDirName` 校验（拒绝路径分隔符、`..`、Windows 保留字符、尾随点/空格）并
+  `path.resolve` 复核必须位于用户所选目录下一层，防止恶意 `.project` 显示名越界删除。
+  ④**POSIX 大小写身份**：新增 `foldPathOnPlatform()`（仅 Windows 折叠），构建锁、链接
+  目录归属、IntelliSense 文件/上下文键、项目激活键与链接文件夹自检统一改用，
+  `/work/Foo` 与 `/work/foo` 在 Linux 不再合并。⑤**新建工程父目录**：`/`（及 `//`）
+  不再被规范化为空串，文件系统根目录可作为父目录。⑥**parallelJobs 运行时校验**：
+  `mrvc.build.parallelJobs` 非整数/字符串/0/负数回退自动值，正整数上限 64；
+  `build.verbose` 仅接受 normal/full/concise。
+- **round38 复审修复**：①**picolibc 编译期闭环**：`cCompilerOptions` /
+  `cppCompilerOptions` 在对应语言启用 picolibc 时追加 `--specs=picolibc.specs`
+  （编译器据此加入 picolibc 的 `-isystem` 头文件目录，`<picolibc.h>` 可编译）；链接期
+  参数不变，未启用 picolibc 的工程输出字节不变（golden 29 identical）。IntelliSense
+  （compile_commands.json）无法理解 GCC specs，改为显式追加工具链的
+  `riscv-wch-elf/picolibc/riscv-wch-elf/include` 目录（存在才加），不把 `--specs`
+  交给 cpptools/clangd。②**CMake 自拷贝守卫大小写**：`copyTree` 的跳过判断改用
+  `samePathOnDisk()`（平台折叠 + `realpathSync.native` 兜底），Windows 下 `EXPORT`
+  与 `export` 同目录不再递归自拷。③**POSIX 去重收口**：`solutionCandidates()` 的
+  `.wvsln` 去重与 `locateInstall()` 的安装候选去重改用 `foldPathOnPlatform()`，
+  Linux 上仅大小写不同的候选不再合并。
+- **round39 复审优化**：CMake 导出的自拷贝守卫不再逐条目 realpath——`copyTree`
+  每次导出只预解析一次跳过目录的身份（平台折叠快速路径零系统调用），realpath 兜底
+  仅对**目录**条目执行（junction/symlink 别名仍可识别）；240 文件探针从「每条目
+  2 次 realpath」降为整棵树常数次，并加调用计数断言防回归。
+- **round40 复审修复**：round39 把 realpath 兜底 gated 在 `isDirectory()` 上，而
+  Windows junction / POSIX symlink 的 `Dirent` 是 `isDirectory()===false +
+  isSymbolicLink()===true`——「别名指向导出目录」会落进 `copyFileSync` 并以 EPERM
+  失败。兜底条件扩为**目录或符号链接**（`entry.isDirectory() || entry.isSymbolicLink()`），
+  并加 junction 回归探针：真实导出目录被跳过、别名条目不复制、兄弟文件照常拷贝；
+  普通文件依旧零 realpath 开销（round39 的计数断言原样保留）。
+- **Linux 打开工程修复（用户报告「linux 上 Open With MounRiver IDE 失效」）**：
+  ①启动环境**清洗 `ELECTRON_*` / `VSCODE_*` 两族变量**——扩展宿主的
+  `ELECTRON_RUN_AS_NODE` 会把 MRS 的 GUI 启动器变成纯 Node 进程（窗口永不出现），
+  `VSCODE_IPC_HOOK` 则指向本 VSCode（与构建路径 mrsTaskEnv 同源；此处**不**设置
+  VSCODE_PORTABLE，GUI 使用 MRS 自己的配置档案）；②Linux 追加 **`--no-sandbox`**——
+  .deb 桌面入口（MounRiverStudio3.desktop → beforeinstall/load.sh）官方启动恒带
+  该参数，root 会话无它不启窗；③POSIX 启动补上 **cwd=工程根**（与 Windows 的
+  -WorkingDirectory 对齐）；darwin 不加 --no-sandbox（官方 .app 双击不带）。
+  **追加固化**：任务环境的 `env` 选项只会**合并**、无法移除宿主已注入的变量，
+  故 POSIX 包装脚本自身先 `unset ELECTRON_RUN_AS_NODE / VSCODE_IPC_HOOK` 等
+  十个已知毒变量（硬编码名单，dash/bash 通用）再后台启动——环境清洗不依赖
+  任务 env 的合并语义。**再固化（真机 A/B 定案后）**：前台终端跑同一条命令
+  能开、任务里不能，根因是**任务 pty 复用/关闭时的 SIGHUP**——后台子进程的
+  stdin 还挂在任务终端上，pty 关闭即静默杀死 GUI（日志为空、无窗口）；
+  包装脚本改为 **`nohup … </dev/null`**（stdin 脱离 pty + 忽略 HUP）并把
+  输出写入 `/tmp/mrvc-open-mrs.*.log`（mktemp 每次新建，失败可诊断）。
+  **终版固化（真机复刻定案 2026-11-17）**：桌面终端 1:1 复刻包装脚本
+  （unset + setsid + nohup + `</dev/null`，cwd=~）**成功打开工程**，任务侧失败
+  ——故任务启动强制与被证明可行的手动形态完全一致：①POSIX cwd 改为
+  **`os.homedir()`**（原为工程根）；②GUI 用 **`env -i` 白名单环境**启动
+  （HOME/USER/LOGNAME/PATH/LANG/DISPLAY/XDG_SESSION_TYPE/XDG_RUNTIME_DIR/
+  DBUS_SESSION_BUS_ADDRESS，全部带会话缺省回退）——任务 env 的合并语义
+  无法移除的注入变量从此不可能到达 GUI；③setsid/nohup/诊断日志保留。
+  **前台化重构（env -i 仍失败后的最终形态 2026-11-17）**：五种后台化包装
+  （nohup/setsid/env -i 变体）在任务里全部静默死亡、同一命令在桌面终端却能
+  打开——VSCode 任务机制本身会回收后台化子进程，故 POSIX 改为**前台运行**：
+  `sh -c 'exec env -i <白名单> "$1"…'`——任务进程就是 IDE 本体，任务存活期
+  =MRS 窗口存活期（不再有后台堆积/回收问题），IDE 自身输出直接流入任务终端
+  （失败自带诊断）；关闭窗口任务即结束（正常退出为 0 不弹错）。Windows 分支
+  保持 PowerShell 分离启动不变。
+  **✅ 2026-11-17 用户真机确认：Linux 上可正常打开 MRS 工程。**
+- **round42 复审修复（2 P3）**：①**POSIX 启动环境改为「保留全桌面会话 +
+  前缀式卸载毒变量」**——`env -i` 白名单会丢弃 `XAUTHORITY` / `WAYLAND_DISPLAY`
+  / `TMPDIR`（及 macOS 会话变量），Wayland/XWayland 或 macOS 启动可能失败；
+  改为 `for v in $(env | grep -oE "^(ELECTRON_|VSCODE_)[A-Za-z0-9_]*"); do
+  unset "$v"; done` + `exec`——桌面会话环境原样保留，只按**前缀**卸载扩展宿主
+  注入的毒变量（枚举不完备也不漏），参数与 cwd 不变；②README 的 Open With
+  MounRiver IDE 行同步前台化形态（Windows 分离启动 cwd=工程根 / POSIX 前台
+  exec + cwd=$HOME + Linux `--no-sandbox` / 任务存活期=MRS 窗口存活期）。
+- **Sync Setting Across Projects 页修复（round43/44）**：①**枚举种子与属性页
+  共享同一 `readEnum()`**（含 `option.base.*` 中缀识别与模型默认回退）——此前
+  base 形态工程/未知枚举值会被下拉第一项静默改写（如 GCC12→GCC8）；未知完整 id
+  渲染为 `(current)` 合成选项并在 Apply 时**原样回写**（`data-current` 标记，
+  不再双拼 `enumBase`）；②**`(default)` 同步写模型默认选项**（fp→`none`、
+  picolibc→`disabled`）——旧逻辑 `setOptionValue(undefined)` 对已有 enumerated
+  值是设计性 no-op，目标工程保留旧值却报成功；无模型默认的字段明确跳过并计数
+  上报，不再伪报 OK；③**Apply 增加 in-flight 互斥**（重叠 applySync 提示
+  busy 后返回）；④Sync 页自动跟随属性页新增字段（含 RVV 这类自定义 get/set
+  的枚举存储勾选框——走字段自身 setter，不走通用 setOptionBool）。
+- **Sync 页（续，round45）**：枚举解码拆为 **`readEnumInfo()` 返回
+  `{ value, verbatim }`**——`data-current` 标记只打在**完全外来 id**（verbatim）上，
+  已知 `enumBase` 下的未知 suffix 渲染为普通 `(current)` 项且 Apply 正常合成
+  `enumBase + suffix`（此前这类合法 id 会被剥掉前缀写成裸 suffix）。
+
+（0.3.0 遗留真机验证项：WCH-LinkE/DAPLink/LinkW 电源轨、SDI 原生
+reset+enable 的 CDC 实时输出、clean 阶段取消 rebuild 的终端行为、多工程集合的 Build All/
+链接文件夹/编译/烧录。）
+
 ## V0.3.0（2026-11-13）
 
 ### 变更
@@ -83,7 +289,7 @@
   完成，MRS 独立存活，不在任务列表留下常驻实例（GUI 与窗口同寿命，常驻任务会堆叠并弹出旧实例
   选择框）；包装任务失败（含 executeTask 拒绝/瞬间退出）经执行身份缓冲的监听器可靠上报；
   当前生效配置为纯工具链（无 IDE）或工程缺 .wvproj 时明确报错。
-- **掉电复位 + 电源输出**：工程右键/命令面板新增 **Power-Off Reset（掉电复位）**——经 WCH-Link
+- **掉电复位 + 电源输出**：**Info 视图 Power-Off Reset 行（点击即执行）/ 命令面板**新增 **Power-Off Reset（掉电复位）**——经 WCH-Link
   电源轨对目标 **断电 → 延时 → 上电**（OpenOCD `pow3v3/pow5v off|on`，本机 fork 实证；两路共用
   电源状态，只发实际供电一路）。设置 `mrvc.flash.resetMode=powerOff` 后**下载自动走断电流程**：
   断电一次 → 延时 → 上电与烧写在**同一 OpenOCD 会话**完成；`mrvc.flash.powerOutput` 选 3.3V/5V、
@@ -103,14 +309,14 @@
   与 1.2s 等待吸收）；传给 OpenOCD 的日志路径一律**正斜杠**（Jim Tcl 吃反斜杠——此前会在工程根
   落下扁平怪名日志文件）。已知边界：文件名含 "link" 的打开错误会被误判为瞬态（代价=内部段一次
   多余重试）。
-- **Info 信息视图**：工程列表下方新增 **Info** 视图，四行显示 ①当前生效 MRS 配置（IDE 安装还是
+- **Info 信息视图**：工程列表下方新增 **Info** 视图，五行显示 ①当前生效 MRS 配置（IDE 安装还是
   纯工具链、MRS2/MRS3、安装路径、偏好回退状态；点击行直达 MRVC 设置）②当前选中工程名
   ③该工程的工具链（名称与前缀；与构建链同源——`mrvc.customToolchains` 合并后的生效安装，
   自定义工具链也正确显示）④**SDI Printf 状态**：WCH-Link/CommunicationLib 只提供写命令
   （`McuCompiler_SetSDIPrn`）、**没有回读接口**，所以该行只反映 MRVC 本次会话下载时“复位+使能”
   步骤的结果（已使能 / 上次失败 / 本次下载未使能 / 未知；重载窗口后回到未知，打开监视器时
-  若找不到 WCH-Link 串口也会重置为未知），
-  点击行打开 SDI PRINT 监视器。工程切换、`mrvc.*` 配置修改后**自动刷新**。
+  若找不到 WCH-Link 串口也会重置为未知），点击行打开 SDI PRINT 监视器。⑤**Power-Off Reset
+  行（0.3.1，点击即执行掉电复位）**。工程切换、`mrvc.*` 配置修改后**自动刷新**。
 - **编译链路零重复解析**：生效安装的解析本就按设置键缓存（不改设置不重验）；本轮再补
   工程级工具链解析 memo（同输入直接复用，`mrvc.*` 配置变更即失效），并新增计数 seam
   断言"设置不变时重复编译不再触发安装重探测"。POSIX 架构核对保持每次编译执行（警告不消失）。

@@ -114,9 +114,14 @@ const check = (name, cond) => {
   if (!cond) failures++;
 };
 
-const PROJ = ['F:/CH585/EVT/V1_2/EXAM/LED', 'E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED', 'E:/WORK/CH585/V1_7/EXAM/LED'].find(
-  (p) => fs.existsSync(path.join(p, '.cproject'))
-);
+const PROJ = [
+  'F:/CH585/EVT/V1_2/EXAM/LED',
+  'E:/Projects/MRS_VSCODE/TEST/CH585EVT/EXAM/LED',
+  'E:/WORK/CH585/V1_7/EXAM/LED',
+  // local EVT tree in this repo — keeps the render (and the linker-widget
+  // assertions below) from SKIPping on a machine without the CH585 trees
+  'F:/MyProjects/MRS2_VSCODE/CH394QEVT/CH394Q__DHCP_CLIENT',
+].find((p) => fs.existsSync(path.join(p, '.cproject')));
 if (!PROJ) {
   console.log('SKIP  webview render (no real LED tree found)');
   process.exit(0);
@@ -160,9 +165,153 @@ await view.show(store.active);
   // phantom entries on cpp std / abi version made "Default" a silent no-op
   {
     const keys = (k) => ((FIELDS.find((f) => f.key === k) || {}).options || []).map(([v]) => v);
-    check('fields: cpp std exposes the real gnucpp11 choice, no phantom default', keys('cppstd').includes('gnucpp11') && !keys('cppstd').includes('default'));
-    check('fields: cpp abi version uses 0 as its default, no phantom default', keys('cppabi').includes('0') && !keys('cppabi').includes('default'));
+    check(
+      'fields: cpp std exposes gnucpp11 + the real Toolchain-default choice',
+      keys('cppstd').includes('gnucpp11') && keys('cppstd').includes('default')
+    );
+    check('fields: cpp std default label mirrors MRS2 (Toolchain default)', (FIELDS.find((f) => f.key === 'cppstd').options || []).some(([v, l]) => v === 'default' && /Toolchain default/.test(l)));
+    check(
+      'fields: cpp abi version exposes 0 + the real Toolchain-default choice',
+      keys('cppabi').includes('0') && keys('cppabi').includes('default')
+    );
     check('fields: real default choices kept (align / debug level / debug format)', keys('align').includes('default') && keys('dbglevel').includes('default') && keys('dbgformat').includes('default'));
+  }
+  // Target Processor page parity with MRS2 (user report 2026-11-16): the F
+  // extension select and the RVV checkbox were missing, Tuning was a text
+  // box instead of the model enum select, and choices must carry the real
+  // compiler flag hints
+  {
+    const page = (k) => (FIELDS.find((f) => f.key === k) || {}).page;
+    const opts = (k) => FIELDS.find((f) => f.key === k) || {};
+    const labels = (k) => (opts(k).options || []).map(([v, l]) => l);
+    check('target: Floating point (F extension) select on the target page', page('fp') === 'target' && opts('fp').type === 'enum');
+    check(
+      'target: Floating point choices mirror MRS2 (none/RVF/RVFD/RVFDQ)',
+      ['none', 'single', 'double', 'quad'].every((v) => (opts('fp').options || []).some(([k]) => k === v))
+    );
+    check('target: Vector Cryptography (RVV) checkbox exists', page('rvv') === 'target' && opts('rvv').type === 'bool');
+    check('target: Tuning is a select with the MRS2 model choices', opts('tune').type === 'enum' && ['default', 'rocket', 'generic', 'size'].every((v) => (opts('tune').options || []).some(([k]) => k === v)));
+    check('target: Code model hints carry the real -mcmodel flags', labels('codemodel').some((l) => l.includes('(-mcmodel=medany)')) && labels('codemodel').some((l) => l.includes('(-mcmodel=medlow)')));
+    check(
+      'target: Code model lists exactly the MRS2 choices (no Medium Medium)',
+      (opts('codemodel').options || []).map(([v]) => v).join(',') === 'default,any,low'
+    );
+    check('target: Architecture hints carry the real -march flags', labels('arch').some((l) => l.includes('(-march=rv32i*)')) && labels('arch').some((l) => l.includes('(-march=rv64g*)')));
+    check('target: Integer/Float ABI hints carry the real flags', labels('abi').some((l) => l.includes('(-mabi=ilp32*)')) && labels('fpabi').some((l) => l.includes('precision(')));
+    check('target: Align default keeps the MRS2 hint (-mtune)', labels('align').some((l) => l === 'Toolchain default (-mtune)'));
+    // Small data limit / Generate map are one-line el-inputs in MRS2; the
+    // "Other ... flags" fields keep the tall textarea
+    check(
+      'target: Small data limit renders as a one-line input',
+      /<input type="text" data-key="sdl"[^>]*>/.test(html) && !/<textarea data-key="sdl"/.test(html)
+    );
+    check(
+      'linker: Generate map renders as a one-line input',
+      /<input type="text" data-key="mapfile"[^>]*>/.test(html) && !/<textarea data-key="mapfile"/.test(html)
+    );
+    check(
+      'target: Other target flags keeps the tall textarea',
+      /<textarea data-key="targetother"/.test(html)
+    );
+    // order: RVM, RVA, Floating point, RVC, RVXW, RVB, RVV, Zmmul (MRS2 page)
+    const order = ['rvm', 'rva', 'fp', 'rvc', 'rvxw', 'rvb', 'rvv', 'rvzmmul'].map((k) => FIELDS.findIndex((f) => f.key === k));
+    check('target: extension controls appear in MRS2 order', order.every((v, i) => v >= 0 && (i === 0 || v > order[i - 1])));
+  }
+  // C++ Compiler pages parity with MRS2 (user report 2026-11-16): Includes
+  // gained system/file lists, Optimization absorbed the -fno-* dialect
+  // switches + ABI version, Miscellaneous gained the three build switches,
+  // Warnings follow MRS order/wording, symbol and include lists use the
+  // Add/Edit/Delete table
+  {
+    const f = (k) => FIELDS.find((x) => x.key === k) || {};
+    const page = (k) => f(k).page;
+    check(
+      'cpp: Includes has paths + system paths + include files',
+      ['cppincs', 'cppsysincs', 'cppfileincs'].every((k) => page(k) === 'cpp.inc' && f(k).type === 'list')
+    );
+    check('cpp: ABI version sits on Optimization (MRS layout)', page('cppabi') === 'cpp.opt');
+    check(
+      'cpp: -fno-* dialect switches sit on Optimization (MRS layout)',
+      ['cppnoexc', 'cppnortti', 'cppnocxa', 'cppnthreads'].every((k) => page(k) === 'cpp.opt')
+    );
+    check(
+      'cpp: Miscellaneous has listing/save-temps/verbose/other flags',
+      page('cppasmlisting') === 'cpp.misc' && page('cppsavetemps') === 'cpp.misc' && page('cppverbose') === 'cpp.misc' && page('cppother') === 'cpp.misc'
+    );
+    check(
+      'cpp: Misc labels mirror MRS2 wording',
+      (f('cppsavetemps').label || '').includes('Use with caution!') && (f('cppasmlisting').label || '').includes('-Wa,-adhlns=')
+    );
+    check(
+      'cpp: Warnings order matches MRS2',
+      ['cppwarnabi', 'cppctordtor', 'cppnoexcept', 'cppnonvdtor', 'cppstrictnull', 'cppsignpromo', 'cppwarneffc']
+        .map((k) => FIELDS.findIndex((x) => x.key === k))
+        .every((v, i, a) => v >= 0 && (i === 0 || v > a[i - 1]))
+    );
+    check(
+      'cpp: Warning labels mirror MRS2 wording',
+      (f('cppctordtor').label || '').includes('-Wctor-dtor-privacy') &&
+        (f('cppstrictnull').label || '').includes('uncast NULL') &&
+        (f('cppwarneffc').label || '').includes('Effective C++')
+    );
+    check(
+      'cpp: Language standard carries the full MRS2 list',
+      ['default', 'ansi', 'gnucpp98', 'cpp0x', 'cpp11', 'gnucpp0x', 'gnucpp11', 'cpp1y', 'cpp14', 'gnucpp1y', 'gnucpp14', 'cpp1z', 'cpp17', 'gnucpp1z', 'gnucpp17', 'cpp2a', 'gnucpp2a'].every(
+        (v) => (f('cppstd').options || []).some(([k]) => k === v)
+      )
+    );
+    check(
+      'cpp: ABI version options carry MRS2 labels (default + 0..13)',
+      (f('cppabi').options || []).length === 15 && (f('cppabi').options || []).some(([v, l]) => v === '0' && l === '0 (most conforming)')
+    );
+    // C++ Linker mirrors the C Linker layout (round34 P3)
+    check(
+      'cpp: Linker General mirrors the C layout',
+      ['cppscript', 'cppnostart', 'cppnodeflibs', 'cppnostdlibs', 'cppgcsec', 'cppprintgc', 'cppstrip'].every((k) => page(k) === 'cppld.general')
+    );
+    check(
+      'cpp: Linker Miscellaneous mirrors the C layout',
+      ['cppldflags', 'cppotherobjs', 'cppmapfile', 'cppcref', 'cppprintmap', 'cppnano', 'cppfloatprintf', 'cppfloatscanf', 'cppnosys', 'cppldverbose', 'cppwchprintf', 'cppwchprintfloat', 'cppiqmath', 'cpppicolibc', 'cppldother'].every(
+        (k) => page(k) === 'cppld.misc'
+      )
+    );
+    check(
+      'picolibc: both linkers expose the MRS2 enum with model default disabled',
+      ['picolibc', 'cpppicolibc'].every(
+        (k) =>
+          f(k).type === 'enum' &&
+          f(k).def === 'disabled' &&
+          (f(k).options || []).map(([v]) => v).join(',') === 'disabled,double,integer,minimal' &&
+          page(k) === (k === 'picolibc' ? 'ld.misc' : 'cppld.misc')
+      )
+    );
+  }
+  // path-entry validation (user request 2026-11-16): malformed macros abort,
+  // unknown macros / missing targets ask before writing
+  {
+    const { checkPathEntries, pathSyntaxProblem } = require('../out/vscode/configView.js');
+    const none = new Map();
+    const s1 = pathSyntaxProblem('${workspace_loc:/${ProjName}/inc');
+    check('path gate: unclosed macro is malformed', !!s1.problem && /unclosed/.test(s1.problem));
+    const s2 = pathSyntaxProblem('${workspace_loc:/${ProjName}/inc}');
+    check(
+      'path gate: nested workspace_loc syntax accepted',
+      !s2.problem && s2.names.length === 2 && s2.names.includes('workspace_loc') && s2.names.includes('ProjName')
+    );
+    const u = checkPathEntries({ incs: '${workspac_loc:/${ProjName}/inc}' }, none, PROJ);
+    check('path gate: unknown macro flagged', u.unknown.length === 1 && u.unknown[0].includes('workspac_loc'));
+    const missing = checkPathEntries({ incs: '${workspace_loc:/${ProjName}/__mrvc_missing__}' }, none, PROJ);
+    check('path gate: missing folder flagged', missing.missing.length === 1);
+    const okRoot = checkPathEntries({ incs: '${workspace_loc:/${ProjName}/}' }, new Map([['incs', 'old']]), PROJ);
+    check('path gate: existing project root accepted', okRoot.malformed.length === 0 && okRoot.missing.length === 0);
+    const untouched = checkPathEntries(
+      { incs: '${workspace_loc:/${ProjName}/__mrvc_missing__}' },
+      new Map([['incs', '${workspace_loc:/${ProjName}/__mrvc_missing__}']]),
+      PROJ
+    );
+    check('path gate: pre-existing rows are not re-reported', untouched.missing.length === 0);
+    const textMode = checkPathEntries({ defs: '${BAD', ldflags: '${BAD' }, none, PROJ);
+    check('path gate: symbol/flag lists are not path-checked', textMode.malformed.length === 0);
   }
   check('CSP meta present', html.includes("http-equiv=\"Content-Security-Policy\""));
   check('hostile project name escaped in PROJ_NAME (no </script> leak)', !/>const PROJ_NAME = \"LED<x>\"<\/script>/.test(html) || html.includes('\\u003C'));
@@ -202,6 +351,135 @@ await view.show(store.active);
     'apply: chip/dl address inputs locked in lockstep (no rollback)',
     scripts.some((s) => s.includes("getElementById('dl-address')") && s.includes('[data-key="address"]') && s.includes("addEventListener('input'"))
   );
+
+  // ---- MRS2-parity linker pages (user report 2026-11-16) ----
+  {
+    // Script files (-T) is an Add/Edit/Delete table like MRS2, not a textarea
+    check('linker: Script files renders as the table widget (lb-add)', html.includes('class="lb-add" data-lkey="script"'));
+    check('linker: Script files table carries its listrows key', html.includes('class="listrows" data-key="script"'));
+    // field page regrouping: MRS2 puts everything but the script/standard
+    // switches on Miscellaneous, and only -l/-L on Libraries
+    const page = (k) => (FIELDS.find((f) => f.key === k) || {}).page;
+    check('linker: MRS2 grouping (script=General)', page('script') === 'ld.general');
+    check('linker: MRS2 grouping (libs/libpaths=Libraries)', page('libs') === 'ld.libs' && page('libpaths') === 'ld.libs');
+    check(
+      'linker: MRS2 grouping (flags/objects/map/specs=Miscellaneous)',
+      ['ldflags', 'otherobjs', 'mapfile', 'nano', 'floatprintf', 'floatscanf', 'nosys', 'cref', 'printmap', 'ldverbose', 'ldother', 'wchprintf', 'wchprintfloat', 'iqmath'].every(
+        (k) => page(k) === 'ld.misc'
+      )
+    );
+    const migrated = ['nano', 'nosys', 'floatprintf', 'floatscanf', 'mapfile', 'cref', 'printmap', 'ldverbose', 'ldother'];
+    check(
+      'linker: General no longer holds the migrated misc fields',
+      !FIELDS.some((f) => f.page === 'ld.general' && migrated.includes(f.key))
+    );
+    // Generate map: EVT projects never persist c.linker.mapfilename — MRS2
+    // renders the toolchain default instead of a blank box (user report
+    // 2026-11-16), so an unstored option must fall back to that default
+    {
+      const mapField = FIELDS.find((f) => f.key === 'mapfile');
+      const stored = realCp.optionValue('c.linker.mapfilename');
+      check(
+        'linker: Generate map resolves default-or-stored like MRS2',
+        stored !== undefined ? mapField.get(realCp) === stored : mapField.get(realCp) === '"${BuildArtifactFileBaseName}.map"'
+      );
+      check('linker: Generate map never renders blank', mapField.get(realCp) !== '');
+    }
+    // Linker flags: the MRS model defaults c.linker.flags to [] — an empty
+    // stringList renders an empty table (ADC_DMA's -print-memory-usage row is
+    // STORED in that project, not a default; user audit 2026-11-16)
+    {
+      const flagsField = FIELDS.find((f) => f.key === 'ldflags');
+      const storedFlags = realCp.listOption('c.linker.flags').values;
+      check(
+        'linker: Linker flags is stored-or-empty (no invented default)',
+        flagsField.get(realCp) === storedFlags.join('\n')
+      );
+      const pathsField = FIELDS.find((f) => f.key === 'libpaths');
+      const storedPaths = realCp.listOption('c.linker.paths').values;
+      check('linker: Library search path is stored-or-empty', pathsField.get(realCp) === storedPaths.join('\n'));
+    }
+    // Target / tool options whose MRS model constructors carry defaults that
+    // EVT projects do not persist: the page must show those defaults rather
+    // than a blank/first-unrelated choice (user audit 2026-11-16)
+    {
+      const enumDisplay = (key) => {
+        const f = FIELDS.find((x) => x.key === key);
+        const raw = realCp.optionValue(f.suffix);
+        return raw === undefined || raw === '' ? (f.def ?? 'default') : raw;
+      };
+      const cmRaw = realCp.optionValue('target.codemodel');
+      check(
+        'defaults: Code model falls back to Toolchain default (not MedAny)',
+        (cmRaw === undefined || cmRaw === '' ? enumDisplay('codemodel') === 'default' : true) &&
+          (FIELDS.find((f) => f.key === 'codemodel').options || []).some(([v]) => v === 'default')
+      );
+      check(
+        'defaults: Integer ABI has the Toolchain default choice',
+        (FIELDS.find((f) => f.key === 'abi').options || []).some(([v]) => v === 'default')
+      );
+      check(
+        'defaults: Architecture has the Toolchain Default choice',
+        (FIELDS.find((f) => f.key === 'arch').options || []).some(([v]) => v === 'default')
+      );
+      const sdl = FIELDS.find((f) => f.key === 'sdl');
+      check('defaults: Small data limit shows 8 when unstored', sdl.get(realCp) === (realCp.optionValue('target.smalldatalimit') ?? '8'));
+      const tune = FIELDS.find((f) => f.key === 'tune');
+      check('defaults: Tuning is the MRS2 model enum with default fallback', tune.type === 'enum' && tune.def === 'default');
+      const sizeFmt = FIELDS.find((f) => f.key === 'sizefmt');
+      const szRaw = realCp.optionValue('printsize.format');
+      check(
+        'defaults: Size format falls back to berkeley (MRS model default)',
+        szRaw === undefined || szRaw === '' ? sizeFmt.def === 'berkeley' : true
+      );
+      const flashFmt = FIELDS.find((f) => f.key === 'flashfmt');
+      const flRaw = realCp.optionValue('createflash.choice');
+      check(
+        'defaults: Output format falls back to ihex (MRS model default)',
+        flRaw === undefined || flRaw === '' ? flashFmt.def === 'ihex' : true
+      );
+      check(
+        'defaults: addtools Create switches default to checked like MRS2',
+        ['flash', 'lst', 'size'].every((k) => FIELDS.find((f) => f.key === k).def === 'true')
+      );
+    }
+    // the project-source pick conversion must be the MRS2 stored spelling and
+    // must survive the render template (the old unescaped form emitted
+    // '[object Object]/rel' instead of the macro)
+    check('render: no [object Object] interpolation leak', !html.includes('[object Object]'));
+    check(
+      'linker: project-source picks convert to the workspace_loc macro',
+      scripts.some((s) => s.includes("'${workspace_loc:/${ProjName}/'"))
+    );
+    // dialog modes are emitted for the webview and drive the OS picker
+    check(
+      'list dialogs: LIST_MODES emitted (script=ldfile, libs=text)',
+      scripts.some((s) => s.includes('const LIST_MODES = {') && s.includes('"script":"ldfile"') && s.includes('"libs":"text"'))
+    );
+    check(
+      'list dialogs: C++ symbol/include lists get their modes',
+      scripts.some(
+        (s) => s.includes('"cppdefs":"text"') && s.includes('"cppundefs":"text"') && s.includes('"cppsysincs":"dir"') && s.includes('"cppfileincs":"file"')
+      )
+    );
+    check(
+      'list dialogs: symbol lists get their own modal nouns (round34 P3)',
+      scripts.some(
+        (s) =>
+          s.includes("defs: 'defined symbol'") &&
+          s.includes("cppundefs: 'undefined symbol'") &&
+          s.includes("asmdefs: 'defined symbol'") &&
+          s.includes("ldflags: 'linker flag'") &&
+          s.includes("cppldflags: 'linker flag'")
+      )
+    );
+    check(
+      'list dialogs: text mode hides the source row / browse controls',
+      scripts.some((s) => s.includes("getElementById('msrcrow')") && s.includes("mode === 'text'"))
+    );
+    const cvSrc = fs.readFileSync(path.join(__dirname, '..', 'out', 'vscode', 'configView.js'), 'utf8');
+    check('list dialogs: ldfile picker filters to .ld', cvSrc.includes("'Linker script': ['ld']"));
+  }
 
   // ---- collectDl must scope to the PAGE, not the nav item ----
   // nav items also carry data-page and precede #content in the document;
@@ -377,11 +655,19 @@ await view.show(store.active);
   check('sync page: value controls seeded', syncHtml.includes('data-val="nocommon"') && syncHtml.includes('data-val="optlevel"'));
   check('sync page: unique page keys + breadcrumb display', syncHtml.includes('data-page="opt"') && syncHtml.includes('data-page="warn"') && syncHtml.includes('Warnings') && !syncHtml.includes('data-page="Warnings"'));
   check('sync page: cpp-only rows annotated', syncHtml.includes('cpponly'));
-  // unset enums seed 'default' (same as the properties page) and the select
-  // must expose it as an explicit choice — seeding the first option used to
-  // display -Os for projects that never set the option
-  check('sync page: unset enums seed an explicit (default) choice', syncHtml.includes('(default)'));
+  // unset enums now seed their MODEL default via shared readEnum (f.def) or
+  // a synthetic (default) for fields without any def (align/dbglevel/
+  // dbgformat in the LED base); the stronger invariant is: EVERY enum select
+  // renders one selected option (no browser first-option fallback)
+  check('sync page: unset enums seed an explicit choice (model default or (default))', (() => {
+    const selects = [...syncHtml.matchAll(/<select class="valbox" data-val="[^"]*">([\s\S]*?)<\/select>/g)];
+    return selects.length > 10 && selects.every((m) => /<option value="[^"]+" selected>/.test(m[1]));
+  })());
   check('sync page: hostile string escaped', !syncHtml.includes('LED<x>"</script>') || syncHtml.includes('\\u003C'));
+  // 0.3.1 additions ride along automatically (the page derives from FIELDS):
+  // the Target-page RVV checkbox (custom get/set, enumerated storage) is the
+  // one field that used to be filtered out
+  check('sync page: picolibc + RVV rows present (0.3.1 fields)', syncHtml.includes('data-val="picolibc"') && syncHtml.includes('data-val="rvv"') && syncHtml.includes('Vector Cryptography extensions (RVV)'));
   // nonce policy on the sync page too (script-src gated, every tag tagged)
   {
     const cspS = (syncHtml.match(/<meta http-equiv="Content-Security-Policy" content="([^"]*)"/) || [])[1] ?? '';
@@ -390,6 +676,36 @@ await view.show(store.active);
     const tagsS = [...syncHtml.matchAll(/<script([^>]*)>/g)].map((m) => m[1]);
     check('sync page: CSP nonce policy', !!nS && !ssS.includes("'unsafe-inline'") && tagsS.length >= 1 && tagsS.every((a) => a.includes(`nonce="${nS}"`)));
   }
+  // round-46/47: the collector is the COMPILED exported function injected
+  // into the page via toString() — calling it here executes the EXACT code
+  // the browser runs (no eval needed, no drift possible). The DOM-reading
+  // half of the page script stays pinned by the source check below.
+  const syncCollector = require('../out/vscode/syncPage.js').collectSyncItems;
+  const collectorMeta = {
+    rvGcc: { suffix: 'target.rvGcc', type: 'enum', enumBase: 'X.' },
+    nocommon: { suffix: 'optimization.nocommon', type: 'bool' },
+  };
+  const ctlRaw = { key: 'rvGcc', syncChecked: true, value: 'future-full-id', dataCurrent: true };
+  const ctlSuffix = { key: 'rvGcc', syncChecked: true, value: 'futurechoice' };
+  const ctlKnown = { key: 'rvGcc', syncChecked: true, value: '8' };
+  const ctlUnchecked = { key: 'rvGcc', syncChecked: false, value: '8', dataCurrent: true };
+  const ctlBool = { key: 'nocommon', syncChecked: true, boolChecked: false };
+  const rawItems = syncCollector(collectorMeta, [ctlRaw]);
+  check('collector behavior: verbatim id -> raw true and kept', rawItems.length === 1 && rawItems[0].raw === true && rawItems[0].value === 'future-full-id');
+  const suffixItems = syncCollector(collectorMeta, [ctlSuffix]);
+  check('collector behavior: unknown suffix without data-current -> raw stays falsy', suffixItems[0].raw === false && suffixItems[0].value === 'futurechoice');
+  const knownItems = syncCollector(collectorMeta, [ctlKnown]);
+  check('collector behavior: known choice -> raw stays falsy, registered value sent', !knownItems[0].raw && knownItems[0].value === '8');
+  const uncheckedItems = syncCollector(collectorMeta, [ctlUnchecked]);
+  check('collector behavior: unchecked syncbox filtered out', uncheckedItems.length === 0);
+  const boolItems = syncCollector(collectorMeta, [ctlBool]);
+  check('collector behavior: bool control sends its checked state', boolItems[0].value === '0' && !boolItems[0].raw);
+  const scriptsSync = [...syncHtml.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  const collectorSrc = scriptsSync.find((s) => s.includes('applySync')) || '';
+  check(
+    'collector: page injects the shared collector and reads the data-current marker',
+    collectorSrc.includes('const collectSyncItems = ') && collectorSrc.includes("hasAttribute('data-current')")
+  );
 
   // drive the batch: tick two bool boxes + one enum, then applySync
   // (simulate the webview collector on the real HTML)
@@ -413,6 +729,187 @@ await view.show(store.active);
       h({ command: 'applySync', items: [{ suffix: 'mrvc.test.absent.enum', type: 'enum', enumBase: 'mrvc.test.absent.enum.', value: 'default' }] });
     await new Promise((r) => setTimeout(r, 300));
     check('sync batch: default-valued enum leaves the option unset', !Cproject.load(scratch1).optionValue('mrvc.test.absent.enum'));
+    // RVV rides the sync batch through its own setter (enumerated storage:
+    // checked -> ...isa.rvv.zve64x_zvl64b_zvbb, unchecked -> empty suffix)
+    for (const h of syncHandlers)
+      h({ command: 'applySync', items: [{ suffix: 'target.isa.rvv', type: 'bool', value: '1' }] });
+    await new Promise((r) => setTimeout(r, 300));
+    // value ids for the isa.* options carry NO `target.` segment (they are
+    // OPT_BASE + 'isa.rvv.…', unlike the option's superClass suffix)
+    const RVV = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.isa.rvv.';
+    const rvv1 = Cproject.load(scratch1).optionValue('target.isa.rvv');
+    check('sync batch: RVV checked writes the enumerated on-value', rvv1 === RVV + 'zve64x_zvl64b_zvbb');
+    for (const h of syncHandlers)
+      h({ command: 'applySync', items: [{ suffix: 'target.isa.rvv', type: 'bool', value: '0' }] });
+    await new Promise((r) => setTimeout(r, 300));
+    check('sync batch: RVV unchecked writes the MRS empty-suffix form', Cproject.load(scratch1).optionValue('target.isa.rvv') === RVV);
+
+    // round-43 P2-1: a base-infix enum id (...option.base.<suffix><choice>)
+    // must render its choice selected (not fall back to the first option)
+    {
+      const bs = path.join(__dirname, '..', '.scratch', 'sync-base-form');
+      fs.rmSync(bs, { recursive: true, force: true });
+      fs.cpSync(PROJ, bs, { recursive: true });
+      const cpB = Cproject.load(bs);
+      cpB.setOptionValue('target.rvGcc', 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.base.target.rvGcc.12');
+      cpB.save();
+      const baseB = { root: bs, projectName: 'LEDB', cproject: Cproject.load(bs), toolchain: () => undefined, reload() {}, buildDir: path.join(bs, 'obj') };
+      const storeB = { active: baseB, all: [baseB], reloadProject() {} };
+      const bp = {
+        title: '',
+        reveal() {},
+        dispose() {},
+        onDidDispose() {
+          return { dispose() {} };
+        },
+        webview: {
+          htmlHolder: '',
+          get html() {
+            return this.htmlHolder;
+          },
+          set html(v) {
+            this.htmlHolder = v;
+          },
+          handlers: [],
+          onDidReceiveMessage(h) {
+            this.handlers.push(h);
+            return { dispose() {} };
+          },
+          postMessage() {
+            return Promise.resolve(true);
+          },
+        },
+      };
+      // SyncPage2 talks to the patched window object it was loaded with
+      vscodePatch.window.createWebviewPanel = () => bp;
+      const sb = new SyncPage2(storeB);
+      sb.open();
+      delete vscodePatch.window.createWebviewPanel;
+      check('sync base-form: GCC12 choice rendered selected, no first-option fallback', /<option value="12" selected>WCH Toolchain \(GCC12\)<\/option>/.test(bp.webview.html));
+      // real Apply: the collector sends value '12' (a registered CHOICE), so
+      // the stored id must be the NORMAL enum id — the toolchain stays GCC12
+      const RVGCC = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.target.rvGcc.';
+      for (const h of bp.webview.handlers)
+        h({ command: 'applySync', items: [{ suffix: 'target.rvGcc', type: 'enum', enumBase: RVGCC, value: '12' }] });
+      await new Promise((r) => setTimeout(r, 300));
+      check('sync base-form: Apply writes the normal enum id (toolchain stays GCC12)', Cproject.load(bs).optionValue('target.rvGcc') === RVGCC + '12');
+      // round-44 P2-1: the "(current)" value is a COMPLETE raw id — the
+      // writer must echo it verbatim (no double enumBase prefix)
+      const unknownId = 'ilg.other.tool.option.target.rvGcc.futurechoice';
+      const cpB2 = Cproject.load(bs);
+      cpB2.setOptionValue('target.rvGcc', unknownId);
+      cpB2.save();
+      baseB.cproject = Cproject.load(bs); // re-seed the render source too
+      sb.open(); // re-render from the updated project
+      check('sync base-form: unknown id rendered as (current) with data-current', /<option value="ilg\.other\.tool\.option\.target\.rvGcc\.futurechoice" data-current="1" selected>/.test(bp.webview.html));
+      for (const h of bp.webview.handlers)
+        h({ command: 'applySync', items: [{ suffix: 'target.rvGcc', type: 'enum', enumBase: RVGCC, value: unknownId, raw: true }] });
+      await new Promise((r) => setTimeout(r, 300));
+      check('sync base-form: unknown raw id echoed verbatim (no double prefix)', Cproject.load(bs).optionValue('target.rvGcc') === unknownId);
+      fs.rmSync(bs, { recursive: true, force: true });
+    }
+
+    // round-45 P2: an unknown suffix under a KNOWN enumBase is NOT raw —
+    // Apply must write enumBase + suffix, and the rendered (current) option
+    // must NOT carry data-current
+    {
+      const bs2 = path.join(__dirname, '..', '.scratch', 'sync-unknown-suffix');
+      fs.rmSync(bs2, { recursive: true, force: true });
+      fs.cpSync(PROJ, bs2, { recursive: true });
+      const AL = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.target.align.';
+      const futureId = AL + 'futurechoice';
+      const cpA = Cproject.load(bs2);
+      cpA.setOptionValue('target.align', futureId);
+      cpA.save();
+      const baseA = { root: bs2, projectName: 'LEDA', cproject: Cproject.load(bs2), toolchain: () => undefined, reload() {}, buildDir: path.join(bs2, 'obj') };
+      const storeA = { active: baseA, all: [baseA], reloadProject() {} };
+      const ap = { html: '', title: '', reveal() {}, dispose() {}, onDidDispose() { return { dispose() {} }; }, webview: { handlers: [], htmlHolder: '', get html() { return this.htmlHolder; }, set html(v) { this.htmlHolder = v; }, onDidReceiveMessage(h) { this.handlers.push(h); return { dispose() {} }; }, postMessage() { return Promise.resolve(true); } } };
+      vscodePatch.window.createWebviewPanel = () => ap;
+      const sa = new SyncPage2(storeA);
+      sa.open();
+      delete vscodePatch.window.createWebviewPanel;
+      const mAlign = ap.webview.html.match(/<select class="valbox" data-val="align">([\s\S]*?)<\/select>/);
+      check(
+        'sync unknown-suffix: (current) entry rendered WITHOUT data-current',
+        !!mAlign && /<option value="futurechoice" selected>\(current\) futurechoice<\/option>/.test(mAlign[1]) && !mAlign[1].includes('data-current')
+      );
+      // collector contract: no data-current -> raw stays falsy -> the writer
+      // composes enumBase + suffix
+      for (const h of ap.webview.handlers)
+        h({ command: 'applySync', items: [{ suffix: 'target.align', type: 'enum', enumBase: AL, value: 'futurechoice' }] });
+      await new Promise((r) => setTimeout(r, 300));
+      check('sync unknown-suffix: Apply writes enumBase + suffix (no bare suffix)', Cproject.load(bs2).optionValue('target.align') === futureId);
+      fs.rmSync(bs2, { recursive: true, force: true });
+    }
+
+    // round-43 P2-2: base project uses its MODEL default (option absent) and
+    // the target has an EXPLICIT value — choosing '(default)' must write the
+    // field's model default choice (fp -> none), not silently no-op
+    {
+      const dB = path.join(__dirname, '..', '.scratch', 'sync-def-base');
+      const dT = path.join(__dirname, '..', '.scratch', 'sync-def-target');
+      fs.rmSync(dB, { recursive: true, force: true });
+      fs.rmSync(dT, { recursive: true, force: true });
+      fs.cpSync(PROJ, dB, { recursive: true });
+      fs.cpSync(PROJ, dT, { recursive: true });
+      // base: REMOVE the fp option entirely (model default none shows)
+      const cpDb = Cproject.load(dB);
+      cpDb.setOptionValue('target.isa.fp', undefined);
+      cpDb.save();
+      // target: EXPLICIT single precision
+      const cpDt = Cproject.load(dT);
+      cpDt.setOptionValue('target.isa.fp', 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.isa.fp.single');
+      cpDt.save();
+      const memberDb = { root: dB, projectName: 'LEDd0', cproject: Cproject.load(dB), toolchain: () => undefined, reload() {}, buildDir: path.join(dB, 'obj') };
+      const memberDt = { root: dT, projectName: 'LEDd1', cproject: Cproject.load(dT), toolchain: () => undefined, reload() {}, buildDir: path.join(dT, 'obj') };
+      const storeD = { active: memberDb, all: [memberDb, memberDt], reloadProject() {} };
+      const sd = new SyncPage2(storeD);
+      const dPanel = { html: '', title: '', reveal() {}, dispose() {}, onDidDispose() { return { dispose() {} }; }, webview: { onDidReceiveMessage(h) { syncHandlers.push(h); return { dispose() {} }; }, postMessage(m) { syncPosted.push(m); return Promise.resolve(true); } } };
+      vscodePatch.window.createWebviewPanel = () => dPanel;
+      sd.open();
+      delete vscodePatch.window.createWebviewPanel;
+      for (const h of syncHandlers)
+        h({ command: 'applySync', items: [{ suffix: 'target.isa.fp', type: 'enum', enumBase: 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.isa.fp.', value: 'default' }] });
+      await new Promise((r) => setTimeout(r, 300));
+      // fp has def='none' -> the TARGET now carries the explicit none id
+      const FP = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.isa.fp.';
+      check('sync default: target fp rewritten to the model default choice (none)', Cproject.load(dT).optionValue('target.isa.fp') === FP + 'none');
+      // an enum with NO model default and NO real 'default' choice
+      // (optimization.level: no def, options lack 'default'): a '(default)'
+      // sync must be reported as SKIPPED, not OK — target keeps its stored
+      // choice. A REAL enum field this time (round-44 P3-1: messagelength is
+      // boolean, so the fd lookup trivially missed and proved nothing)
+      const cpNo = Cproject.load(dT);
+      const OL = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.optimization.level.';
+      const targetLevelBefore = Cproject.load(dT).optionValue('optimization.level');
+      check('sync default: the probe target stores an explicit optimization.level', !!targetLevelBefore);
+      for (const h of syncHandlers)
+        h({ command: 'applySync', items: [{ suffix: 'optimization.level', type: 'enum', enumBase: OL, value: 'default' }] });
+      await new Promise((r) => setTimeout(r, 300));
+      check(
+        'sync default: no-model-default enum keeps target value and is reported skipped',
+        syncPosted.some((m) => m.command === 'syncDone' && m.text.includes('skipped')) &&
+          Cproject.load(dT).optionValue('optimization.level') === targetLevelBefore
+      );
+      fs.rmSync(dB, { recursive: true, force: true });
+      fs.rmSync(dT, { recursive: true, force: true });
+    }
+
+    // round-43 P3-1: a second applySync while the first is in flight is
+    // refused with a warning instead of interleaving two write loops
+    {
+      for (const h of syncHandlers) h({ command: 'applySync', items: [{ suffix: 'optimization.nocommon', type: 'bool', value: '1' }] });
+      let warned = 0;
+      const savedWarn = vscodePatch.window.showWarningMessage;
+      vscodePatch.window.showWarningMessage = () => {
+        warned++;
+        return Promise.resolve(undefined);
+      };
+      for (const h of syncHandlers) h({ command: 'applySync', items: [{ suffix: 'optimization.nocommon', type: 'bool', value: '0' }] });
+      await new Promise((r) => setTimeout(r, 300));
+      vscodePatch.window.showWarningMessage = savedWarn;
+      check('sync busy: overlapping applySync refused', warned >= 1);
+    }
 
     // ---- Macro Definitions Across Projects (dedicated page) ----
     const macroPanel = {
@@ -665,9 +1162,14 @@ await view.show(store.active);
       await viewA.show(projA);
       vscodeStub.window.createWebviewPanel = savedCreate;
       const ENUM = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.target.align.';
-      for (const h of handlersA) h({ command: 'save', values: { align: 'strict' } });
+      for (const h of handlersA) h({ command: 'save', values: { align: 'strict', picolibc: 'double' } });
       await new Promise((r) => setTimeout(r, 300));
       check('apply: non-default enum written (align=strict)', Cproject.load(scratchA).optionValue('target.align') === ENUM + 'strict');
+      check(
+        'apply: picolibc enum written with the MRS2 value id',
+        Cproject.load(scratchA).optionValue('c.linker.picolibc') ===
+          'ilg.gnumcueclipse.managedbuild.cross.riscv.option.c.linker.picolibc.double'
+      );
       for (const h of handlersA) h({ command: 'save', values: { align: 'default' } });
       await new Promise((r) => setTimeout(r, 300));
       check(
@@ -877,6 +1379,111 @@ await view.show(store.active);
       fs.rmSync(scratchE, { recursive: true, force: true });
     }
 
+    // ---- path-entry validation on Apply (user request 2026-11-16) ----
+    // a typo in ${workspace_loc:/${ProjName}/...} silently breaks the build;
+    // the gate refuses malformed macros outright and asks about unknown
+    // macros / missing folders before writing anything
+    {
+      const { t } = require('../out/core/i18n.js');
+      const scratchP = path.join(__dirname, '..', '.scratch', 'path-gate');
+      fs.rmSync(scratchP, { recursive: true, force: true });
+      fs.cpSync(PROJ, scratchP, { recursive: true });
+      const cpFileP = path.join(scratchP, '.cproject');
+      const projP = {
+        root: scratchP,
+        projectName: 'LED',
+        projectDisplayName: 'LED',
+        buildDir: path.join(scratchP, 'obj'),
+        hexPath: path.join(scratchP, 'obj', 'LED.hex'),
+        kernel: undefined,
+        template: readTemplate(scratchP),
+        cproject: Cproject.load(scratchP),
+        projectFile: readProjectFile(scratchP),
+        toolchain: () => null,
+        logicPathOf: () => undefined,
+        reload() {},
+      };
+      const handlersP = [];
+      const panelP = {
+        html: '',
+        title: '',
+        reveal() {},
+        dispose() {},
+        onDidDispose() { return { dispose() {} }; },
+        webview: {
+          onDidReceiveMessage(h) { handlersP.push(h); return { dispose() {} }; },
+          postMessage() { return Promise.resolve(true); },
+        },
+      };
+      const savedCreateP = vscodeStub.window.createWebviewPanel;
+      vscodeStub.window.createWebviewPanel = () => panelP;
+      const viewP = new ConfigView({ active: projP, all: [] }, ctx);
+      await viewP.show(projP);
+      vscodeStub.window.createWebviewPanel = savedCreateP;
+      const savedWarnP = vscodeStub.window.showWarningMessage;
+      const savedErrP = vscodeStub.window.showErrorMessage;
+      const missingEntry = '${workspace_loc:/${ProjName}/__mrvc_missing__}';
+      // 1) missing folder + user backs out (dialog dismissed) → no write
+      let warnedP = 0;
+      vscodeStub.window.showWarningMessage = () => {
+        warnedP++;
+        return Promise.resolve(undefined);
+      };
+      const beforeP = fs.readFileSync(cpFileP);
+      for (const h of handlersP) h({ command: 'save', values: { incs: missingEntry } });
+      await new Promise((r) => setTimeout(r, 300));
+      check(
+        'path gate: dismissing the missing-path prompt writes nothing',
+        warnedP === 1 && fs.readFileSync(cpFileP).equals(beforeP)
+      );
+      // 2) same entry, user continues → row lands in the .cproject
+      vscodeStub.window.showWarningMessage = () => {
+        warnedP++;
+        return Promise.resolve(t('propertiesPathContinue'));
+      };
+      for (const h of handlersP) h({ command: 'save', values: { incs: missingEntry } });
+      await new Promise((r) => setTimeout(r, 300));
+      check(
+        'path gate: continuing writes the acknowledged entry',
+        warnedP === 2 && Cproject.load(scratchP).listOption('c.compiler.include.paths').values.includes(missingEntry)
+      );
+      // 3) malformed macro is a hard error — never prompts, never writes
+      const beforeP3 = fs.readFileSync(cpFileP);
+      let errorMsgP = '';
+      let warnedP3 = 0;
+      vscodeStub.window.showWarningMessage = () => {
+        warnedP3++;
+        return Promise.resolve(undefined);
+      };
+      vscodeStub.window.showErrorMessage = (msg) => {
+        errorMsgP = String(msg);
+      };
+      for (const h of handlersP) h({ command: 'save', values: { incs: '${workspace_loc:/${ProjName}/oops' } });
+      await new Promise((r) => setTimeout(r, 300));
+      check(
+        'path gate: malformed macro is a hard error with no prompt and no write',
+        /unclosed/.test(errorMsgP) && warnedP3 === 0 && fs.readFileSync(cpFileP).equals(beforeP3)
+      );
+      // 4) unknown macro is only a confirmation, like a missing folder
+      let unknownDetailP = '';
+      vscodeStub.window.showWarningMessage = (_msg, opts) => {
+        unknownDetailP = String(opts && opts.detail);
+        return Promise.resolve(t('propertiesPathBack'));
+      };
+      vscodeStub.window.showErrorMessage = (msg) => {
+        errorMsgP = String(msg);
+      };
+      for (const h of handlersP) h({ command: 'save', values: { incs: '${workspac_loc:/${ProjName}/inc}' } });
+      await new Promise((r) => setTimeout(r, 300));
+      check(
+        'path gate: unknown macro asks before writing',
+        /workspac_loc/.test(unknownDetailP) && fs.readFileSync(cpFileP).equals(beforeP3)
+      );
+      vscodeStub.window.showWarningMessage = savedWarnP;
+      vscodeStub.window.showErrorMessage = savedErrP;
+      fs.rmSync(scratchP, { recursive: true, force: true });
+    }
+
     // ---- project store: the Refresh button re-renders unchanged workspaces ----
     // (user report 2026-11-12: files deleted inside a project stayed in the
     // tree — discovery fires nothing when the project SET is unchanged)
@@ -888,6 +1495,54 @@ await view.show(store.active);
       await storeR.refreshWorkspace();
       check('refresh: an unchanged workspace still fires a view refresh', fired >= 1);
       storeR.dispose();
+    }
+
+    // ---- C++ project render: the C++ Compiler pages must appear and show
+    // the MRS2-aligned controls (user report 2026-11-16) ----
+    {
+      const CPP = ['F:/MyProjects/MRS2_VSCODE/TEST/FingerCode/FingerCode/FingerCode'].find((p) =>
+        fs.existsSync(path.join(p, '.cproject'))
+      );
+      if (!CPP) {
+        console.log('SKIP  C++ render (no C++ project tree found)');
+      } else {
+        const cppCp = Cproject.load(CPP);
+        const storeCpp = {
+          ...store,
+          active: {
+            ...store.active,
+            root: CPP,
+            projectName: 'FingerCode',
+            projectDisplayName: 'FingerCode',
+            buildDir: path.join(CPP, 'obj'),
+            hexPath: path.join(CPP, 'obj', 'FingerCode.hex'),
+            template: readTemplate(CPP),
+            cproject: cppCp,
+            projectFile: readProjectFile(CPP),
+          },
+        };
+        await view.show(storeCpp.active);
+        const h = stubPanel.webview.html;
+        check('cpp render: C++ Compiler Optimization page is present', h.includes('data-page="cpp.opt"'));
+        check('cpp render: Includes list controls render', h.includes('data-key="cppincs"') && h.includes('data-key="cppsysincs"') && h.includes('data-key="cppfileincs"'));
+        check('cpp render: ABI version + -fno-* switches render on Optimization', h.includes('data-key="cppabi"') && h.includes('data-key="cppnoexc"'));
+        check('cpp render: Miscellaneous switches render', h.includes('data-key="cppasmlisting"') && h.includes('data-key="cppsavetemps"') && h.includes('data-key="cppverbose"'));
+        check(
+          'cpp render: Linker pages expose the mirrored fields',
+          h.includes('data-key="cppnodeflibs"') &&
+            h.includes('data-key="cppldflags"') &&
+            h.includes('data-key="cppmapfile"') &&
+            h.includes('data-key="cppcref"') &&
+            h.includes('data-key="cpppicolibc"')
+        );
+        check(
+          'cpp render: stored gnu++17 is selected in the standard select',
+          /<option value="gnucpp17"\s+selected>GNU ISO 2017 C\+\+ \(-std=gnu\+\+17\)<\/option>/.test(h)
+        );
+        check('cpp render: stored ABI 0 shows the MRS2 label', /<option value="0"\s+selected>0 \(most conforming\)<\/option>/.test(h));
+        check('cpp render: picolibc shows the stored disabled choice', /<option value="disabled"\s+selected>Disabled<\/option>/.test(h));
+        check('cpp render: no [object Object] interpolation leak', !h.includes('[object Object]'));
+      }
     }
 
     fs.rmSync(scratch2, { recursive: true, force: true });

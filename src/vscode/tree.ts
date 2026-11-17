@@ -153,14 +153,17 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   /** ONE TreeNode identity per tree slot. getChildren recomputes content on
    *  every render, but scoped refreshes (onTreeDirsChanged) fire cached
    *  instances — VSCode matches fired elements by identity, so a fresh twin
-   *  would silently miss. Keyed by project|nodeType|fsPath|linkedName. */
+   *  would silently miss. Keyed by project|nodeType|fsPath|linkedName|.wvsln
+   *  FILE (the solution segment rides on the file — see nodeKey). */
   private readonly nodeCache = new Map<string, TreeNode>();
   /** fsPath → nodes at that path (a shared linked folder appears under
    *  several projects) — the scoped-refresh lookup index */
   private readonly nodesByPath = new Map<string, Set<TreeNode>>();
   /** last-rendered child nodes per expanded parent — lets recordChildren
-   *  prune leaf identities that vanished (deleted/renamed/cleaned obj) so
-   *  long sessions don't accumulate stale TreeNodes (round20 P3) */
+   *  prune vanished identities (deleted/renamed/cleaned obj) so long
+   *  sessions don't accumulate stale TreeNodes; the prune is RECURSIVE
+   *  (a deleted expanded directory drops its whole descendant chain —
+   *  round22 P3) */
   private readonly childrenByParent = new Map<TreeNode, Set<TreeNode>>();
   /** last-rendered child fsPaths per expanded parent — lets a scoped refresh
    *  detect "the parent's list is missing a directory that now exists"
@@ -205,7 +208,8 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 
   private static nodeKey(el: TreeNode): string {
     const proj = el.project ? ProjectStore.key(el.project.root) : '';
-    // solution identity rides on the .wvsln FILE: two solutions may share a
+    // cache key = project | nodeType | fsPath | linkedName | .wvsln FILE —
+    // the solution segment rides on the file: two solutions may share a
     // directory, and a remove→add reuses the path but must be a fresh node
     const sol = el.solution ? MrsSolution.key(el.solution.file) : '';
     return `${proj}|${el.nodeType}|${el.fsPath ?? ''}|${el.linkedName ?? ''}|${sol}`;
@@ -308,21 +312,20 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 
   /** remember which child nodes/paths a parent's last render contained.
    *  The node set drives leaf-cache pruning (a child absent from the new
-   *  render has vanished — its TreeNode identity is dropped); the path set
-   *  lets scoped refresh detect "the parent is missing a directory that
-   *  now exists" (deleted-then-recreated obj). */
+   *  render has vanished — its TreeNode identity is dropped, RECURSIVELY for
+   *  directories so a deleted expanded subtree does not leave its whole
+   *  descendant chain in the cache); the path set lets scoped refresh
+   *  detect "the parent is missing a directory that now exists"
+   *  (deleted-then-recreated obj). */
   private recordChildren(parent: TreeNode, nodes: TreeNode[]): TreeNode[] {
     const next = new Set(nodes);
     const prev = this.childrenByParent.get(parent);
     if (prev) {
       for (const old of prev) {
         if (next.has(old)) continue;
-        // leaf vanished (deleted / renamed / build artifact cleaned): drop
-        // its cache identity so long sessions don't accumulate stale nodes
-        const key = ProjectTreeProvider.nodeKey(old);
-        if (this.nodeCache.get(key) === old) this.nodeCache.delete(key);
-        this.renderedChildren.delete(old);
-        this.unindexNode(old);
+        // subtree vanished (deleted / renamed / build artifact cleaned):
+        // drop the node's cache identity AND everything below it
+        this.pruneSubtree(old);
       }
     }
     this.childrenByParent.set(parent, next);
@@ -332,6 +335,23 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     }
     this.renderedChildren.set(parent, paths);
     return nodes;
+  }
+
+  /** drop one vanished node's cache identity plus, recursively, every
+   *  descendant it had rendered (a deleted expanded directory must not leave
+   *  its whole descendant chain in nodeCache / nodesByPath / renderedChildren
+   *  / childrenByParent — round22 P3 probe: deep.c still indexed). */
+  private pruneSubtree(old: TreeNode): void {
+    const key = ProjectTreeProvider.nodeKey(old);
+    if (this.nodeCache.get(key) === old) this.nodeCache.delete(key);
+    // recurse into the vanished node's own rendered children (if any)
+    const oldChildren = this.childrenByParent.get(old);
+    if (oldChildren) {
+      this.childrenByParent.delete(old);
+      for (const child of oldChildren) this.pruneSubtree(child);
+    }
+    this.renderedChildren.delete(old);
+    this.unindexNode(old);
   }
 
   getTreeItem(el: TreeNode): vscode.TreeItem {

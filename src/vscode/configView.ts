@@ -35,6 +35,18 @@ export interface FieldDef {
    *  missing one) */
   enumBase?: string;
   options?: Array<[string, string]>;
+  /** displayed value when the option is absent or carries no value. MRS2's
+   *  own EP model initialises these fields in its constructors (e.g.
+   *  ECCompiler.language_standard="gnu11", EPrintSize.size_format="berkeley",
+   *  ECreateFlashImage.outputFileFormat="ihex", RISCVTargetProcessor
+   *  architecture/integer_ABI="default", small_data_limit=8, Tuning
+   *  "default", addtools enabled=true), so its property pages show those
+   *  values — not blanks — while the .cproject stores nothing */
+  def?: string;
+  /** string field rendered as a one-line <input> like MRS's el-input
+   *  (Small data limit / Generate map); default is the tall textarea that
+   *  MRS uses for the "Other ... flags" fields */
+  multiline?: boolean;
   get?: (cp: Cproject) => string;
   set?: (cp: Cproject, value: string) => void;
   /** .template key (chip identity / download address) instead of .cproject */
@@ -49,12 +61,20 @@ function F(def: FieldDef): FieldDef {
   return def;
 }
 
-const list = (key: string, page: string, label: string, suffix: string): FieldDef => ({
+/** list option; `def` rows are shown when nothing is stored. Only fields whose
+ *  MRS model carries a non-empty default get one (e.g. the link map filename);
+ *  c.linker.flags / c.linker.paths default to [] in the MRS model, so their
+ *  tables stay empty until the project stores rows. */
+const list = (key: string, page: string, label: string, suffix: string, def: string[] = []): FieldDef => ({
   key,
   page,
   label,
   type: 'list',
-  get: (cp) => cp.listOption(suffix).values.join('\n'),
+  suffix,
+  get: (cp) => {
+    const v = cp.listOption(suffix).values;
+    return (v.length ? v : def).join('\n');
+  },
   set: (cp, v) =>
     cp.setOptionList(
       suffix,
@@ -65,15 +85,24 @@ const list = (key: string, page: string, label: string, suffix: string): FieldDe
     ),
 });
 
-const bool = (key: string, page: string, label: string, suffix: string): FieldDef => ({
+const bool = (key: string, page: string, label: string, suffix: string, def = false): FieldDef => ({
   key,
   page,
   label,
   type: 'bool',
   suffix,
+  def: def ? 'true' : undefined,
 });
 
-const en = (key: string, page: string, label: string, suffix: string, options: Array<[string, string]>, enumBase?: string): FieldDef => ({
+const en = (
+  key: string,
+  page: string,
+  label: string,
+  suffix: string,
+  options: Array<[string, string]>,
+  enumBase?: string,
+  def?: string
+): FieldDef => ({
   key,
   page,
   label,
@@ -81,14 +110,22 @@ const en = (key: string, page: string, label: string, suffix: string, options: A
   suffix,
   options,
   enumBase,
+  def,
 });
 
-const str = (key: string, page: string, label: string, suffix: string): FieldDef => ({
+/** scalar string option; `def` is shown when the option is NOT stored in the
+ *  .cproject — MRS2 renders the toolchain's default in that case (e.g. the
+ *  Generate map field shows the default map filename even though EVT
+ *  projects never persist it), while a plain empty fallback showed blank */
+const str = (key: string, page: string, label: string, suffix: string, def = '', multiline = true): FieldDef => ({
   key,
   page,
   label,
   type: 'string',
-  get: (cp) => cp.optionValue(suffix) ?? '',
+  suffix,
+  def,
+  multiline,
+  get: (cp) => cp.optionValue(suffix) ?? def,
   set: (cp, v) => cp.setOptionValue(suffix, v || undefined),
 });
 
@@ -113,61 +150,75 @@ export const FIELDS: FieldDef[] = [
     ['15', 'WCH Toolchain (GCC15)'],
   ], OPT_BASE + 'target.rvGcc.'),
   en('arch', 'target', 'Architecture', 'target.isa.base', [
+    ['default', 'Toolchain Default'],
     ['rv32i', 'RV32I (-march=rv32i*)'],
-    ['rv32e', 'RV32E'],
-    ['rv32im', 'RV32IM'],
-    ['rv32iac', 'RV32IAC'],
-    ['rv32imac', 'RV32IMAC'],
-    ['rv32g', 'RV32G'],
-    ['rv64i', 'RV64I'],
-    ['rv64g', 'RV64G'],
+    ['rv64i', 'RV64I (-march=rv64i*)'],
+    ['rv32e', 'RV32E (-march=rv32e*)'],
+    ['rv32g', 'RV32G (-march=rv32g*)'],
+    ['rv64g', 'RV64G (-march=rv64g*)'],
+    ['rv32im', 'RV32IM (-march=rv32im*)'],
+    ['rv32iac', 'RV32IAC (-march=rv32iac*)'],
+    ['rv32imac', 'RV32IMAC (-march=rv32imac*)'],
   ], OPT_BASE + 'target.arch.'),
   bool('rvm', 'target', 'Multiply extension (RVM)', 'target.isa.multiply'),
   bool('rva', 'target', 'Atomic extension (RVA)', 'target.isa.atomic'),
+  // MRS2 Target Processor order puts the F extension select right after RVA;
+  // the stored spelling is `...option.isa.fp.<choice>` (the `target.` segment
+  // is NOT part of the value id — EVT .cproject evidence)
+  en('fp', 'target', 'Floating point', 'target.isa.fp', [
+    ['none', 'None'],
+    ['single', 'Single precision extension(RVF)'],
+    ['double', 'Double precision extension(RVFD)'],
+    ['quad', 'Quad precision extension(RVFDQ)'],
+  ], OPT_BASE + 'isa.fp.', 'none'),
   bool('rvc', 'target', 'Compressed extension (RVC)', 'target.isa.compressed'),
   bool('rvxw', 'target', 'Extra Compressed extension (RVXW)', 'target.isa.xw'),
   bool('rvb', 'target', 'Bit extension (RVB)', 'target.isa.b'),
+  // RVV is a CHECKBOX in MRS2, but the option is enumerated: checked stores
+  // the one supported extension set after `...option.isa.rvv.`, unchecked
+  // stores the empty suffix (`...option.isa.rvv.`) — never true/false
+  F({
+    key: 'rvv',
+    page: 'target',
+    label: 'Vector Cryptography extensions (RVV)',
+    type: 'bool',
+    suffix: 'target.isa.rvv',
+    get: (cp) => {
+      const raw = cp.optionValue('target.isa.rvv');
+      return raw && raw !== OPT_BASE + 'isa.rvv.' ? 'true' : 'false';
+    },
+    set: (cp, v) => cp.setOptionValue('target.isa.rvv', v === '1' ? OPT_BASE + 'isa.rvv.zve64x_zvl64b_zvbb' : OPT_BASE + 'isa.rvv.'),
+  }),
   bool('rvzmmul', 'target', 'Multiplication subset of the M extension (Zmmul)', 'target.isa.zmmul'),
   en('abi', 'target', 'Integer ABI', 'target.abi.integer', [
+    ['default', 'Toolchain default'],
     ['ilp32', 'ILP32 (-mabi=ilp32*)'],
-    ['ilp32e', 'ILP32E'],
-    ['lp64', 'LP64'],
+    ['ilp32e', 'ILP32E (-mabi=ilp32e*)'],
+    ['lp64', 'LP64 (-mabi=lp64*)'],
   ], OPT_BASE + 'abi.integer.'),
   en('fpabi', 'target', 'Floating point ABI', 'target.abi.fp', [
     ['none', 'None'],
-    ['single', 'Single'],
-    ['double', 'Double'],
+    ['single', 'Single precision(f)'],
+    ['double', 'Double precision(d)'],
   ], OPT_BASE + 'abi.fp.'),
+  en('tune', 'target', 'Tuning', 'target.tune', [
+    ['default', 'Toolchain default'],
+    ['rocket', 'Rocket (-mtune=rocket)'],
+    ['generic', 'Generic (-mtune=generic) DEPRECATED'],
+    ['size', 'Size (-mtune=size)'],
+  ], OPT_BASE + 'target.tune.', 'default'),
   en('codemodel', 'target', 'Code model', 'target.codemodel', [
-    ['any', 'MedAny'],
-    ['low', 'MedLow'],
-    ['medium', 'MedMedium'],
+    ['default', 'Toolchain default'],
+    ['any', 'Medium Any (-mcmodel=medany)'],
+    ['low', 'Medium Low (-mcmodel=medlow)'],
   ], OPT_BASE + 'target.codemodel.'),
-  F({
-    key: 'tune',
-    page: 'target',
-    label: 'Tuning (-mtune, empty = toolchain default)',
-    type: 'string',
-    // stored value may be a full CDT enum ("...target.tune.default"): show
-    // the short name and write back a clean plain value (or clear it)
-    get: (cp) => {
-      const raw = cp.optionValue('target.tune');
-      if (!raw) return '';
-      const s = raw.includes('.') ? raw.split('.').pop()! : raw;
-      return /^default$/i.test(s.trim()) ? '' : s.trim();
-    },
-    set: (cp, v) => {
-      const t = v.trim();
-      cp.setOptionValue('target.tune', !t || /^default$/i.test(t) ? undefined : t);
-    },
-  }),
   en('align', 'target', 'Align', 'target.align', [
-    ['default', 'Default'],
-    ['strict', '-mstrict-align'],
-    ['nostrict', '-mno-strict-align'],
+    ['default', 'Toolchain default (-mtune)'],
+    ['strict', 'Strict (-mstrict-align)'],
+    ['nostrict', 'Not strict (-mno-strict-align)'],
   ], OPT_BASE + 'target.align.'),
-  str('sdl', 'target', 'Small data limit', 'target.smalldatalimit'),
-  bool('savere', 'target', 'Save restore (-msave-restore)', 'target.saverestore'),
+  str('sdl', 'target', 'Small data limit', 'target.smalldatalimit', '8', false),
+  bool('savere', 'target', 'Small prologue/epilogue (-msave-restore)', 'target.saverestore'),
   str('targetother', 'target', 'Other target flags', 'target.other'),
 
   // ---- Chip / Target (.template fields; consumed by Download) ----
@@ -261,14 +312,15 @@ export const FIELDS: FieldDef[] = [
   str('dbgother', 'dbg', 'Other debugging flags', 'debugging.other'),
 
   // ---- C Compiler / Preprocessor ----
-  list('defs', 'c.pp', 'Defined symbols (-D), one per line', 'c.compiler.defs'),
-  list('undefs', 'c.pp', 'Undefined symbols (-U), one per line', 'c.compiler.undef'),
+  list('defs', 'c.pp', 'Defined symbols (-D)', 'c.compiler.defs'),
+  list('undefs', 'c.pp', 'Undefined symbols (-U)', 'c.compiler.undef'),
   // ---- C Compiler / Includes ----
-  list('incs', 'c.inc', 'Include paths (-I), one per line', 'c.compiler.include.paths'),
-  list('sysincs', 'c.inc', 'Include system paths (-isystem), one per line', 'c.compiler.include.systempaths'),
-  list('fileincs', 'c.inc', 'Include files (-include), one per line', 'c.compiler.include.files'),
+  list('incs', 'c.inc', 'Include paths (-I)', 'c.compiler.include.paths'),
+  list('sysincs', 'c.inc', 'Include system paths (-isystem)', 'c.compiler.include.systempaths'),
+  list('fileincs', 'c.inc', 'Include files (-include)', 'c.compiler.include.files'),
   // ---- C Compiler / Optimization ----
   en('std', 'c.opt', 'Language standard', 'c.compiler.std', [
+    ['default', 'Toolchain default (GNU ISO C11)'],
     ['gnu99', 'gnu99'],
     ['c99', 'c99'],
     ['gnu11', 'gnu11'],
@@ -280,7 +332,7 @@ export const FIELDS: FieldDef[] = [
     ['c2x', 'c2x'],
     ['gnu2x', 'gnu2x'],
     ['ansi', 'ansi'],
-  ], OPT_BASE + 'c.compiler.std.'),
+  ], OPT_BASE + 'c.compiler.std.', 'gnu11'),
   str('cotheropt', 'c.opt', 'Other optimization flags', 'c.compiler.otheroptimizations'),
   // ---- C Compiler / Warnings ----
   bool('wmissproto', 'c.warn', 'Warn if a global function has no prototype (-Wmissing-prototypes)', 'c.compiler.warning.missingprototypes'),
@@ -289,7 +341,7 @@ export const FIELDS: FieldDef[] = [
   str('cotherwarn', 'c.warn', 'Other warning flags', 'c.compiler.otherwarnings'),
   // ---- C Compiler / Miscellaneous ----
   bool('casmlisting', 'c.misc', 'Generate assembler listing (-Wa,-adhlns="$@.lst")', 'c.compiler.asmlisting'),
-  bool('csavetemps', 'c.misc', 'Save temporary files (--save-temps)', 'c.compiler.savetemps'),
+  bool('csavetemps', 'c.misc', 'Save temporary files (--save-temps Use with caution!)', 'c.compiler.savetemps'),
   bool('cverbose', 'c.misc', 'Verbose (-v)', 'c.compiler.verbose'),
   str('cother', 'c.misc', 'Other compiler flags', 'c.compiler.other'),
 
@@ -297,123 +349,180 @@ export const FIELDS: FieldDef[] = [
   bool('cppnostdinc', 'cpp.pp', 'Do not search system directories (-nostdinc)', 'cpp.compiler.nostdinc'),
   bool('cppnostdincpp', 'cpp.pp', 'Do not search system C++ directories (-nostdinc++)', 'cpp.compiler.nostdincpp'),
   bool('cpppreonly', 'cpp.pp', 'Preprocess only (-E)', 'cpp.compiler.preprocessonly'),
-  list('cppdefs', 'cpp.pp', 'Defined symbols (-D), one per line', 'cpp.compiler.defs'),
-  list('cppundefs', 'cpp.pp', 'Undefined symbols (-U), one per line', 'cpp.compiler.undef'),
+  list('cppdefs', 'cpp.pp', 'Defined symbols (-D)', 'cpp.compiler.defs'),
+  list('cppundefs', 'cpp.pp', 'Undefined symbols (-U)', 'cpp.compiler.undef'),
   // ---- C++ Compiler / Includes ----
-  list('cppincs', 'cpp.inc', 'Include paths (-I), one per line', 'cpp.compiler.include.paths'),
-  // ---- C++ Compiler / Optimization ----
-  en('cppstd', 'cpp.opt', 'C++ language standard', 'cpp.compiler.std', [
-    // the real CDT choice for gnu++11 is `gnucpp11` — real MRS projects store
-    // it, there is no `default` choice for this option (round-11 P3-2)
-    ['gnucpp11', 'gnu++11 (default)'],
-    ['gnucpp98', 'gnu++98'],
-    ['cpp11', 'c++11'],
-    ['cpp14', 'c++14'],
-    ['gnucpp14', 'gnu++14'],
-    ['cpp17', 'c++17'],
-    ['gnucpp17', 'gnu++17'],
-    ['cpp2a', 'c++2a'],
-    ['gnucpp2a', 'gnu++2a'],
-    ['ansi', 'ansi'],
-  ], OPT_BASE + 'cpp.compiler.std.'),
+  list('cppincs', 'cpp.inc', 'Include paths (-I)', 'cpp.compiler.include.paths'),
+  list('cppsysincs', 'cpp.inc', 'Include system paths (-isystem)', 'cpp.compiler.include.systempaths'),
+  list('cppfileincs', 'cpp.inc', 'Include files (-include)', 'cpp.compiler.include.files'),
+  // ---- C++ Compiler / Optimization (MRS layout: standard + ABI + C++
+  //      dialect switches + other flags; the MRS page order is kept) ----
+  en('cppstd', 'cpp.opt', 'Language standard', 'cpp.compiler.std', [
+    ['default', 'Toolchain default (GNU ISO 2014 C++)'],
+    // real projects store `gnucpp11` explicitly; the MRS model's initial
+    // value is also gnucpp11, so an absent option displays as gnu++11
+    ['ansi', 'ISO 1998 C++ incl.2003 amendments (-ansi)'],
+    ['gnucpp98', 'GNU ISO 1998 C++ (-std=gnu++98)'],
+    ['cpp0x', 'ISO 2011 C++ (-std=c++0x,deprecated)'],
+    ['cpp11', 'ISO 2011 C++ (-std=c++11)'],
+    ['gnucpp0x', 'GNU ISO 2011 C++ (-std=gnu++0x,deprecated)'],
+    ['gnucpp11', 'GNU ISO 2011 C++ (-std=gnu++11)'],
+    ['cpp1y', 'GNU ISO 2014 C++ (-std=c++1y,deprecated)'],
+    ['cpp14', 'GNU ISO 2014 C++ (-std=c++14)'],
+    ['gnucpp1y', 'GNU ISO 2014 C++ (-std=gnu++1y,deprecated)'],
+    ['gnucpp14', 'GNU ISO 2014 C++ (-std=gnu++14)'],
+    ['cpp1z', 'ISO 2017 C++ (-std=c++1z,deprecated)'],
+    ['cpp17', 'ISO 2017 C++ (-std=c++17)'],
+    ['gnucpp1z', 'GNU ISO 2017 C++ (-std=gnu++1z,deprecated)'],
+    ['gnucpp17', 'GNU ISO 2017 C++ (-std=gnu++17)'],
+    ['cpp2a', 'Next ISO C (-std=c++2a)'],
+    ['gnucpp2a', 'Next GNU ISO C (-std=gnu++2a)'],
+  ], OPT_BASE + 'cpp.compiler.std.', 'gnucpp11'),
+  en('cppabi', 'cpp.opt', 'ABI version', 'cpp.compiler.abiversion', [
+    // MRS lists the `default` choice too; its model initialises the field to
+    // "0", so an absent option displays 0 (most conforming)
+    ['default', 'Toolchain default (0, most conforming)'],
+    ['0', '0 (most conforming)'], ['1', '1 (from G++3.2)'], ['2', '2 (from G++3.4)'],
+    ['3', '3'], ['4', '4 (from G++4.5)'], ['5', '5 (from G++4.6)'], ['6', '6 (from G++4.7)'],
+    ['7', '7 (from G++4.8)'], ['8', '8 (from G++4.9)'], ['9', '9 (from G++5.2)'],
+    ['10', '10 (from G++6.1)'], ['11', '11 (from G++7)'], ['12', '12 (from G++8)'],
+    ['13', '13 (from G++8.2)'],
+  ], OPT_BASE + 'cpp.compiler.abiversion.', '0'),
+  bool('cppnoexc', 'cpp.opt', 'Do not use exceptions (-fno-exceptions)', 'cpp.compiler.noexceptions'),
+  bool('cppnortti', 'cpp.opt', 'Do not use RTTI (-fno-rtti)', 'cpp.compiler.nortti'),
+  bool('cppnocxa', 'cpp.opt', 'Do not use __cxa_atexit (-fno-use-cxa-atexit)', 'cpp.compiler.nousecxaatexit'),
+  bool('cppnthreads', 'cpp.opt', 'Do not use thread statics (-fno-threadsafe-statics)', 'cpp.compiler.nothreadsafestatics'),
   str('cppotheropt', 'cpp.opt', 'Other optimization flags', 'cpp.compiler.otheroptimizations'),
-  // ---- C++ Compiler / Warnings ----
-  bool('cppwarnabi', 'cpp.warn', 'ABI warnings (-Wabi)', 'cpp.compiler.warnabi'),
-  bool('cppwarneffc', 'cpp.warn', 'Effective-C++ warnings (-Weffc++)', 'cpp.compiler.warneffc'),
-  bool('cppctordtor', 'cpp.warn', 'Constructor/destructor privacy (-Wctordtor-privacy)', 'cpp.compiler.warning.ctordtorprivacy'),
-  bool('cppnoexcept', 'cpp.warn', 'Noexcept warnings (-Wnoexcept)', 'cpp.compiler.warning.noexcept'),
-  bool('cppnonvdtor', 'cpp.warn', 'Non-virtual destructor (-Wnon-virtual-dtor)', 'cpp.compiler.warning.nonvirtualdtor'),
-  bool('cppsignpromo', 'cpp.warn', 'Sign promotion (-Wsign-promo)', 'cpp.compiler.warning.signpromo'),
-  bool('cppstrictnull', 'cpp.warn', 'Strict null sentinels (-Wstrict-null-sentinel)', 'cpp.compiler.warning.strictnullsentinel'),
+  // ---- C++ Compiler / Warnings (MRS order / wording) ----
+  bool('cppwarnabi', 'cpp.warn', 'Warn on ABI violations (-Wabi)', 'cpp.compiler.warnabi'),
+  bool('cppctordtor', 'cpp.warn', 'Warn on class privacy (-Wctor-dtor-privacy)', 'cpp.compiler.warning.ctordtorprivacy'),
+  bool('cppnoexcept', 'cpp.warn', 'Warn on no-except expressions (-Wnoexcept)', 'cpp.compiler.warning.noexcept'),
+  bool('cppnonvdtor', 'cpp.warn', 'Warn on virtual destructors (-Wnon-virtual-dtor)', 'cpp.compiler.warning.nonvirtualdtor'),
+  bool('cppstrictnull', 'cpp.warn', 'Warn on uncast NULL (-Wstrict-null-sentinel)', 'cpp.compiler.warning.strictnullsentinel'),
+  bool('cppsignpromo', 'cpp.warn', 'Warn on sign promotion (-Wsign-promo)', 'cpp.compiler.warning.signpromo'),
+  bool('cppwarneffc', 'cpp.warn', 'Warn about Effective C++ violations (-Weffc++)', 'cpp.compiler.warneffc'),
   str('cppotherwarn', 'cpp.warn', 'Other warning flags', 'cpp.compiler.otherwarnings'),
-  // ---- C++ Compiler / Miscellaneous ----
-  bool('cppnoexc', 'cpp.misc', 'Do not use exceptions (-fno-exceptions)', 'cpp.compiler.noexceptions'),
-  bool('cppnortti', 'cpp.misc', 'Do not use RTTI (-fno-rtti)', 'cpp.compiler.nortti'),
-  bool('cppnocxa', 'cpp.misc', 'Do not use __cxa_atexit (-fno-use-cxa-atexit)', 'cpp.compiler.nousecxaatexit'),
-  bool('cppnthreads', 'cpp.misc', 'Do not use thread-safe statics (-fno-threadsafe-statics)', 'cpp.compiler.nothreadsafestatics'),
-  en('cppabi', 'cpp.misc', 'ABI version (-fabi-version=)', 'cpp.compiler.abiversion', [
-    // no `default` choice in the real enum (real projects store `.0`) —
-    // 0 IS the default (round-11 P3-2)
-    ['0', '0 (default)'], ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4'], ['5', '5'],
-    ['6', '6'], ['7', '7'], ['8', '8'], ['9', '9'], ['10', '10'], ['11', '11'], ['12', '12'], ['13', '13'],
-  ], OPT_BASE + 'cpp.compiler.abiversion.'),
+  // ---- C++ Compiler / Miscellaneous (MRS layout: these three + other flags;
+  //      the -fno-* dialect switches live on the Optimization page) ----
+  bool('cppasmlisting', 'cpp.misc', 'Generate assembler listing (-Wa,-adhlns="$@.lst")', 'cpp.compiler.asmlisting'),
+  bool('cppsavetemps', 'cpp.misc', 'Save temporary files (--save-temps Use with caution!)', 'cpp.compiler.savetemps'),
+  bool('cppverbose', 'cpp.misc', 'Verbose (-v)', 'cpp.compiler.verbose'),
   str('cppother', 'cpp.misc', 'Other compiler flags', 'cpp.compiler.other'),
 
   // ---- Assembler / Preprocessor ----
   bool('asmpp', 'asm.pp', 'Use preprocessor (-x assembler-with-cpp)', 'assembler.usepreprocessor'),
   bool('asmnostdinc', 'asm.pp', 'Do not search system directories (-nostdinc)', 'assembler.nostdinc'),
   bool('asmpreonly', 'asm.pp', 'Preprocess only (-E)', 'assembler.preprocessonly'),
-  list('asmdefs', 'asm.pp', 'Defined symbols (-D), one per line', 'assembler.defs'),
-  list('asmundefs', 'asm.pp', 'Undefined symbols (-U), one per line', 'assembler.undefs'),
+  list('asmdefs', 'asm.pp', 'Defined symbols (-D)', 'assembler.defs'),
+  list('asmundefs', 'asm.pp', 'Undefined symbols (-U)', 'assembler.undefs'),
   // ---- Assembler / Includes ----
-  list('asmincs', 'asm.inc', 'Include paths (-I), one per line', 'assembler.include.paths'),
-  list('asmsysincs', 'asm.inc', 'Include system paths (-isystem), one per line', 'assembler.include.systempaths'),
-  list('asmfileincs', 'asm.inc', 'Include files (-include), one per line', 'assembler.include.files'),
+  list('asmincs', 'asm.inc', 'Include paths (-I)', 'assembler.include.paths'),
+  list('asmsysincs', 'asm.inc', 'Include system paths (-isystem)', 'assembler.include.systempaths'),
+  list('asmfileincs', 'asm.inc', 'Include files (-include)', 'assembler.include.files'),
   // ---- Assembler / Warnings ----
   str('asmotherwarn', 'asm.warn', 'Other warning flags (-Wa,...)', 'assembler.otherwarnings'),
   // ---- Assembler / Miscellaneous ----
   bool('asmasmlisting', 'asm.misc', 'Generate assembler listing (-Wa,-adhlns="$@.lst")', 'assembler.asmlisting'),
-  bool('asmsavetemps', 'asm.misc', 'Save temporary files (--save-temps)', 'assembler.savetemps'),
+  bool('asmsavetemps', 'asm.misc', 'Save temporary files (--save-temps Use With caution!)', 'assembler.savetemps'),
   bool('asmverbose', 'asm.misc', 'Verbose (-v)', 'assembler.verbose'),
   list('asmflags', 'asm.misc', 'Xassembler flags, one per line', 'assembler.flags'),
   str('asmother', 'asm.misc', 'Other assembler flags', 'assembler.other'),
 
-  // ---- C Linker / General ----
-  list('script', 'ld.general', 'Script files (-T), one per line', 'c.linker.scriptfile'),
-  bool('nostart', 'ld.general', 'Do not use standard start files (-nostartfiles)', 'c.linker.nostart'),
+  // ---- C Linker / General (MRS layout: script files + standard switches) ----
+  list('script', 'ld.general', 'Script files (-T)', 'c.linker.scriptfile'),
+  bool('nostart', 'ld.general', 'Do not use standard start files (-nostartfiles)', 'c.linker.nostart', true),
   bool('nodeflibs', 'ld.general', 'Do not use default libraries (-nodefaultlibs)', 'c.linker.nodeflibs'),
   bool('nostdlibs', 'ld.general', 'No startup or default libs (-nostdlib)', 'c.linker.nostdlibs'),
-  bool('gcsec', 'ld.general', 'Remove unused sections (-Xlinker --gc-sections)', 'c.linker.gcsections'),
+  bool('gcsec', 'ld.general', 'Remove unused sections (-Xlinker --gc-sections)', 'c.linker.gcsections', true),
   bool('printgc', 'ld.general', 'Print removed sections (-Xlinker --print-gc-sections)', 'c.linker.printgcsections'),
   bool('strip', 'ld.general', 'Omit all symbol information (-s)', 'c.linker.strip'),
-  bool('nano', 'ld.general', 'Use newlib-nano (--specs=nano.specs)', 'c.linker.usenewlibnano'),
-  bool('nosys', 'ld.general', 'Do not use syscalls (--specs=nosys.specs)', 'c.linker.usenewlibnosys'),
-  bool('floatprintf', 'ld.general', 'Use float with nano printf (-u _printf_float)', 'c.linker.useprintffloat'),
-  bool('floatscanf', 'ld.general', 'Use float with nano scanf (-u _scanf_float)', 'c.linker.usescanffloat'),
-  str('mapfile', 'ld.general', 'Map file name (empty = <target>.map)', 'c.linker.mapfilename'),
-  bool('cref', 'ld.general', 'Cross reference (-Xlinker --cref)', 'c.linker.cref'),
-  bool('printmap', 'ld.general', 'Print link map (-Xlinker --print-map)', 'c.linker.printmap'),
-  bool('ldverbose', 'ld.general', 'Verbose (-v)', 'c.linker.verbose'),
-  str('ldother', 'ld.general', 'Other linker flags', 'c.linker.other'),
-  // ---- C Linker / Libraries ----
-  list('libs', 'ld.libs', 'Libraries (-l), one per line (no lib prefix / .a suffix)', 'c.linker.libs'),
-  list('libpaths', 'ld.libs', 'Library search path (-L), one per line', 'c.linker.paths'),
-  list('otherobjs', 'ld.libs', 'Other objects (extra .o/.a), one per line', 'c.linker.otherobjs'),
-  bool('wchprintf', 'ld.libs', 'Use WCH optimized printf (-lprintf)', 'c.linker.printf'),
-  bool('wchprintfloat', 'ld.libs', 'Use WCH optimized printf with float (-lprintfloat)', 'c.linker.printfloat'),
-  bool('iqmath', 'ld.libs', 'Link IQMath library (-lIQmath_RV32)', 'c.linker.iqmath'),
-  // ---- C Linker / Miscellaneous ----
-  list('ldflags', 'ld.misc', 'Xlinker flags, one per line', 'c.linker.flags'),
+  // ---- C Linker / Libraries (MRS layout: the two -l / -L lists only) ----
+  list('libs', 'ld.libs', 'Libraries Name(-l)', 'c.linker.libs'),
+  list('libpaths', 'ld.libs', 'Library search path (-L)', 'c.linker.paths'),
+  // ---- C Linker / Miscellaneous (MRS layout: everything else lives here) ----
+  list('ldflags', 'ld.misc', 'Linker flags (-Xlinker [option])', 'c.linker.flags'),
+  list('otherobjs', 'ld.misc', 'Other objects', 'c.linker.otherobjs'),
+  str('mapfile', 'ld.misc', 'Generate map', 'c.linker.mapfilename', '"${BuildArtifactFileBaseName}.map"', false),
+  bool('cref', 'ld.misc', 'Cross reference (-Xlinker --cref)', 'c.linker.cref'),
+  bool('printmap', 'ld.misc', 'Print link map (-Xlinker --print-map)', 'c.linker.printmap'),
+  bool('nano', 'ld.misc', 'Use newlib-nano (--specs=nano.specs)', 'c.linker.usenewlibnano', true),
+  bool('floatprintf', 'ld.misc', 'Use float with nano printf (-u _printf_float)', 'c.linker.useprintffloat'),
+  bool('floatscanf', 'ld.misc', 'Use float with nano scanf (-u _scanf_float)', 'c.linker.usescanffloat'),
+  bool('nosys', 'ld.misc', 'Do not use syscalls (--specs=nosys.specs)', 'c.linker.usenewlibnosys', true),
+  bool('ldverbose', 'ld.misc', 'Verbose (-v)', 'c.linker.verbose'),
+  bool('wchprintf', 'ld.misc', 'Use WCH optimized printf (-lprintf)', 'c.linker.printf'),
+  bool('wchprintfloat', 'ld.misc', 'Use WCH optimized printf with float (-lprintfloat)', 'c.linker.printfloat'),
+  bool('iqmath', 'ld.misc', 'Link IQMath library (-lIQMath_RV32)', 'c.linker.iqmath'),
+  en(
+    'picolibc',
+    'ld.misc',
+    'Use picolibc',
+    'c.linker.picolibc',
+    [
+      ['disabled', 'Disabled'],
+      ['double', 'This offers full printf functionality(-Dformat-default=double)'],
+      ['integer', 'This offers integer printf functionality(-Dformat-default=integer)'],
+      ['minimal', 'This offers minimal printf functionality(-Dformat-default=minimal)'],
+    ],
+    OPT_BASE + 'c.linker.picolibc.',
+    'disabled'
+  ),
+  str('ldother', 'ld.misc', 'Other linker flags', 'c.linker.other'),
 
-  // ---- C++ Linker / General ----
-  list('cppscript', 'cppld.general', 'Script files (-T), one per line', 'cpp.linker.scriptfile'),
-  bool('cppgcsec', 'cppld.general', 'Remove unused sections (-Xlinker --gc-sections)', 'cpp.linker.gcsections'),
+  // ---- C++ Linker / General (mirror of the C linker layout) ----
+  list('cppscript', 'cppld.general', 'Script files (-T)', 'cpp.linker.scriptfile'),
   bool('cppnostart', 'cppld.general', 'Do not use standard start files (-nostartfiles)', 'cpp.linker.nostart'),
+  bool('cppnodeflibs', 'cppld.general', 'Do not use default libraries (-nodefaultlibs)', 'cpp.linker.nodeflibs'),
+  bool('cppnostdlibs', 'cppld.general', 'No startup or default libs (-nostdlib)', 'cpp.linker.nostdlibs'),
+  bool('cppgcsec', 'cppld.general', 'Remove unused sections (-Xlinker --gc-sections)', 'cpp.linker.gcsections'),
+  bool('cppprintgc', 'cppld.general', 'Print removed sections (-Xlinker --print-gc-sections)', 'cpp.linker.printgcsections'),
+  bool('cppstrip', 'cppld.general', 'Omit all symbol information (-s)', 'cpp.linker.strip'),
   // ---- C++ Linker / Libraries ----
-  list('cpplibs', 'cppld.libs', 'Libraries (-l), one per line', 'cpp.linker.libs'),
-  list('cpplibpaths', 'cppld.libs', 'Library search path (-L), one per line', 'cpp.linker.paths'),
-  list('cppotherobjs', 'cppld.libs', 'Other objects, one per line', 'cpp.linker.otherobjs'),
-  bool('cppnano', 'cppld.libs', 'Use newlib-nano (--specs=nano.specs)', 'cpp.linker.usenewlibnano'),
-  bool('cppnosys', 'cppld.libs', 'Do not use syscalls (--specs=nosys.specs)', 'cpp.linker.usenewlibnosys'),
-  bool('cppwchprintf', 'cppld.libs', 'Use WCH optimized printf (-lprintf)', 'cpp.linker.printf'),
-  bool('cppwchprintfloat', 'cppld.libs', 'Use WCH printf with float (-lprintfloat)', 'cpp.linker.printfloat'),
-  bool('cppiqmath', 'cppld.libs', 'Link IQMath library (-lIQmath_RV32)', 'cpp.linker.iqmath'),
+  list('cpplibs', 'cppld.libs', 'Libraries Name(-l)', 'cpp.linker.libs'),
+  list('cpplibpaths', 'cppld.libs', 'Library search path (-L)', 'cpp.linker.paths'),
   // ---- C++ Linker / Miscellaneous ----
+  list('cppldflags', 'cppld.misc', 'Linker flags (-Xlinker [option])', 'cpp.linker.flags'),
+  list('cppotherobjs', 'cppld.misc', 'Other objects', 'cpp.linker.otherobjs'),
+  str('cppmapfile', 'cppld.misc', 'Generate map', 'cpp.linker.mapfilename', '"${BuildArtifactFileBaseName}.map"', false),
+  bool('cppcref', 'cppld.misc', 'Cross reference (-Xlinker --cref)', 'cpp.linker.cref'),
+  bool('cppprintmap', 'cppld.misc', 'Print link map (-Xlinker --print-map)', 'cpp.linker.printmap'),
+  bool('cppnano', 'cppld.misc', 'Use newlib-nano (--specs=nano.specs)', 'cpp.linker.usenewlibnano'),
+  bool('cppfloatprintf', 'cppld.misc', 'Use float with nano printf (-u _printf_float)', 'cpp.linker.useprintffloat'),
+  bool('cppfloatscanf', 'cppld.misc', 'Use float with nano scanf (-u _scanf_float)', 'cpp.linker.usescanffloat'),
+  bool('cppnosys', 'cppld.misc', 'Do not use syscalls (--specs=nosys.specs)', 'cpp.linker.usenewlibnosys'),
+  bool('cppldverbose', 'cppld.misc', 'Verbose (-v)', 'cpp.linker.verbose'),
+  bool('cppwchprintf', 'cppld.misc', 'Use WCH optimized printf (-lprintf)', 'cpp.linker.printf'),
+  bool('cppwchprintfloat', 'cppld.misc', 'Use WCH printf with float (-lprintfloat)', 'cpp.linker.printfloat'),
+  bool('cppiqmath', 'cppld.misc', 'Link IQMath library (-lIQMath_RV32)', 'cpp.linker.iqmath'),
+  en(
+    'cpppicolibc',
+    'cppld.misc',
+    'Use picolibc',
+    'cpp.linker.picolibc',
+    [
+      ['disabled', 'Disabled'],
+      ['double', 'This offers full printf functionality(-Dformat-default=double)'],
+      ['integer', 'This offers integer printf functionality(-Dformat-default=integer)'],
+      ['minimal', 'This offers minimal printf functionality(-Dformat-default=minimal)'],
+    ],
+    OPT_BASE + 'cpp.linker.picolibc.',
+    'disabled'
+  ),
   str('cppldother', 'cppld.misc', 'Other linker flags', 'cpp.linker.other'),
 
   // ---- Create Flash Image / General ----
-  bool('flash', 'createflash', 'Create flash image', 'addtools.createflash'),
+  bool('flash', 'createflash', 'Create flash image', 'addtools.createflash', true),
   en('flashfmt', 'createflash', 'Output file format (-O)', 'createflash.choice', [
     ['ihex', 'Intel HEX (.hex)'],
     ['binary', 'Binary (.bin)'],
     ['ihexAndbinary', 'Intel HEX + Binary (.hex + .bin)'],
-  ], OPT_BASE + 'createflash.choice.'),
+  ], OPT_BASE + 'createflash.choice.', 'ihex'),
   bool('flashtext', 'createflash', 'Copy only .text section (-j .text)', 'createflash.textsection'),
   bool('flashdata', 'createflash', 'Copy only .data section (-j .data)', 'createflash.datasection'),
   list('flashsections', 'createflash', 'Copy only named sections (-j), one per line', 'createflash.othersection'),
   str('flashother', 'createflash', 'Other objcopy flags', 'createflash.other'),
   // ---- Create Flash Listing / General ----
-  bool('lst', 'createlisting', 'Create extended listing', 'addtools.createlisting'),
+  bool('lst', 'createlisting', 'Create extended listing', 'addtools.createlisting', true),
   bool('lstsource', 'createlisting', 'Display source (--source|-S)', 'createlisting.source'),
   bool('lstallheaders', 'createlisting', 'Display all headers (--all-headers|-x)', 'createlisting.allheaders'),
   bool('lstdemangle', 'createlisting', 'Demangle names (--demangle|-C)', 'createlisting.demangle'),
@@ -426,11 +535,11 @@ export const FIELDS: FieldDef[] = [
   bool('lstwide', 'createlisting', 'Wide lines (--wide|-w)', 'createlisting.wide'),
   str('lstother', 'createlisting', 'Other flags', 'createlisting.other'),
   // ---- Print Size / General ----
-  bool('size', 'printsize', 'Create print size', 'addtools.printsize'),
+  bool('size', 'printsize', 'Create print size', 'addtools.printsize', true),
   en('sizefmt', 'printsize', 'Size format', 'printsize.format', [
     ['berkeley', 'Berkeley'],
     ['sysv', 'SysV'],
-  ], OPT_BASE + 'printsize.format.'),
+  ], OPT_BASE + 'printsize.format.', 'berkeley'),
   bool('sizehex', 'printsize', 'Hex', 'printsize.hex'),
   bool('sizetotals', 'printsize', 'Show totals', 'printsize.totals'),
   str('sizeother', 'printsize', 'Other flags', 'printsize.other'),
@@ -462,16 +571,16 @@ export const PAGES: PageDef[] = [
   { key: 'c.opt', title: 'Optimization', group: 'GNU RISC-V Cross C Compiler', description: 'C language standard (-std).' },
   { key: 'c.warn', title: 'Warnings', group: 'GNU RISC-V Cross C Compiler', description: 'C-only warning options.' },
   { key: 'c.misc', title: 'Miscellaneous', group: 'GNU RISC-V Cross C Compiler', description: 'Other C compiler options.' },
-  { key: 'ld.general', title: 'General', group: 'GNU RISC-V Cross C Linker', description: 'Linker script, standard files/libs switches, specs and map file options.' },
-  { key: 'ld.libs', title: 'Libraries', group: 'GNU RISC-V Cross C Linker', description: 'Libraries (-l, without lib prefix and .a suffix), search paths (-L), extra objects, and WCH libraries (printf / IQMath).' },
-  { key: 'ld.misc', title: 'Miscellaneous', group: 'GNU RISC-V Cross C Linker', description: 'Xlinker flags passed before the map option.' },
+  { key: 'ld.general', title: 'General', group: 'GNU RISC-V Cross C Linker', description: 'Overall options such as specifying link script files.' },
+  { key: 'ld.libs', title: 'Libraries', group: 'GNU RISC-V Cross C Linker', description: "Settings for importing libraries: '-L library_path' '-l library_name'." },
+  { key: 'ld.misc', title: 'Miscellaneous', group: 'GNU RISC-V Cross C Linker', description: 'Other settings include runtime libraries, MRS built-in simplified libraries, calculations, etc.' },
   { key: 'cpp.pp', title: 'Preprocessor', group: 'GNU RISC-V Cross C++ Compiler', description: 'C++ preprocessor: system directory search (-nostdinc/-nostdinc++), preprocess only (-E), defined/undefined symbols.' },
   { key: 'cpp.inc', title: 'Includes', group: 'GNU RISC-V Cross C++ Compiler', description: 'C++ include search paths (-I).' },
   { key: 'cpp.opt', title: 'Optimization', group: 'GNU RISC-V Cross C++ Compiler', description: 'C++ language standard (-std).' },
   { key: 'cpp.warn', title: 'Warnings', group: 'GNU RISC-V Cross C++ Compiler', description: 'C++-specific warning options.' },
   { key: 'cpp.misc', title: 'Miscellaneous', group: 'GNU RISC-V Cross C++ Compiler', description: 'Exceptions, RTTI, ABI version and other C++ compiler options.' },
   { key: 'cppld.general', title: 'General', group: 'GNU RISC-V Cross C++ Linker', description: 'C++ linker script and standard files/sections switches.' },
-  { key: 'cppld.libs', title: 'Libraries', group: 'GNU RISC-V Cross C++ Linker', description: 'C++ libraries (-l), search paths (-L), extra objects, and WCH libraries (printf / IQMath).' },
+  { key: 'cppld.libs', title: 'Libraries', group: 'GNU RISC-V Cross C++ Linker', description: 'C++ libraries (-l) and library search paths (-L).' },
   { key: 'cppld.misc', title: 'Miscellaneous', group: 'GNU RISC-V Cross C++ Linker', description: 'Other C++ linker flags.' },
   { key: 'createflash', title: 'General', group: 'GNU RISC-V Cross Create Flash Image', description: 'Flash image generation: hex / bin (or both) and section copy options.' },
   { key: 'createlisting', title: 'General', group: 'GNU RISC-V Cross Create Flash Listing', description: 'Disassembly file settings.' },
@@ -515,12 +624,151 @@ export function macroConflicts(values: Record<string, string>): string[] {
   return conflicts;
 }
 
-function readEnum(cp: Cproject, f: FieldDef): string {
-  if (!f.suffix) return '';
+/** Macros MRS2/Eclipse expands inside list paths. Anything else is almost
+ *  always a typo that would silently break the build, so Apply asks first. */
+const KNOWN_PATH_MACROS = new Set(['workspace_loc', 'ProjName', 'project', 'workspace_parent', 'build_type', 'config_name']);
+const PARENT_LOC_MACRO = /^PARENT-\d+-PROJECT_LOC$/;
+
+export interface PathIssues {
+  /** unbalanced ${...} or an invalid macro name — hard error, nothing written */
+  malformed: string[];
+  /** syntactically valid but unknown macro name — confirm before writing */
+  unknown: string[];
+  /** the resolved file/folder does not exist right now — confirm before writing */
+  missing: string[];
+}
+
+/** Scan one list entry for `${...}` macro expressions.
+ *  Nested forms such as `${workspace_loc:/${ProjName}/inc}` are legal; every
+ *  macro's leading name (before ':') must be a plain identifier. Returns the
+ *  macro names even when the syntax is fine (the caller checks them against
+ *  the known list). */
+export function pathSyntaxProblem(value: string): { problem?: string; names: string[] } {
+  const names: string[] = [];
+  const stack: number[] = [];
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === '$' && value[i + 1] === '{') {
+      stack.push(i);
+      i++;
+      continue;
+    }
+    if (value[i] === '}') {
+      if (!stack.length) return { problem: 'unexpected "}"', names };
+      const start = stack.pop()!;
+      const body = value.slice(start + 2, i);
+      const name = body.split(':', 1)[0];
+      if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) {
+        return { problem: `invalid macro name "${body}"`, names };
+      }
+      if (name === 'workspace_loc' && !body.includes(':')) {
+        return { problem: 'workspace_loc needs a path after ":"', names };
+      }
+      names.push(name);
+    }
+  }
+  if (stack.length) return { problem: 'unclosed "${"', names };
+  return { names };
+}
+
+/** Resolve one list entry against the project root for the existence check.
+ *  `checkable: false` means a macro we cannot expand here (another project's
+ *  workspace path) — syntax was already validated, existence is skipped. */
+function resolvePathEntry(root: string, raw: string): { path: string; checkable: boolean } {
+  // stored listOptions may be wrapped in quotes by CDT; the option getter
+  // usually strips them, but a manually typed quoted value should still check
+  const t = raw.trim().replace(/^"|"$/g, '');
+  const wsPrefix = '${workspace_loc:/${ProjName}/';
+  if (t.startsWith(wsPrefix) && t.endsWith('}')) {
+    return { path: path.join(root, t.slice(wsPrefix.length, -1)), checkable: true };
+  }
+  if (t === '${ProjName}' || t === '${workspace_loc:/${ProjName}}') return { path: root, checkable: true };
+  for (const prefix of ['${project}/', '${ProjName}/']) {
+    if (t.startsWith(prefix)) return { path: path.join(root, t.slice(prefix.length)), checkable: true };
+  }
+  const parentMatch = t.match(/^\$\{PARENT-(\d+)-PROJECT_LOC\}\/(.+)$/);
+  if (parentMatch) {
+    let base = root;
+    for (let i = 0; i < Number(parentMatch[1]); i++) base = path.dirname(base);
+    return { path: path.join(base, parentMatch[2]), checkable: true };
+  }
+  if (t.includes('${')) return { path: '', checkable: false };
+  // Windows drive paths are absolute even where path.isAbsolute disagrees
+  // (e.g. "C:foo" is drive-relative — treat a drive letter as absolute)
+  if (path.isAbsolute(t) || /^[A-Za-z]:[\\/]/.test(t)) return { path: t, checkable: true };
+  return { path: path.join(root, t), checkable: true };
+}
+
+/**
+ * Validate the path-like list entries that Apply is about to WRITE (new rows
+ * only — pre-existing rows keep whatever state the project already had).
+ * MRS2 checks existence when adding an include/lib path and asks whether to
+ * continue; this mirrors that, aggregated into one prompt per Apply.
+ */
+export function checkPathEntries(
+  values: Record<string, string>,
+  initial: Map<string, string>,
+  root: string
+): PathIssues {
+  const issues: PathIssues = { malformed: [], unknown: [], missing: [] };
+  const pathModes = new Set(['dir', 'file', 'ldfile']);
+  for (const f of FIELDS) {
+    const mode = LIST_MODES[f.key];
+    if (f.type !== 'list' || !mode || !pathModes.has(mode)) continue;
+    const before = new Set(
+      (initial.get(f.key) ?? '')
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter((s) => s)
+    );
+    const rows = (values[f.key] ?? '')
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => s);
+    for (const entry of rows) {
+      if (before.has(entry)) continue;
+      const syntax = pathSyntaxProblem(entry);
+      if (syntax.problem) {
+        issues.malformed.push(`${f.label}: ${entry} — ${syntax.problem}`);
+        continue;
+      }
+      for (const name of syntax.names) {
+        if (!KNOWN_PATH_MACROS.has(name) && !PARENT_LOC_MACRO.test(name)) {
+          issues.unknown.push(`${f.label}: ${entry} (${name})`);
+        }
+      }
+      const resolved = resolvePathEntry(root, entry);
+      if (!resolved.checkable) continue;
+      let ok = false;
+      try {
+        const stat = fs.statSync(resolved.path);
+        ok = mode === 'dir' ? stat.isDirectory() : stat.isFile();
+      } catch {
+        ok = false;
+      }
+      if (!ok) issues.missing.push(`${f.label}: ${entry}`);
+    }
+  }
+  return issues;
+}
+
+/** Shared enum decode (properties page render AND the Sync page seeding):
+ *  absent -> the field's model default (`f.def`), value ids strip the normal
+ *  enumBase prefix AND the CDT/MRS base-infix form ("...option.base.<suffix>
+ *  <choice>"), and a completely unknown id is returned verbatim (the caller
+ *  renders a synthetic "(current)" entry). `verbatim` marks that third case:
+ *  only a VERBATIM full foreign id must be written back raw — an unknown
+ *  suffix under a KNOWN enumBase still needs the prefix on write (round-45
+ *  P2). Exported so the Sync page can never drift from this logic again
+ *  (round-43 P2-1: its old private copy missed the base form and seeded the
+ *  dropdown's first entry, silently changing the toolchain choice on Apply). */
+export function readEnumInfo(cp: Cproject, f: FieldDef): { value: string; verbatim: boolean } {
+  if (!f.suffix) return { value: '', verbatim: false };
   const raw = cp.optionValue(f.suffix);
-  if (raw === undefined || raw === '') return 'default';
+  // absent / value-less options fall back to the MRS model's constructor
+  // default where it is not the generic unset marker (see FieldDef.def)
+  if (raw === undefined || raw === '') return { value: f.def ?? 'default', verbatim: false };
   if (f.enumBase && raw.startsWith(f.enumBase)) {
-    return raw.slice(f.enumBase.length);
+    return { value: raw.slice(f.enumBase.length), verbatim: false };
   }
   // CDT/MRS store an enumerated CHOICE as the BASE option id —
   // "...option.base.<suffix><choice>" (one `base.` segment inserted).
@@ -531,15 +779,52 @@ function readEnum(cp: Cproject, f: FieldDef): string {
   if (f.enumBase) {
     const baseForm = f.enumBase.replace(/\.option\./, '.option.base.');
     if (baseForm !== f.enumBase && raw.startsWith(baseForm)) {
-      return raw.slice(baseForm.length);
+      return { value: raw.slice(baseForm.length), verbatim: false };
     }
   }
-  return raw;
+  return { value: raw, verbatim: true };
 }
 
-/** list fields rendered as an MRS2-style Add/Edit/Delete table (paths only) */
-const PATH_LIST_KEYS = new Set(['incs', 'sysincs', 'fileincs', 'cppincs', 'asmincs', 'asmsysincs', 'asmfileincs']);
-const FILE_LIST_KEYS = new Set(['fileincs', 'asmfileincs']);
+export function readEnum(cp: Cproject, f: FieldDef): string {
+  return readEnumInfo(cp, f).value;
+}
+
+/** list fields rendered as an MRS2-style Add/Edit/Delete table, keyed to the
+ *  add/edit dialog mode: 'dir'/'file' browse the project tree or the OS
+ *  picker, 'ldfile' is 'file' filtered to linker scripts, 'text' is a plain
+ *  input box (library names / raw linker flags — MRS2 gives those an input
+ *  dialog, not a file chooser). Keys not in the map stay plain textareas. */
+const LIST_MODES: Record<string, 'dir' | 'file' | 'ldfile' | 'text'> = {
+  // preprocessor symbol lists (C / C++ / assembler) — MRS gives these the
+  // same Add/Edit/Delete table + plain input dialog as libraries/flags
+  defs: 'text',
+  undefs: 'text',
+  cppdefs: 'text',
+  cppundefs: 'text',
+  asmdefs: 'text',
+  asmundefs: 'text',
+  // include search paths / include files (C / C++ / assembler)
+  incs: 'dir',
+  sysincs: 'dir',
+  fileincs: 'file',
+  cppincs: 'dir',
+  cppsysincs: 'dir',
+  cppfileincs: 'file',
+  asmincs: 'dir',
+  asmsysincs: 'dir',
+  asmfileincs: 'file',
+  // linker: script files, library lists, search paths, extra objects, flags
+  script: 'ldfile',
+  cppscript: 'ldfile',
+  libs: 'text',
+  cpplibs: 'text',
+  libpaths: 'dir',
+  cpplibpaths: 'dir',
+  otherobjs: 'file',
+  cppotherobjs: 'file',
+  ldflags: 'text',
+  cppldflags: 'text',
+};
 
 export class ConfigView {
   private panel: vscode.WebviewPanel | null = null;
@@ -585,7 +870,7 @@ export class ConfigView {
   private async onMessage(m: {
     command: string;
     values?: Record<string, string>;
-    mode?: 'dir' | 'file';
+    mode?: 'dir' | 'file' | 'ldfile';
     path?: string;
     op?: string;
     chipId?: number;
@@ -697,13 +982,17 @@ export class ConfigView {
       return;
     }
     if (m.command === 'pickFolder') {
+      // dialog mode comes from the webview's per-key LIST_MODES entry:
+      // 'dir' folders, 'ldfile' linker scripts, anything else plain files
+      const mode = m.mode === 'dir' ? 'dir' : m.mode === 'ldfile' ? 'ldfile' : 'file';
       void vscode.window
         .showOpenDialog({
-          canSelectFolders: m.mode !== 'file',
-          canSelectFiles: m.mode === 'file',
+          canSelectFolders: mode === 'dir',
+          canSelectFiles: mode !== 'dir',
           canSelectMany: false,
           defaultUri: vscode.Uri.file(project.root),
-          title: m.mode === 'file' ? 'Select include file' : 'Select directory',
+          filters: mode === 'ldfile' ? { 'Linker script': ['ld'] } : undefined,
+          title: mode === 'ldfile' ? 'Select linker script file' : mode === 'file' ? 'Select file' : 'Select directory',
         })
         .then((pick) => {
           if (pick?.length && this.panel) this.panel.webview.postMessage({ command: 'pickedPath', path: pick[0].fsPath });
@@ -723,6 +1012,27 @@ export class ConfigView {
           t('macroConflictBack')
         );
         if (apply !== t('macroConflictApply')) return;
+      }
+      // path-entry gate: new rows in include/linker path lists must at least
+      // be well-formed (hard error), and unknown macros / missing targets get
+      // an MRS2-style "continue anyway?" prompt BEFORE anything is written
+      const pathIssues = checkPathEntries(m.values, this.initial, project.root);
+      if (pathIssues.malformed.length) {
+        vscode.window.showErrorMessage(t('propertiesPathMalformed', '\n' + pathIssues.malformed.join('\n')));
+        return;
+      }
+      for (const [list, titleKey] of [
+        [pathIssues.unknown, 'propertiesPathUnknown'],
+        [pathIssues.missing, 'propertiesPathMissing'],
+      ] as const) {
+        if (!list.length) continue;
+        const go = await vscode.window.showWarningMessage(
+          t(titleKey, list.length),
+          { modal: true, detail: list.join('\n') },
+          t('propertiesPathContinue'),
+          t('propertiesPathBack')
+        );
+        if (go !== t('propertiesPathContinue')) return;
       }
       try {
         // PRE-WRITE gate: Apply only ever rewrites a .cproject whose RAW
@@ -767,8 +1077,14 @@ export class ConfigView {
           const initial = this.initial.get(f.key);
           if (initial !== undefined && v === initial) continue;
           if (f.type === 'bool') {
-            // create=true: options absent from .cproject must be created on check
-            if (f.suffix) cp.setOptionBool(f.suffix, v === '1', true);
+            if (f.set) {
+              // non-boolean storage rendered as a checkbox (RVV is an
+              // enumerated option: `...isa.rvv.<set>` / `...isa.rvv.`)
+              f.set(cp, v);
+            } else if (f.suffix) {
+              // create=true: options absent from .cproject must be created on check
+              cp.setOptionBool(f.suffix, v === '1', true);
+            }
           } else if (f.type === 'enum') {
             if (f.set) {
               f.set(cp, v);
@@ -945,20 +1261,23 @@ export class ConfigView {
       return `<div class="fld"><label>${esc(f.label)}</label><select data-key="${f.key}">${opts}</select></div>`;
     }
     if (f.type === 'list') {
-      if (PATH_LIST_KEYS.has(f.key)) {
+      if (LIST_MODES[f.key]) {
         const rows = value
           .split(/\r?\n/)
           .map((s) => s.trim())
           .filter((s) => s)
           .map((s) => `<div class="listrow">${esc(s)}</div>`)
           .join('');
-        return `<div class="listblk"><div class="listhead"><span>${esc(f.label)}</span><span class="lbtns"><button type="button" class="lb-add" data-lkey="${f.key}" data-lmode="${FILE_LIST_KEYS.has(f.key) ? 'file' : 'dir'}">＋ Add</button><button type="button" class="lb-edit" data-lkey="${f.key}" disabled>Edit</button><button type="button" class="lb-del" data-lkey="${f.key}" disabled>Delete</button></span></div><div class="listrows" data-key="${f.key}" tabindex="0">${rows || '<div class="lsempty">No Data</div>'}</div></div>`;
+        return `<div class="listblk"><div class="listhead"><span>${esc(f.label)}</span><span class="lbtns"><button type="button" class="lb-add" data-lkey="${f.key}">＋ Add</button><button type="button" class="lb-edit" data-lkey="${f.key}" disabled>Edit</button><button type="button" class="lb-del" data-lkey="${f.key}" disabled>Delete</button></span></div><div class="listrows" data-key="${f.key}" tabindex="0">${rows || '<div class="lsempty">No Data</div>'}</div></div>`;
       }
       return `<div class="fld"><label>${esc(f.label)}</label><textarea data-key="${f.key}" rows="4" spellcheck="false">${esc(value)}</textarea></div>`;
     }
-    // string options (other flags / tuning / ...) get the MRS2-style tall
-    // edit box; line breaks collapse to spaces on Apply (.cproject stores
-    // single-line values)
+    // string options: MRS's el-input is a ONE-LINE box for Small data limit /
+    // Generate map, while the "Other ... flags" fields get a tall textarea
+    // (Shift+Enter wraps). Same split here.
+    if (f.multiline === false) {
+      return `<div class="fld"><label>${esc(f.label)}</label><input type="text" data-key="${f.key}" data-stype="string" spellcheck="false" value="${esc(value)}"></div>`;
+    }
     return `<div class="fld"><label>${esc(f.label)}</label><textarea data-key="${f.key}" data-stype="string" rows="4" spellcheck="false" style="resize:vertical">${esc(value)}</textarea></div>`;
   }
 
@@ -1105,7 +1424,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 <div id="modal" hidden>
   <div class="mbox">
     <div class="mhead" id="mtitle">Add directory path</div>
-    <div class="mrow">Open the <span id="mkind">directory</span> from: <label><input type="radio" name="msrc" value="project" checked> Project</label><label><input type="radio" name="msrc" value="local"> Local Folder</label></div>
+    <div class="mrow" id="msrcrow">Open the <span id="mkind">directory</span> from: <label><input type="radio" name="msrc" value="project" checked> Project</label><label><input type="radio" name="msrc" value="local"> Local Folder</label></div>
     <div class="mrow"><input type="text" id="mpath" spellcheck="false"><button type="button" id="mbrowse">Browse</button></div>
     <div id="mtree" hidden></div>
     <div class="mbtns"><button type="button" id="mok">Confirm</button><button type="button" id="mcancel">Cancel</button></div>
@@ -1115,6 +1434,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 const vscode = acquireVsCodeApi();
 const PROJ_ROOT = ${jsonForScript(project.root)};
 const PROJ_NAME = ${jsonForScript(project.projectName)};
+const LIST_MODES = ${jsonForScript(LIST_MODES)};
 const desc = document.getElementById('desc');
 function showPage(key) {
   document.querySelectorAll('.page').forEach((p) => {
@@ -1260,8 +1580,36 @@ function collectDl() {
 
 // ---- "Folder selection" tree (MRS2-style): project-name root, lazy
 // expansion to any depth, checkbox pick — linked folders and obj included
-const FILE_LIST_WEB = ['fileincs', 'asmfileincs'];
-const isFileList = (k) => FILE_LIST_WEB.includes(k);
+const listMode = (k) => LIST_MODES[k] || 'dir';
+// dialog noun per key ('directory path' / 'include file' as mode defaults)
+const MODAL_NOUNS = {
+  // symbol lists (plain input dialogs) — without these the title fell back
+  // to "include file" for -D / -U entries
+  defs: 'defined symbol',
+  undefs: 'undefined symbol',
+  cppdefs: 'defined symbol',
+  cppundefs: 'undefined symbol',
+  asmdefs: 'defined symbol',
+  asmundefs: 'undefined symbol',
+  // include search paths / include files
+  incs: 'include path',
+  sysincs: 'system include path',
+  cppincs: 'include path',
+  cppsysincs: 'system include path',
+  asmincs: 'include path',
+  asmsysincs: 'system include path',
+  // linker entries
+  script: 'linker script file',
+  cppscript: 'linker script file',
+  libs: 'library name',
+  cpplibs: 'library name',
+  libpaths: 'library path',
+  cpplibpaths: 'library path',
+  ldflags: 'linker flag',
+  cppldflags: 'linker flag',
+  otherobjs: 'other object',
+  cppotherobjs: 'other object',
+};
 const rowsOf = (key) => document.querySelector('.listrows[data-key="' + key + '"]');
 function refreshBtns(key) {
   const has = !!rowsOf(key).querySelector('.listrow.sel');
@@ -1315,7 +1663,7 @@ function nodeHtml(name, rel, isDir, depth) {
 }
 function resetTree() {
   treeSel = null;
-  treeMode = isFileList(mctx.key) ? 'file' : 'dir';
+  treeMode = listMode(mctx.key) === 'dir' ? 'dir' : 'file';
   treeLoaded.clear();
   treeLoaded.add('');
   treeOpen.clear();
@@ -1367,11 +1715,17 @@ function addRow(box, v) {
 }
 function openModal(key, op) {
   mctx = { key, op };
-  const isFile = isFileList(key);
-  document.getElementById('mtitle').textContent = (op === 'add' ? 'Add ' : 'Edit ') + (isFile ? 'include file' : 'directory path');
-  document.getElementById('mkind').textContent = isFile ? 'file' : 'directory';
+  const mode = listMode(key);
+  const noun = MODAL_NOUNS[key] || (mode === 'dir' ? 'directory path' : 'include file');
+  document.getElementById('mtitle').textContent = (op === 'add' ? 'Add ' : 'Edit ') + noun;
+  document.getElementById('mkind').textContent = mode === 'dir' ? 'directory' : 'file';
+  // text mode (library names / raw linker flags) is a plain input dialog —
+  // no project tree, no OS picker, MRS2-style
+  document.getElementById('msrcrow').style.display = mode === 'text' ? 'none' : '';
+  document.getElementById('mbrowse').style.display = mode === 'text' ? 'none' : '';
   mpath.value = op === 'edit' ? rowsOf(key).querySelector('.listrow.sel')?.textContent ?? '' : '';
-  resetTree();
+  if (mode === 'text') mtree.hidden = true;
+  else resetTree();
   modal.hidden = false;
   mpath.focus();
 }
@@ -1381,30 +1735,37 @@ function closeModal() {
 }
 document.getElementById('mcancel').addEventListener('click', closeModal);
 document.getElementById('mbrowse').addEventListener('click', () => {
+  const mode = listMode(mctx.key);
+  if (mode === 'text') return;
   const src = document.querySelector('input[name=msrc]:checked').value;
   if (src === 'project') {
     mtree.hidden = false;
     if (!treeLoaded.has('')) resetTree();
   } else {
     mtree.hidden = true;
-    vscode.postMessage({ command: 'pickFolder', mode: isFileList(mctx.key) ? 'file' : 'dir' });
+    vscode.postMessage({ command: 'pickFolder', mode });
   }
 });
 document.getElementById('mok').addEventListener('click', () => {
   if (!mctx) return;
   let v = mpath.value.trim();
   if (v) {
-    const src = document.querySelector('input[name=msrc]:checked').value;
-    if (src === 'project') {
-      if (/^[a-zA-Z]:[\\\\/]/.test(v)) {
-        // absolute path inside the project root -> ${project}/rel (MRS2 short macro)
-        const norm = v.replace(/\\\\/g, '/');
-        const rootN = PROJ_ROOT.replace(/\\\\/g, '/').replace(/\\/$/, '');
-        if (norm.toLowerCase().startsWith(rootN.toLowerCase() + '/')) {
-          v = '${project}/' + norm.slice(rootN.length + 1);
+    // text mode keeps the raw value; path modes convert a project-source pick
+    // to MRS2's stored workspace_loc spelling (escaped so the render template
+    // does not interpolate it)
+    if (listMode(mctx.key) !== 'text') {
+      const src = document.querySelector('input[name=msrc]:checked').value;
+      if (src === 'project') {
+        if (/^[a-zA-Z]:[\\\\/]/.test(v)) {
+          // absolute path inside the project root -> MRS2 workspace_loc form
+          const norm = v.replace(/\\\\/g, '/');
+          const rootN = PROJ_ROOT.replace(/\\\\/g, '/').replace(/\\/$/, '');
+          if (norm.toLowerCase().startsWith(rootN.toLowerCase() + '/')) {
+            v = '\${workspace_loc:/\${ProjName}/' + norm.slice(rootN.length + 1) + '}';
+          }
+        } else if (!v.startsWith('$')) {
+          v = '\${workspace_loc:/\${ProjName}/' + v.replace(/^[\\/]+/, '') + '}';
         }
-      } else if (!v.startsWith('$')) {
-        v = '${project}/' + v.replace(/^[\\/]+/, '');
       }
     }
     const box = rowsOf(mctx.key);

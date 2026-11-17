@@ -18,7 +18,9 @@
  * Windows. Pure Node — no vscode imports.
  */
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import { foldPathOnPlatform } from './cproject';
 
 /**
  * Test seam: the host platform this module's DETECTION logic reasons about
@@ -285,19 +287,66 @@ export function mrsWindowsLaunchArgv(launcher: string, wvprojPath: string, worki
  * on any host — round-11 P3-1):
  *   - win32: the PowerShell Start-Process wrapper with -WorkingDirectory +
  *     the ABSOLUTE .wvproj (embedded quotes — see mrsWindowsLaunchArgv).
- *   - POSIX: sh -c with "$1" "$2" "$3" — the quoting carries spaces in both
- *     the launcher and the absolute .wvproj path.
+ *     Detached and instant-completing (2026-11-12).
+ *   - POSIX (2026-11-17 redesign after five detached forms all died): the
+ *     task process IS the IDE — `sh -c 'exec "$1"…'` with cwd=$HOME. Linux
+ *     appends `--no-sandbox` (the official MounRiverStudio3.desktop launches
+ *     through beforeinstall/load.sh, which ALWAYS passes it). The task
+ *     therefore lives exactly as long as the MRS window (no detached pile-up
+ *     possible) and the IDE's own output streams into the task terminal.
+ *     Before the exec, every ELECTRON_* / VSCODE_* variable is unset by
+ *     prefix (grep -oE over `env` + unset loop) — task-env options merge
+ *     additively and can never remove them, while the rest of the desktop
+ *     session (XAUTHORITY, WAYLAND_DISPLAY, TMPDIR, XDG_*, DBUS) passes
+ *     through untouched (round-42 P3: a whitelist dropped those and would
+ *     break Wayland/XWayland/macOS launches).
  */
 export function mrsLaunchSpec(
   platform: NodeJS.Platform,
   launcher: string,
   wvprojPath: string,
   workingDir: string
-): { argv: string[] } {
+): { argv: string[]; cwd?: string } {
   if (platform === 'win32') {
-    return { argv: mrsWindowsLaunchArgv(launcher, wvprojPath, workingDir) };
+    return { argv: mrsWindowsLaunchArgv(launcher, wvprojPath, workingDir), cwd: workingDir };
   }
-  return { argv: ['sh', '-c', '"$1" "$2" "$3" >/dev/null 2>&1 &', 'mrvc', launcher, ...mrsOpenProjectArgs(wvprojPath)] };
+  const noSandbox = platform === 'linux' ? ['--no-sandbox'] : [];
+  const args = [launcher, ...mrsOpenProjectArgs(wvprojPath), ...noSandbox];
+  const quoted = args.map((_, i) => `"$${i + 1}"`).join(' ');
+  // Round-42 P3: the env -i whitelist carried only X11/Linux basics and
+  // DROPPED XAUTHORITY / WAYLAND_DISPLAY / TMPDIR (and the macOS session
+  // vars) — a Wayland/XWayland or macOS launch could fail on missing auth
+  // or temp dirs. Invert the strategy: keep the WHOLE desktop environment
+  // (it demonstrably opens the IDE from a desktop terminal) and strip only
+  // the poison PREFIXES the extension host injects. `env` + grep -oE emits
+  // the NAMES of every ELECTRON_*/VSCODE_* variable (name chars only, a
+  // hostile value can never inject a shell word); unset them, then exec.
+  // This replaces the fixed whitelist AND the earlier hard-coded unset list,
+  // and cannot miss a VSCode variable we have not enumerated yet.
+  const script =
+    'for v in $(env | grep -oE "^(ELECTRON_|VSCODE_)[A-Za-z0-9_]*"); do unset "$v"; done; ' +
+    `exec ${quoted}`;
+  return { argv: ['sh', '-c', script, 'mrvc', ...args], cwd: os.homedir() };
+}
+
+/**
+ * Environment for a DETACHED MRS GUI launch (the open-with path). The
+ * extension host carries ELECTRON_* / VSCODE_* variables that poison a
+ * spawned VSCode fork: ELECTRON_RUN_AS_NODE turns the GUI binary into a
+ * plain Node process (the window never opens — the Linux failure mode of the
+ * 2026-11-16 user report; the silent-build twin of this is mrsTaskEnv) and
+ * VSCODE_IPC_HOOK points at THIS VSCode, which the fork may try to talk to.
+ * Unlike mrsTaskEnv this deliberately does NOT set VSCODE_PORTABLE: the GUI
+ * must start with MRS's own profile and settings.
+ */
+export function mrsGuiEnv(base: NodeJS.ProcessEnv): { [key: string]: string } {
+  const env: { [key: string]: string } = {};
+  for (const key of Object.keys(base)) {
+    if (key.startsWith('ELECTRON_') || key.startsWith('VSCODE_')) continue;
+    const value = base[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 /**
@@ -568,7 +617,7 @@ export function locateInstall(
   const defaults = opts.defaults ?? [...conventionalInstalls().mrs2, ...conventionalInstalls().mrs3];
   const seen = new Set<string>();
   for (const root of [...configuredList, ...defaults]) {
-    const key = path.resolve(root).toLowerCase();
+    const key = foldPathOnPlatform(path.resolve(root));
     if (seen.has(key)) continue;
     seen.add(key);
     const layout = locateLayout(root);

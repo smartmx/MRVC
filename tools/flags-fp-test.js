@@ -9,7 +9,7 @@
 const path = require('path');
 const fs = require('fs');
 const { Cproject } = require('../out/core/cproject.js');
-const { commonOptions } = require('../out/core/flags.js');
+const { commonOptions, cCompilerOptions, cppCompilerOptions, cLinkerOptions, cppLinkerOptions } = require('../out/core/flags.js');
 
 let failures = 0;
 const check = (name, cond) => {
@@ -113,6 +113,73 @@ if (FPU_PROJ) {
   const opts = cCompilerOptions(cp);
   check('c.otheroptimizations: ${ProjName} resolved, not raw', !opts.includes('${ProjName}') && opts.includes(cp.projectName));
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// 6. linker model: picolibc replaces nano/float; C model defaults (round37)
+{
+  const optXml = (suffix, value, type = 'boolean') => `<option superClass="${OPT}${suffix}" value="${value}" valueType="${type}"/>`;
+  const linkerCp = (name, options) => {
+    const dir = path.join(scratch, name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.cproject'),
+      makeCproject(null, null).replace('</toolChain>', options.join('\n') + '\n\t\t\t\t\t</toolChain>')
+    );
+    return Cproject.load(dir);
+  };
+  const bare = linkerCp('linker-bare', []);
+  const tcFlags = cLinkerOptions(bare);
+  const tcppFlags = cppLinkerOptions(bare);
+  check(
+    'linker defaults: C model enables start/gc/nano/nosys when absent',
+    ['-nostartfiles', '-Xlinker --gc-sections', '--specs=nano.specs', '--specs=nosys.specs'].every((s) => tcFlags.includes(s))
+  );
+  check(
+    'linker defaults: C++ model keeps them off when absent',
+    !['-nostartfiles', '-Xlinker --gc-sections', '--specs=nano.specs', '--specs=nosys.specs'].some((s) => tcppFlags.includes(s))
+  );
+
+  const picl = linkerCp('linker-picolibc', [
+    optXml('c.linker.picolibc', `${OPT}c.linker.picolibc.double`, 'enumerated'),
+    optXml('c.linker.usenewlibnano', 'true'),
+    optXml('c.linker.useprintffloat', 'true'),
+    optXml('c.linker.usescanffloat', 'true'),
+  ]);
+  const pf = cLinkerOptions(picl);
+  check(
+    'picolibc double: full-printf defsyms + specs',
+    pf.includes('vfprintf=__d_vfprintf') && pf.includes('vfscanf=__d_vfscanf') && pf.includes('--specs=picolibc.specs')
+  );
+  check(
+    'picolibc double: nano/float switches suppressed',
+    !pf.includes('--specs=nano.specs') && !pf.includes('-u _printf_float') && !pf.includes('-u _scanf_float')
+  );
+  check('picolibc double: nosys still applies (C default)', pf.includes('--specs=nosys.specs'));
+  // round38 P2: picolibc.specs also switches the compiler's -isystem set
+  const pCompile = cCompilerOptions(picl);
+  check('picolibc compile: --specs=picolibc.specs reaches the C compiler', pCompile.includes('--specs=picolibc.specs'));
+  check(
+    'picolibc compile: link-only flags stay out of the compile line',
+    !pCompile.includes('--specs=nano.specs') && !pCompile.includes('vfprintf')
+  );
+  check('non-picolibc compile: no picolibc specs (goldens unchanged)', !cCompilerOptions(bare).includes('picolibc.specs'));
+
+  for (const [v, prefix] of [['integer', 'i'], ['minimal', 'm']]) {
+    const cp2 = linkerCp('linker-picolibc-' + v, [optXml('c.linker.picolibc', `${OPT}c.linker.picolibc.${v}`, 'enumerated')]);
+    const f2 = cLinkerOptions(cp2);
+    check(
+      `picolibc ${v}: __${prefix}_vfprintf selected`,
+      f2.includes(`vfprintf=__${prefix}_vfprintf`) && f2.includes(`vfscanf=__${prefix}_vfscanf`)
+    );
+  }
+
+  const cppPicl = linkerCp('linker-cpp-picolibc', [
+    optXml('cpp.linker.picolibc', `${OPT}cpp.linker.picolibc.integer`, 'enumerated'),
+    optXml('cpp.linker.usenewlibnano', 'true'),
+  ]);
+  const cpf = cppLinkerOptions(cppPicl);
+  check('picolibc cpp: own option drives __i_ and suppresses nano', cpf.includes('vfprintf=__i_vfprintf') && !cpf.includes('--specs=nano.specs'));
+  check('picolibc cpp compile: --specs=picolibc.specs reaches g++', cppCompilerOptions(cppPicl).includes('--specs=picolibc.specs'));
 }
 
 fs.rmSync(scratch, { recursive: true, force: true });

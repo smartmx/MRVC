@@ -31,6 +31,7 @@ const {
   mrsOpenProjectArgs,
   mrsWindowsLaunchArgv,
   mrsLaunchSpec,
+  mrsGuiEnv,
   conventionalInstalls,
   selectInstall,
   setHostPlatformForTests,
@@ -490,10 +491,45 @@ try {
         'launch spec: POSIX passes the space-containing absolute .wvproj via sh',
         linux.argv[0] === 'sh' && linux.argv.includes(spacedProject) && linux.argv.includes('/opt/MRS/mounriver-studio2')
       );
+      // 2026-11-16 Linux fix: the .deb's own desktop entry launches through
+      // beforeinstall/load.sh, which ALWAYS appends --no-sandbox — without it
+      // a root session (or a sandbox-less environment) never opens a window
+      check('launch spec: linux appends --no-sandbox (official load.sh form)', linux.argv.includes('--no-sandbox') && linux.argv[linux.argv.length - 1] === '--no-sandbox');
+      // 2026-11-17 redesign: five detached wrapper forms (nohup/setsid/env -i
+      // variants) all died silently inside the task while the IDENTICAL
+      // command from a desktop terminal opened the IDE — so POSIX goes
+      // FOREGROUND: the task process IS the IDE (sh execs the launcher),
+      // cwd=$HOME. Round-42 P3: the environment keeps the WHOLE desktop
+      // session (XAUTHORITY / WAYLAND_DISPLAY / TMPDIR / XDG_* / DBUS pass
+      // through) and strips only the ELECTRON_* / VSCODE_* poison PREFIXES
+      // via an unset loop over `env | grep -oE`.
+      const linuxScript = linux.argv[2];
+      check(
+        'launch spec: linux goes foreground via exec with poison-prefix unset',
+        /for v in \$\(env \| grep -oE "\^\(ELECTRON_\|VSCODE_\)\[A-Za-z0-9_\]\*"\); do unset "\$v"; done; exec "\$1"/.test(linuxScript) &&
+          !/nohup|setsid|mktemp|env -i|&\s*$/.test(linuxScript)
+      );
+      check('launch spec: linux GUI still gets --no-sandbox in the exec args', linux.argv.includes('--no-sandbox') && linux.argv[linux.argv.length - 1] === '--no-sandbox');
       const darwin = mrsLaunchSpec('darwin', '/Applications/MRS.app/Contents/MacOS/Electron', spacedProject, w3.root);
+      check('launch spec: POSIX cwd is $HOME (the proven working manual form)', linux.cwd === require('os').homedir() && darwin.cwd === require('os').homedir());
       check('launch spec: darwin also uses the quoted POSIX form', darwin.argv.includes(spacedProject));
+      check('launch spec: darwin does NOT get --no-sandbox (no desktop-load.sh twin)', !darwin.argv.includes('--no-sandbox'));
+      check('launch spec: win32 keeps the project root as -WorkingDirectory', win.cwd === w3.root);
       const plain = mrsLaunchSpec('win32', 'C:/MRS/MRS2.exe', path.join(w3.root, 'demo.wvproj'), w3.root);
       check('launch spec: win32 plain path uses the encoded PS wrapper', plain.argv[0] === 'powershell.exe');
+    }
+
+    // 2026-11-16 Linux fix: the extension host env poisons the spawned GUI
+    // (ELECTRON_RUN_AS_NODE -> plain Node, no window; VSCODE_IPC_HOOK ->
+    // talks to THIS VSCode). The GUI env drops both families and, unlike the
+    // silent-build env, must NOT set VSCODE_PORTABLE (the GUI opens with
+    // MRS's own profile).
+    {
+      const env = mrsGuiEnv({ PATH: '/usr/bin', HOME: '/root', ELECTRON_RUN_AS_NODE: '1', ELECTRON_NO_ATTACH_CONSOLE: '1', VSCODE_IPC_HOOK: '/tmp/vscode.sock', VSCODE_PORTABLE: '/old' });
+      check('gui env: ELECTRON_* family dropped', env.ELECTRON_RUN_AS_NODE === undefined && env.ELECTRON_NO_ATTACH_CONSOLE === undefined);
+      check('gui env: VSCODE_* family dropped', env.VSCODE_IPC_HOOK === undefined && env.VSCODE_PORTABLE === undefined);
+      check('gui env: ordinary vars kept, no portable override', env.PATH === '/usr/bin' && env.HOME === '/root' && !('VSCODE_PORTABLE' in env));
+      check('gui env: never introduces VSCODE_PORTABLE', !Object.keys(env).some((k) => k.startsWith('VSCODE_') || k.startsWith('ELECTRON_')));
     }
   }
 

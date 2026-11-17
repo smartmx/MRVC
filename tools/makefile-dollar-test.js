@@ -73,6 +73,23 @@ check(
     const mk = fs.readFileSync(path.join(scratch, 'obj', 'makefile'), 'utf-8');
     check('pipeline: common options escaped (target.other $ doubled)', mk.includes('-flto-partition=$$foo'));
     check('pipeline: no bare user $ left in the common string', !mk.includes('=$foo'));
+    // picolibc must reach the generated LDFLAGS (round37 P2): MRS2 replaces
+    // the nano/float branch with __<variant>_vfprintf defsyms + picolibc.specs
+    cp.setOptionValue('c.linker.picolibc', 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.c.linker.picolibc.minimal');
+    cp.save();
+    generateMakefiles(cp, goldenTc());
+    const mkP = fs.readFileSync(path.join(scratch, 'obj', 'makefile'), 'utf-8');
+    check(
+      'pipeline: picolibc minimal reaches the link flags',
+      mkP.includes('vfprintf=__m_vfprintf') && mkP.includes('vfscanf=__m_vfscanf') && mkP.includes('--specs=picolibc.specs')
+    );
+    check('pipeline: picolibc suppresses nano specs', !mkP.includes('--specs=nano.specs'));
+    const subMk = path.join(scratch, 'obj', 'src', 'subdir.mk');
+    const subMkText = fs.existsSync(subMk) ? fs.readFileSync(subMk, 'utf-8') : '';
+    check(
+      'pipeline: picolibc specs reach the COMPILE rule (round38 P2)',
+      subMkText.includes('--specs=picolibc.specs') && !subMkText.includes('--specs=nano.specs')
+    );
   } else {
     console.log('SKIP  4. pipeline common-escaping (no real LED tree found)');
   }

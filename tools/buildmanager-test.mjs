@@ -181,7 +181,12 @@ const taskWrapper = require_(path.join(DEVELOP_DIR, 'out', 'core', 'taskWrapper.
 taskWrapper.writeBuildTaskWrapper = () => '/tmp/mrvc-build.cmd';
 taskWrapper.writeCleanTaskWrapper = () => '/tmp/mrvc-clean.cmd';require_(path.join(DEVELOP_DIR, 'out', 'core', 'i18n.js')).setLanguage('en');
 
-const { BuildManager } = require_(path.join(DEVELOP_DIR, 'out', 'vscode', 'tasks.js'));
+const { BuildManager, sanitizeParallelJobs } = require_(path.join(DEVELOP_DIR, 'out', 'vscode', 'tasks.js'));
+
+// round37 P3: settings.json is user input — a string must never reach `-j`
+check('parallelJobs: non-number falls back to automatic', sanitizeParallelJobs('8;rm -rf x', 7) === 7);
+check('parallelJobs: zero/fraction/infinity fall back', sanitizeParallelJobs(0, 7) === 7 && sanitizeParallelJobs(2.5, 7) === 7 && sanitizeParallelJobs(Infinity, 7) === 7);
+check('parallelJobs: positive integer kept and capped', sanitizeParallelJobs(12, 7) === 12 && sanitizeParallelJobs(999, 7) === 64);
 
 const root = path.join(here, '..', '.scratch', 'buildmanager-guard');
 const project = {
