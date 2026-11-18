@@ -2,18 +2,26 @@
  * The "Info" view under the project explorer — the visible form of the
  * effective MRS configuration that builds and downloads reuse (requirement
  * 0.3.0-2): which configuration is in effect (IDE install vs standalone
- * toolchain, generation, path), the active project and its toolchain. The
+ * toolchain, generation, path), the active project, the SDI Printf session
+ * state, the flash power-output rail and the power-off reset action. The
  * extension refreshes it on every store change and on any mrvc.*
  * configuration change, so what the view shows is what the next build uses.
  *
- * The toolchain row resolves through selectToolchain() DIRECTLY — not
- * Project.toolchain(), whose per-call POSIX arch check would raise the
- * mismatch warning dialog every time this view repaints.
+ * The workspace and toolchain rows were dropped with the user request of
+ * 2026-11-18 (the workspace is visible in the explorer itself; GCC
+ * resolution stays inside the build path).
+ *
+ * Status rows are display-only by design: no hardware query runs on a
+ * repaint. The SDI row reads MRVC's own session accounting (no getter
+ * exists); the power-output row reads the SESSION rail state
+ * (core/powerState — every window opens at 3.3 V, only a manual switch can
+ * raise it to 5 V, closing the window restores 3.3 V) and its click opens
+ * the switch QuickPick.
  */
 import * as vscode from 'vscode';
 import { ProjectStore, selectMrsInstall } from './projects';
-import { CustomToolchain, mergeCustomToolchains, selectToolchain } from '../core/toolchain';
 import { sdiPrintfStatus } from '../core/sdiState';
+import { powerOutputRail } from '../core/powerState';
 import { t } from '../core/i18n';
 
 interface InfoRow extends vscode.TreeItem {}
@@ -34,13 +42,7 @@ export class InfoTreeProvider implements vscode.TreeDataProvider<InfoRow> {
 
   getChildren(): InfoRow[] {
     const selection = selectMrsInstall();
-    const cfg = vscode.workspace.getConfiguration('mrvc');
-    // merge mrvc.customToolchains exactly as the build path (getInstall) does:
-    // the raw selection carries only installed toolchains, so resolving a
-    // custom name against it would show None / the first built-in instead
-    const install = selection.install
-      ? mergeCustomToolchains(selection.install, cfg.get<CustomToolchain[]>('customToolchains', []))
-      : null;
+    const install = selection.install;
     const project = this.store.active;
     const rows: InfoRow[] = [];
 
@@ -61,18 +63,7 @@ export class InfoTreeProvider implements vscode.TreeDataProvider<InfoRow> {
     projectRow.iconPath = new vscode.ThemeIcon('folder-active');
     rows.push(projectRow);
 
-    // 3. that project's toolchain (arch-warning-free resolution — see header)
-    let tcText = t('infoNone');
-    if (project && install) {
-      const tc = selectToolchain(install, cfg.get<string>('toolchain', 'auto'), project.cproject.rvGccVersion, project.cproject.storedPrefix);
-      if (tc) tcText = `${tc.name} (${tc.prefix})`;
-    }
-    const tcRow = new vscode.TreeItem(tcText, vscode.TreeItemCollapsibleState.None);
-    tcRow.description = t('infoToolchainCat');
-    tcRow.iconPath = new vscode.ThemeIcon('debug-alt');
-    rows.push(tcRow);
-
-    // 4. SDI Printf: NOT a hardware read-back — WCH's CommunicationLib only
+    // 3. SDI Printf: NOT a hardware read-back — WCH's CommunicationLib only
     // exposes the SET command (McuCompiler_SetSDIPrn), with no getter. The
     // row reports what MRVC itself wrote in this session; the tooltip says so
     // and a click opens the monitor so the user can look at the actual stream.
@@ -105,6 +96,23 @@ export class InfoTreeProvider implements vscode.TreeDataProvider<InfoRow> {
       .join('\n');
     sdiRow.command = { command: 'mrvc.sdiPrintMonitor', title: t('infoSdiOpenMonitor') };
     rows.push(sdiRow);
+
+    // 4. Flash power output — the SESSION rail (core/powerState): every
+    // window opens at 3.3 V; only a manual switch (this row's QuickPick)
+    // raises it to 5 V; closing the window restores 3.3 V. The rail is what
+    // the power-off-reset download and the row below feed the target with.
+    // Display-only here; the link-model gate (only LinkE / DAPLink / LinkW
+    // can switch rails) is enforced by the operations themselves and spelled
+    // out in the tooltip.
+    const railRow = new vscode.TreeItem(
+      powerOutputRail() === '5v' ? t('infoPowerOutput5v') : t('infoPowerOutput3v3'),
+      vscode.TreeItemCollapsibleState.None
+    );
+    railRow.description = t('infoPowerOutputCat');
+    railRow.iconPath = new vscode.ThemeIcon('zap');
+    railRow.tooltip = t('infoPowerOutputTooltip');
+    railRow.command = { command: 'mrvc.powerOutputRail', title: t('infoPowerOutputSwitch') };
+    rows.push(railRow);
 
     // 5. Power-Off Reset action row — a CLICKABLE action, not a status: the
     // project context menu was getting crowded (user request 2026-11-16), so

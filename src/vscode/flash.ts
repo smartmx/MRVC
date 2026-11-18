@@ -12,8 +12,9 @@ import { scanSources } from '../core/scan';
 import { checkWCHLinkFirmware, formatLinkVersion, runWlinkOp, wchlinkFirmwareCfgPath, WlinkFirmwareCheck } from '../core/wlink';
 import { MrsInstall } from '../core/toolchain';
 import { chipDbRoot, scanChipDb, chipForTemplate, guardLinkedChip } from '../core/chipdb';
-import { executeFlashTask, powerLinkUnsupportedNotice, powerOffBeforeDownload, selectBoardCfg } from './powerCycle';
+import { executeFlashTask, powerLinkUnsupportedNotice, powerOffBeforeDownload, runLinkOperation, selectBoardCfg } from './powerCycle';
 import { noteSdiPrintfEnabled, noteSdiPrintfFailed, noteSdiPrintfNotRequested } from '../core/sdiState';
+import { powerOutputRail } from '../core/powerState';
 import { t } from '../core/i18n';
 
 /**
@@ -116,6 +117,19 @@ export async function downloadProject(
   project: MrsProject,
   token?: vscode.CancellationToken
 ): Promise<boolean> {
+  // ONE link operation across the WHOLE lifecycle — the pre-download checks
+  // and modals, the OFF pass, the powerOffDelayMs sleep, the download task
+  // and the SDI step. Between those stages the task-level latch drops to
+  // zero, so the rail switch QuickPick must (and does) refuse on the
+  // operation-level latch (round51 P3).
+  return runLinkOperation(() => downloadProjectInner(store, project, token));
+}
+
+async function downloadProjectInner(
+  store: ProjectStore,
+  project: MrsProject,
+  token?: vscode.CancellationToken
+): Promise<boolean> {
   const cancelled = (): false => {
     vscode.window.showInformationMessage(t('downloadCancelled', project.projectName));
     return false;
@@ -174,9 +188,15 @@ export async function downloadProject(
   const openocd = cfg.get<string>('openocd.path') || install.openocdExe;
   const boardCfg = selectBoardCfg(project, cfg);
   // power-off-reset download: de-energise before the session, the script
-  // brings the rail back up (prepareFlash powerOn as its FIRST step)
+  // brings the rail back up (prepareFlash powerOn as its FIRST step) — the
+  // rail is the session state (3.3 V until manually switched; core/powerState).
+  // This is the ONE rail sample for the whole download: the plan's powerOn
+  // step AND the OFF pass below (powerOffBeforeDownload receives it) must
+  // share it — re-sampling later could split one download across two
+  // voltages if the user switches the rail in a pre-download modal
+  // (round49 P2).
   const powerOff = cfg.get<string>('flash.resetMode', 'nrst') === 'powerOff';
-  const powerOn: PowerVoltage | undefined = powerOff ? (cfg.get<string>('flash.powerOutput', '3v3') === '5v' ? '5v' : '3v3') : undefined;
+  const powerOn: PowerVoltage | undefined = powerOff ? powerOutputRail() : undefined;
   if (!fs.existsSync(openocd)) {
     vscode.window.showErrorMessage(t('openocdNotFound', openocd));
     return false;
@@ -308,7 +328,7 @@ export async function downloadProject(
       await vscode.window.showWarningMessage(notice, { modal: true });
       return false;
     }
-    if (!(await powerOffBeforeDownload(project, install, cfg, token))) return isCancelled() ? cancelled() : false;
+    if (!(await powerOffBeforeDownload(project, install, cfg, powerOn, token))) return isCancelled() ? cancelled() : false;
   }
   if (isCancelled()) return cancelled();
 

@@ -175,8 +175,13 @@ export class Cproject {
   }
 
   get artifactType(): 'exe' | 'staticLib' {
-    const bp = this.buildConfigEl.attr('buildProperties') ?? '';
-    return bp.includes('buildArtefactType.staticLibrary') ? 'staticLib' : 'exe';
+    const bc = this.buildConfigEl;
+    // MRS writes the standalone buildArtefactType attribute and mirrors it
+    // into the buildProperties comma list; read both (some files carry only
+    // one). CDT's id is `staticLib` — the substring test also matches the
+    // older `staticLibrary` spelling some tools wrote.
+    const kind = `${bc.attr('buildArtefactType') ?? ''},${bc.attr('buildProperties') ?? ''}`;
+    return kind.includes('buildArtefactType.staticLib') ? 'staticLib' : 'exe';
   }
 
   /** artifact extension (inner configuration attribute, default "elf") */
@@ -254,7 +259,10 @@ export class Cproject {
       delete bc.attrs['outputPrefix']; // never leave it on the configuration
     }
     if (v.artifactType !== undefined) {
-      const kind = v.artifactType === 'staticLib' ? 'staticLibrary' : 'exe';
+      // CDT's own id (and the one MRS writes) is `staticLib`, not
+      // `staticLibrary` — MRS reads the standalone attribute first, so a
+      // wrong spelling would make it treat the project as an executable.
+      const kind = v.artifactType === 'staticLib' ? 'staticLib' : 'exe';
       // MRS2 reads the standalone buildArtefactType attribute FIRST — keep
       // it in sync with the buildProperties comma list
       bc.setAttr('buildArtefactType', `org.eclipse.cdt.build.core.buildArtefactType.${kind}`);

@@ -13,6 +13,7 @@ import { clampPowerOffDelay, freshLogPath, powerPassVerdict, preparePowerPass } 
 import { PowerVoltage } from '../core/flash';
 import { MrsInstall } from '../core/toolchain';
 import { checkWCHLinkFirmware, linkSupportsPowerOutput, WlinkFirmwareCheck } from '../core/wlink';
+import { powerOutputRail } from '../core/powerState';
 import { t } from '../core/i18n';
 import { waitTaskProcess } from './taskRunner';
 
@@ -51,12 +52,53 @@ export function selectBoardCfg(project: MrsProject, cfg: vscode.WorkspaceConfigu
   return install.openocdCfg;
 }
 
+/** in-flight mrvc-flash task depth (download / power pass) — every link
+ * operation funnels through executeFlashTask, so this is THE "a link
+ * operation is running" latch. The rail switch QuickPick refuses while it
+ * is non-zero: the running operation's voltage was fixed at its start, so
+ * a switch now could only change what the Info row shows without touching
+ * the running task (round50 P3). */
+let flashTaskDepth = 0;
+
+/** true while an mrvc-flash task (download / power pass) is in flight */
+export function flashTaskActive(): boolean {
+  return flashTaskDepth > 0;
+}
+
+/** in-flight LINK OPERATION depth — a download (pre-checks, modals, the OFF
+ * pass, the powerOffDelayMs sleep, the download task and the SDI step) or a
+ * Power-Off Reset command (OFF → delay → ON). The task-level counter above
+ * only spans the OpenOCD task window, so between tasks (the delay sleep, the
+ * modal waits) it drops to zero while the operation is still going — the
+ * rail switch QuickPick must consult THIS latch (round51 P3). */
+let linkOpDepth = 0;
+
+/** true while a whole download / power-reset operation is in flight */
+export function linkOpActive(): boolean {
+  return linkOpDepth > 0;
+}
+
+/** run one link operation under the operation-level latch */
+export async function runLinkOperation<T>(op: () => Promise<T>): Promise<T> {
+  linkOpDepth++;
+  try {
+    return await op();
+  } finally {
+    linkOpDepth--;
+  }
+}
+
 /** run the flash/power task and resolve with its exit code (undefined = no
  * end event) — both channels use the mrvc-flash task type so the dedicated
  * panel, output reveal and stop come for free. The early-event/identity
  * matching lives in taskRunner (shared with the open-with wrapper). */
 export async function executeFlashTask(task: vscode.Task, token?: vscode.CancellationToken): Promise<number | undefined> {
-  return waitTaskProcess(task, 'mrvc-flash', token);
+  flashTaskDepth++;
+  try {
+    return await waitTaskProcess(task, 'mrvc-flash', token);
+  } finally {
+    flashTaskDepth--;
+  }
 }
 
 /** the openocd binary for a download/power run: the explicit setting wins */
@@ -137,13 +179,23 @@ async function runPowerPass(opts: {
  * pass, wait powerOffDelayMs, and report the rail the download script must
  * switch back ON (prepareFlash powerOn). Null = the pass failed fatally —
  * the caller aborts the download.
+ *
+ * `voltage` IS that rail — the caller's ONE sample of the session state
+ * (core/powerState), taken when the download plan was generated and passed
+ * back in here. Reading the rail again inside this function could
+ * desynchronize the OFF pass from the plan's ON step when the user switches
+ * the rail in one of the pre-download modals (round49 P2) — never re-read it.
  */
 export async function powerOffBeforeDownload(
   project: MrsProject,
   install: MrsInstall,
   cfg: vscode.WorkspaceConfiguration,
+  voltage: PowerVoltage | undefined,
   token?: vscode.CancellationToken
 ): Promise<PowerVoltage | null> {
+  // unreachable from the download path (its powerOn is set iff it asked for
+  // the power-off flow); typed optional so the single-sample contract shows
+  if (!voltage) return null;
   const openocd = resolveOpenocd(cfg, install);
   if (!fs.existsSync(openocd)) {
     vscode.window.showErrorMessage(t('openocdNotFound', openocd));
@@ -154,7 +206,6 @@ export async function powerOffBeforeDownload(
     vscode.window.showErrorMessage(t('openocdCfgNotFound', boardCfg));
     return null;
   }
-  const voltage: PowerVoltage = cfg.get<string>('flash.powerOutput', '3v3') === '5v' ? '5v' : '3v3';
   if (!(await runPowerPass({ project, openocd, boardCfg, voltage, state: 'off', token }))) return null;
   await sleep(clampPowerOffDelay(cfg.get<number>('flash.powerOffDelayMs', 100)));
   if (token?.isCancellationRequested) return null;
@@ -168,6 +219,15 @@ export async function powerOffBeforeDownload(
  * chip-family or firmware checks a download runs).
  */
 export async function powerOffResetCmd(
+  store: { active: MrsProject | null; setActive(project: MrsProject): void },
+  item?: { project?: unknown }
+): Promise<void> {
+  // ONE link operation across OFF → delay → ON: the rail switch QuickPick is
+  // refused until the whole sequence ends, gaps included (round51 P3)
+  return runLinkOperation(() => powerOffResetInner(store, item));
+}
+
+async function powerOffResetInner(
   store: { active: MrsProject | null; setActive(project: MrsProject): void },
   item?: { project?: unknown }
 ): Promise<void> {
@@ -198,7 +258,7 @@ export async function powerOffResetCmd(
     vscode.window.showErrorMessage(t('openocdCfgNotFound', boardCfg));
     return;
   }
-  const voltage: PowerVoltage = cfg.get<string>('flash.powerOutput', '3v3') === '5v' ? '5v' : '3v3';
+  const voltage: PowerVoltage = powerOutputRail();
   store.setActive(project);
   if (!(await runPowerPass({ project, openocd, boardCfg, voltage, state: 'off' }))) return;
   await sleep(clampPowerOffDelay(cfg.get<number>('flash.powerOffDelayMs', 100)));

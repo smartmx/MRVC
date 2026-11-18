@@ -135,8 +135,8 @@ check('create: lib artifact project created', fs.existsSync(path.join(WS, 'MyLib
 void lib;
 {
   const lcp = Cproject.load(path.join(WS, 'MyLib'));
-  check('staticLib: buildArtefactType=staticLibrary', /buildArtefactType=org\.eclipse\.cdt\.build\.core\.buildArtefactType\.staticLibrary/.test(lcp.buildConfigEl.attr('buildProperties') ?? ''));
-  check('staticLib: standalone buildArtefactType attr', (lcp.buildConfigEl.attr('buildArtefactType') ?? '').endsWith('.staticLibrary'));
+  check('staticLib: buildArtefactType=staticLib', /buildArtefactType=org\.eclipse\.cdt\.build\.core\.buildArtefactType\.staticLib(,|$)/.test(lcp.buildConfigEl.attr('buildProperties') ?? ''));
+  check('staticLib: standalone buildArtefactType attr', (lcp.buildConfigEl.attr('buildArtefactType') ?? '').endsWith('.staticLib'));
   check('staticLib: artifactExtension flipped to a', lcp.buildConfigEl.attr('artifactExtension') === 'a');
   check('staticLib: cp.artifactType reads back staticLib', lcp.artifactType === 'staticLib');
   const ecp = Cproject.load(path.join(WS, 'MyApp'));

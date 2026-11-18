@@ -349,5 +349,51 @@ check('cache: products node identity is stable across renders', productsNode2 ==
   check('prune-recursive: nested row gone after parent re-read', !levelAfter.some((n) => n.fsPath === nested));
 }
 
+// ---- decorations: fire ONLY on real content change (user report
+// 2026-11-18) — activating/expanding a project re-fed IDENTICAL link/output/
+// exclusion sets and the setters fired a full decoration invalidation on
+// every feed, repainting every visible row (all projects' file icons
+// flickered). Batched feed must fire at most once, identical feeds never.
+{
+  const { TreeDecorations } = require('../out/vscode/tree.js');
+  const deco = new TreeDecorations();
+  let fires = 0;
+  deco.onDidChangeFileDecorations(() => fires++);
+  const feed = () => {
+    deco.beginBatch();
+    try {
+      deco.setLinks([SRC]);
+      deco.setOutputs([OBJ]);
+      deco.setExcludedByProject(new Map([['proj', [SRC]]]));
+      deco.setFlags(new Map());
+    } finally {
+      deco.endBatch();
+    }
+  };
+  feed(); // first feed carries real content → exactly one fire
+  const afterFirst = fires;
+  check('deco: a first content feed fires exactly once', afterFirst === 1);
+  feed(); // identical feed → nothing
+  check('deco: an identical feed fires nothing', fires === afterFirst);
+  feed(); // identical again, still nothing
+  check('deco: repeated identical feeds stay silent', fires === afterFirst);
+  deco.setLinks([SRC, OBJ]); // unbatched single change → one fire
+  check('deco: a real unbatched change fires once', fires === afterFirst + 1);
+  deco.beginBatch(); // batch with a real change → one fire for the whole feed
+  deco.setLinks([SRC]);
+  deco.setOutputs([OBJ, SRC]);
+  deco.setExcludedByProject(new Map([['proj', [SRC, OBJ]]]));
+  deco.setFlags(new Map([['proj', 'red']]));
+  deco.endBatch();
+  check('deco: a batched feed with changes fires exactly once', fires === afterFirst + 2);
+  deco.beginBatch(); // batch without changes → nothing
+  deco.setLinks([SRC]);
+  deco.setOutputs([OBJ, SRC]);
+  deco.setExcludedByProject(new Map([['proj', [SRC, OBJ]]]));
+  deco.setFlags(new Map([['proj', 'red']]));
+  deco.endBatch();
+  check('deco: a batched identical feed fires nothing', fires === afterFirst + 2);
+}
+
 process.exit(failures ? 1 : 0);
 })();

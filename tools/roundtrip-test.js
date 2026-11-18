@@ -459,7 +459,7 @@ check('makefile honours output prefix + custom extension', mk.includes('out_LED.
 cp.setBuildIdentity({ artifactType: 'staticLib' });
 cp.save();
 const rawLib = fs.readFileSync(path.join(scratch, '.cproject'), 'utf8');
-check('buildArtefactType standalone attribute synced', /buildArtefactType="org\.eclipse\.cdt\.build\.core\.buildArtefactType\.staticLibrary"/.test(rawLib));
+check('buildArtefactType standalone attribute synced', /buildArtefactType="org\.eclipse\.cdt\.build\.core\.buildArtefactType\.staticLib"/.test(rawLib));
 cp = Cproject.load(scratch);
 check('artifactType staticLib survives reload', cp.artifactType === 'staticLib');
 genMakefiles2(cp, tcStub2);

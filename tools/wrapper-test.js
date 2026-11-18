@@ -94,6 +94,20 @@ const { buildMakeCmdScript, buildDryRunCmdScript } = require('../out/core/taskWr
     /\$psi\.WorkingDirectory = 'C:\\some dir\\obj'/.test(ps) && !/Set-Location/.test(ps)
   );
 
+  // done line (user report 2026-11-18): a static library's archive recipe is
+  // @-silent with no size/lst steps — without it the successful build ends
+  // after the make command line with no terminal-visible indication
+  const specDone = { ...spec, doneLine: 'Build finished: libX.a' };
+  const psDone = buildTeeScript(specDone, 'C:\\temp\\x-build.cmd', 'C:\\temp\\x-dry.cmd');
+  check(
+    'tee done: printed to the terminal only when make exits 0',
+    psDone.includes("if ($code -eq 0) { [Console]::Out.WriteLine('Build finished: libX.a') }") &&
+      psDone.indexOf('if ($code -eq 0)') > ps.indexOf("Invoke-Make 'C:\\temp\\x-build.cmd'") &&
+      psDone.indexOf('if ($code -eq 0)') < ps.indexOf('dry run: make -n -B')
+  );
+  check('tee done: absent by default (exe builds already show the size table)', !ps.includes('if ($code -eq 0)'));
+  check('tee done: never written into the record', !/writer[^\n]*Build finished/.test(psDone));
+
   const buildCmd = buildMakeCmdScript(spec);
   check(
     'phase 1: cd into the build dir, make with stderr merged, exit code kept',
@@ -171,6 +185,15 @@ if (process.platform !== 'win32') {
   check('posix clean: keeps the label line and the exit code', /echo 'MRS: MounRiver Studio 3'/.test(clean) && /exit \$\?\n$/.test(clean));
   const noLabel = buildPosixBuildScript({ buildDir: '/o', makeExe: '/m', makeArgs: ['all'], recordFile: '/r', label: '' });
   check('posix build: no label line when the label is empty', !noLabel.includes('MRS:'));
+  const shDone = buildPosixBuildScript({ buildDir: '/o', makeExe: '/m', makeArgs: ['all'], recordFile: '/r', doneLine: 'Build finished: libX.a' });
+  check(
+    'posix done: printed to the terminal only when make exits 0',
+    shDone.includes('if [ "$code" -eq 0 ]; then echo \'Build finished: libX.a\'; fi') &&
+      shDone.indexOf('if [ "$code" -eq 0 ]') > sh.indexOf('PIPESTATUS') &&
+      shDone.indexOf('if [ "$code" -eq 0 ]') < shDone.indexOf('All Build Commands')
+  );
+  check('posix done: absent by default', !sh.includes('if [ "$code" -eq 0 ]'));
+  check('posix done: never reaches the record', !/\} >> "\$record"\nif \[ "\$code"/.test(shDone));
 }
 
 // --- functional run with a fake make ---
@@ -205,6 +228,7 @@ const run = (extra, done) => {
     makeArgs: ['-j5', 'all', ...extra],
     recordFile: buildRecordFile(proj),
     label: 'MounRiver Studio 2',
+    doneLine: 'Build finished: libX.a',
   };
   const launcher = writeBuildTaskWrapper(proj, spec);
   check('wrapper: the tee script is written with the UTF-8 BOM', fs.readFileSync(buildTeeScriptFile(proj))[0] === 0xef);
@@ -248,10 +272,13 @@ run([], (r) => {
   check('functional: the record ends with the dry-run appendix', /===== All Build Commands \(dry run: make -n -B\) =====[\s\S]*DRYRUN-COMMAND-ONLY-IN-RECORD/.test(record));
   check('functional: the dry run is NOT echoed into the terminal', !r.out.includes('DRYRUN-COMMAND-ONLY-IN-RECORD'));
   check('functional: the label is terminal-only, not part of the record', r.out.includes('MRS: MounRiver Studio 2') && !record.includes('MRS:'));
+  check('functional: the done line reaches the terminal on success', r.out.includes('Build finished: libX.a'));
+  check('functional: the done line stays out of the record', !record.includes('Build finished: libX.a'));
 
   run(['fail'], (r2) => {
     check('functional: a failing make fails the wrapper (exit code 7)', r2.code === 7);
     check('functional: the record is still written for a failed build', fs.readFileSync(r2.record, 'utf8').includes('compiling ../src/main.c'));
+    check('functional: a failed build prints no done line', !r2.out.includes('Build finished: libX.a'));
     runPosix();
   });
 });
@@ -302,6 +329,7 @@ function runPosix() {
       makeArgs: ['-j5', 'all', ...extra],
       recordFile: fwd(buildRecordFile(proj)),
       label: 'MounRiver Studio 2',
+      doneLine: 'Build finished: libX.a',
     };
     // mirror the POSIX branch of writeBuildTaskWrapper (that branch follows
     // process.platform, which here is win32 — the .sh must be exercised as-is)
@@ -340,10 +368,13 @@ function runPosix() {
     check('posix functional: the record ends with the dry-run appendix', /===== All Build Commands \(dry run: make -n -B\) =====[\s\S]*DRYRUN-COMMAND-ONLY-IN-RECORD/.test(record));
     check('posix functional: the dry run is NOT echoed into the terminal', !r.out.includes('DRYRUN-COMMAND-ONLY-IN-RECORD'));
     check('posix functional: the label is terminal-only, not part of the record', r.out.includes('MRS: MounRiver Studio 2') && !record.includes('MRS:'));
+    check('posix functional: the done line reaches the terminal on success', r.out.includes('Build finished: libX.a'));
+    check('posix functional: the done line stays out of the record', !record.includes('Build finished: libX.a'));
 
     runSh(['fail'], (r2) => {
       check('posix functional: a failing make fails the wrapper (exit code 7)', r2.code === 7);
       check('posix functional: the record is still written for a failed build', fs.readFileSync(r2.record, 'utf8').includes('compiling ../src/main.c'));
+      check('posix functional: a failed build prints no done line', !r2.out.includes('Build finished: libX.a'));
       finishPosix();
     });
   });

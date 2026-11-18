@@ -65,9 +65,53 @@ export class TreeDecorations implements vscode.FileDecorationProvider {
   /** file flag colors (abs key → color alias), fed by the Flag commands */
   private flags = new Map<string, string>();
 
-  private fireChanged(next: Set<string>, prev: Set<string>): void {
-    const changed = [...new Set([...next, ...prev])];
-    if (changed.length) this._onDidChange.fire(undefined);
+  /** batch window: while open, markChanged() only latches a flag and
+   *  endBatch() fires ONCE for the whole feed. A store change used to fire
+   *  up to four full invalidations (one per setter). */
+  private batching = false;
+  private batchDirty = false;
+
+  beginBatch(): void {
+    this.batching = true;
+    this.batchDirty = false;
+  }
+
+  endBatch(): void {
+    this.batching = false;
+    if (this.batchDirty) {
+      this.batchDirty = false;
+      this._onDidChange.fire(undefined);
+    }
+  }
+
+  /** a REAL content change latches (or fires outside a batch). Identical
+   *  feeds — the common case on activating/expanding a project — must not
+   *  fire at all: fire(undefined) invalidates the decorations of EVERY
+   *  visible row and the tree repaints them wholesale, which reads as file
+   *  icons flickering across all loaded projects (user report 2026-11-18).
+   *  Targeted URIs are not an option here: tree nodes carry the project
+   *  key in their resourceUri query and the feed side has no node URIs. */
+  private markChanged(): void {
+    if (this.batching) {
+      this.batchDirty = true;
+      return;
+    }
+    this._onDidChange.fire(undefined);
+  }
+
+  private static setEquals(a: Set<string>, b: Set<string>): boolean {
+    if (a.size !== b.size) return false;
+    for (const k of a) if (!b.has(k)) return false;
+    return true;
+  }
+
+  private static excludedEquals(a: Map<string, Set<string>>, b: Map<string, Set<string>>): boolean {
+    if (a.size !== b.size) return false;
+    for (const [k, s] of a) {
+      const t = b.get(k);
+      if (!t || !TreeDecorations.setEquals(s, t)) return false;
+    }
+    return true;
   }
 
   setFlags(next: Map<string, string>): void {
@@ -81,19 +125,23 @@ export class TreeDecorations implements vscode.FileDecorationProvider {
       if (!next.has(k)) changed.add(k);
     }
     this.flags = next;
-    if (changed.size) this._onDidChange.fire(undefined);
+    if (changed.size) this.markChanged();
   }
 
   setLinks(paths: Iterable<string>): void {
     const next = new Set([...paths].map((p) => ProjectStore.key(p)));
-    this.fireChanged(next, this.links);
-    this.links = next;
+    if (!TreeDecorations.setEquals(next, this.links)) {
+      this.links = next;
+      this.markChanged();
+    }
   }
 
   setOutputs(paths: Iterable<string>): void {
     const next = new Set([...paths].map((p) => ProjectStore.key(p)));
-    this.fireChanged(next, this.outputs);
-    this.outputs = next;
+    if (!TreeDecorations.setEquals(next, this.outputs)) {
+      this.outputs = next;
+      this.markChanged();
+    }
   }
 
   setExcludedByProject(perProject: Map<string, string[]>): void {
@@ -104,18 +152,10 @@ export class TreeDecorations implements vscode.FileDecorationProvider {
       next.set(key, set);
       for (const k of set) all.add(k);
     }
-    const changed = new Set<string>(all);
-    for (const k of this.excludedAll) changed.add(k);
-    for (const s of this.excludedByProject.values()) {
-      for (const k of s) changed.add(k);
-    }
-    this.excludedByProject = next;
-    this.excludedAll = all;
-    if (changed.size) {
-      // fire undefined (= all decorations changed): tree nodes carry the
-      // project key in their resourceUri query, so firing bare file URIs
-      // would miss the per-node cache entries and greying would never update
-      this._onDidChange.fire(undefined);
+    if (!TreeDecorations.excludedEquals(next, this.excludedByProject)) {
+      this.excludedByProject = next;
+      this.excludedAll = all;
+      this.markChanged();
     }
   }
 

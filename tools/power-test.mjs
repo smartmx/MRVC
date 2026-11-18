@@ -6,6 +6,7 @@
  * retry vs the expected init failure of the OFF pass vs real ON failures).
  */
 import { createRequire } from 'module';
+import Module from 'module';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -160,6 +161,170 @@ const LOG = 'E:/prj/obj/mrvc_power_off.log';
     check('fresh log: a build dir outside the project root is rejected', escaped);
   } finally {
     fs.rmSync(ROOT2, { recursive: true, force: true });
+  }
+}
+
+// 6. download-side single-sample contract (round49 P2): powerOffBeforeDownload
+//    must run the OFF pass with the CALLER's voltage — never re-read the
+//    session rail. A switch made inside a pre-download modal would otherwise
+//    split one download across two voltages (OFF at the new value, the plan's
+//    ON step at the old one). Driven through the real vscode/powerCycle module
+//    with vscode/taskRunner/projects stubbed; the task stub writes the OFF
+//    success marker so the pass completes on the first attempt.
+{
+  const ROOT6 = path.join(os.tmpdir(), 'mrvc-powerrail-test');
+  fs.rmSync(ROOT6, { recursive: true, force: true });
+  const buildDir = path.join(ROOT6, 'obj');
+  fs.mkdirSync(buildDir, { recursive: true });
+  const openocd = path.join(ROOT6, 'openocd.exe');
+  const boardCfg = path.join(ROOT6, 'wch-riscv.cfg');
+  fs.writeFileSync(openocd, '');
+  fs.writeFileSync(boardCfg, '');
+
+  let settings = { 'flash.powerOffDelayMs': 0, 'openocd.config': boardCfg };
+  const tasks = [];
+  const vscodeStub = {
+    window: {
+      showErrorMessage: async () => undefined,
+      showWarningMessage: async () => undefined,
+      showInformationMessage: async () => undefined,
+    },
+    workspace: {
+      getConfiguration: () => ({ get: (key, dflt) => (key in settings ? settings[key] : dflt) }),
+    },
+    Task: class {
+      constructor(def, name, source, execution) {
+        this.def = def;
+        this.name = name;
+        this.execution = execution;
+      }
+    },
+    ProcessExecution: class {
+      constructor(command, args, options) {
+        this.command = command;
+        this.args = args;
+        this.options = options;
+      }
+    },
+    TaskRevealKind: { Always: 1 },
+    TaskPanelKind: { Dedicated: 1 },
+  };
+  const projectsStub = { getInstall: () => ({ openocdCfg: boardCfg }), ProjectStore: class {} };
+  const taskRunnerStub = {
+    // the OpenOCD pass "runs": write its own success marker into the log the
+    // recipe carries via -l, then exit 0 — exactly what the real task does
+    waitTaskProcess: async (task) => {
+      tasks.push(task);
+      const args = task.execution.args;
+      const log = args[args.indexOf('-l') + 1];
+      fs.writeFileSync(log, task.def.task === 'power-off' ? 'MRVC_POWER_OFF_OK\n' : 'MRVC_POWER_ON_OK\n');
+      return 0;
+    },
+  };
+
+  const originalLoad = Module._load;
+  Module._load = function (request, parent, isMain) {
+    if (request === 'vscode') return vscodeStub;
+    if (request === './projects' && parent && /powerCycle\.js$/.test(parent.filename || '')) return projectsStub;
+    if (request === './taskRunner' && parent && /powerCycle\.js$/.test(parent.filename || '')) return taskRunnerStub;
+    return originalLoad.apply(this, arguments);
+  };
+  try {
+    const { powerOffBeforeDownload } = require(path.join(DEVELOP_DIR, 'out', 'vscode', 'powerCycle.js'));
+    const { notePowerOutputRail, resetPowerOutputRail } = require(path.join(DEVELOP_DIR, 'out', 'core', 'powerState.js'));
+    const project = { projectName: 'Demo', root: ROOT6, buildDir };
+    const cfg = vscodeStub.workspace.getConfiguration();
+
+    // the desync scenario: the session rail has ALREADY been switched to 5 V
+    // (as it would be by a QuickPick in a pre-download modal), but the plan
+    // was generated with the earlier 3.3 V sample — the OFF pass must use
+    // the injected sample, not the session value
+    notePowerOutputRail('5v');
+    let returned = await powerOffBeforeDownload(project, { openocdExe: openocd }, cfg, '3v3');
+    check('rail: OFF pass uses the caller sample, not the switched session rail', returned === '3v3' && tasks.some((tk) => tk.execution.args.includes('pow3v3 off')));
+    check('rail: the switched 5 V never leaks into the OFF argv', tasks.every((tk) => !tk.execution.args.includes('pow5v off')));
+
+    // the matching case: injected 5 V lands on the 5 V rail commands
+    tasks.length = 0;
+    returned = await powerOffBeforeDownload(project, { openocdExe: openocd }, cfg, '5v');
+    check('rail: an injected 5 V sample drives pow5v off and is returned', returned === '5v' && tasks.some((tk) => tk.execution.args.includes('pow5v off')));
+
+    // undefined sample (no power-off flow) → no pass at all
+    tasks.length = 0;
+    returned = await powerOffBeforeDownload(project, { openocdExe: openocd }, cfg, undefined);
+    check('rail: an undefined sample runs no pass and returns null', returned === null && tasks.length === 0);
+
+    // wiring: flash.ts samples the rail EXACTLY once and hands that sample to
+    // powerOffBeforeDownload; powerOffBeforeDownload itself never re-reads it
+    const flashSrc = fs.readFileSync(path.join(DEVELOP_DIR, 'src', 'vscode', 'flash.ts'), 'utf8');
+    const pcSrc = fs.readFileSync(path.join(DEVELOP_DIR, 'src', 'vscode', 'powerCycle.ts'), 'utf8');
+    check('rail: flash.ts samples the session rail exactly once', (flashSrc.match(/powerOutputRail\(/g) || []).length === 1);
+    check('rail: flash.ts passes its sample into the OFF pass', flashSrc.includes('powerOffBeforeDownload(project, install, cfg, powerOn, token)'));
+    const fnStart = pcSrc.indexOf('export async function powerOffBeforeDownload');
+    const fnEnd = pcSrc.indexOf('\nexport ', fnStart + 10);
+    check('rail: powerOffBeforeDownload never re-reads the session rail', !(pcSrc.slice(fnStart, fnEnd).includes('powerOutputRail(')));
+
+    // round50 P3: while an mrvc-flash task is in flight the rail switch must
+    // be refuse-able — the in-flight latch lives in the same module. A task
+    // whose completion we hold back keeps the latch raised until it resolves.
+    const { executeFlashTask, flashTaskActive, linkOpActive, runLinkOperation } = require(path.join(DEVELOP_DIR, 'out', 'vscode', 'powerCycle.js'));
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const originalWait = taskRunnerStub.waitTaskProcess;
+    taskRunnerStub.waitTaskProcess = async (task) => {
+      tasks.push(task);
+      const args = task.execution.args;
+      const log = args[args.indexOf('-l') + 1];
+      await gate;
+      fs.writeFileSync(log, task.def.task === 'power-off' ? 'MRVC_POWER_OFF_OK\n' : 'MRVC_POWER_ON_OK\n');
+      return 0;
+    };
+    check('rail: latch idle before any task', flashTaskActive() === false && linkOpActive() === false);
+    const pending = powerOffBeforeDownload(project, { openocdExe: openocd }, cfg, '3v3');
+    await new Promise((r) => setTimeout(r, 10)); // let the task start
+    check('rail: task latch raised while the OFF pass is in flight', flashTaskActive() === true);
+    release();
+    await pending;
+    check('rail: task latch cleared after the pass resolves', flashTaskActive() === false);
+
+    // round51 P3: the OPERATION latch must span the whole download/reset
+    // lifecycle — including the powerOffDelayMs sleep AFTER the OFF task has
+    // ended, where the task-level latch is already zero (a probe there used
+    // to read false and the QuickPick could rewrite the Info row mid-op).
+    settings['flash.powerOffDelayMs'] = 150;
+    tasks.length = 0;
+    let probeDuringDelay = false;
+    let probeTaskLevel = false;
+    const op = runLinkOperation(async () => {
+      const r = await powerOffBeforeDownload(project, { openocdExe: openocd }, cfg, '3v3');
+      return r;
+    });
+    await new Promise((r) => setTimeout(r, 60)); // OFF done, inside the 150 ms sleep
+    probeDuringDelay = linkOpActive();
+    probeTaskLevel = flashTaskActive();
+    const opResult = await op;
+    check('rail: operation latch raised through the powerOffDelayMs window', probeDuringDelay === true && opResult === '3v3');
+    check('rail: the task-level latch alone misses the delay window (why op level exists)', probeTaskLevel === false);
+    check('rail: operation latch cleared after it completes', linkOpActive() === false);
+    settings['flash.powerOffDelayMs'] = 0;
+
+    // wiring: the QuickPick command consults the OPERATION latch before
+    // showing options, and both entries run under runLinkOperation
+    const extSrc = fs.readFileSync(path.join(DEVELOP_DIR, 'src', 'extension.ts'), 'utf8');
+    const cmdStart = extSrc.indexOf("reg('mrvc.powerOutputRail'");
+    const cmdEnd = extSrc.indexOf('});', cmdStart + 10);
+    check('rail: switch command refuses while a link operation is in flight', extSrc.slice(cmdStart, cmdEnd).includes('if (linkOpActive())'));
+    check('rail: i18n carries the busy notice', /powerRailBusy:\s*\{/.test(fs.readFileSync(path.join(DEVELOP_DIR, 'src', 'core', 'i18n.ts'), 'utf8')));
+    check('rail: the download entry runs under the operation latch', flashSrc.includes('runLinkOperation(() => downloadProjectInner(store, project, token))'));
+    check('rail: the Power-Off Reset entry runs under the operation latch', pcSrc.includes('runLinkOperation(() => powerOffResetInner(store, item))'));
+    taskRunnerStub.waitTaskProcess = originalWait;
+
+    resetPowerOutputRail();
+  } finally {
+    Module._load = originalLoad;
+    fs.rmSync(ROOT6, { recursive: true, force: true });
   }
 }
 

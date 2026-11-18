@@ -118,12 +118,19 @@ export function convertLogicToFullPath(
   if (!logicPath) return null;
   let p = logicPath.trim().replace(/^"(.*)"$/, '$1');
 
+  // The project root itself is stored by MRS templates as the bare
+  // `"${workspace_loc:/${ProjName}}"` (no trailing segment). This must be
+  // tested BEFORE the generic ${workspace_loc:/…} catch-all below: that
+  // regex's greedy capture would take the literal `${ProjName}` macro as a
+  // path segment and resolve to `<root>/${ProjName}` — a path that never
+  // exists, so callers with dropMissing silently lose `-I"<project root>"`
+  // (and every root-level header with it).
+  if (/^\$\{workspace_loc:\/?\$\{ProjName\}\/?\}$/.test(p) || p === '${workspace_loc:/}') {
+    return projectRoot;
+  }
   const wsMacro = p.match(/^\$\{workspace_loc:\/?\$\{ProjName\}\/(.+)\}$/) || p.match(/^\$\{workspace_loc:\/(.+)\}$/);
   if (wsMacro) {
     return resolveSegs(projectRoot, projectName, wsMacro[1], linkedFolders);
-  }
-  if (/^\$\{workspace_loc:\/?\$\{ProjName\}\}$/.test(p) || p === '${workspace_loc:/}') {
-    return projectRoot;
   }
   if (/^\$\{project\}(\/|$)/.test(p)) {
     return resolveSegs(projectRoot, projectName, p.replace(/^\$\{project\}\//, ''), linkedFolders);

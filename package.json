@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "Unofficial, independent project — not developed or supported by WCH or MounRiver. MRVC opens, configures and builds MounRiver (MRS) projects for WCH MCUs directly in VSCode; for development and debugging use.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "smartmx",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -246,17 +246,6 @@
           "description": "Reset mode for downloads (and the Power-Off Reset command): NRST pin, or the WCH-Link power rail (pow3v3/pow5v power cycle).",
           "order": 11
         },
-        "mrvc.flash.powerOutput": {
-          "type": "string",
-          "enum": ["3v3", "5v"],
-          "enumDescriptions": [
-            "3.3 V rail (default).",
-            "5 V rail."
-          ],
-          "default": "3v3",
-          "description": "Voltage the WCH-Link feeds the target with during a power-off reset (both rails share one power state — only the actually-fed rail is switched).",
-          "order": 12
-        },
         "mrvc.flash.powerOffDelayMs": {
           "type": "number",
           "default": 100,
@@ -469,6 +458,11 @@
       {
         "command": "mrvc.powerOffReset",
         "title": "%command.mrvc.powerOffReset.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.powerOutputRail",
+        "title": "%command.mrvc.powerOutputRail.title%",
         "category": "MRVC"
       },
       {

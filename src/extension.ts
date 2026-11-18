@@ -10,7 +10,7 @@ import { ProjectTreeProvider, TreeDecorations } from './vscode/tree';
 import { InfoTreeProvider } from './vscode/infoTree';
 import { BuildManager } from './vscode/tasks';
 import { flashProject, openLinkUtility, openMrsTerminal } from './vscode/flash';
-import { powerOffResetCmd } from './vscode/powerCycle';
+import { linkOpActive, powerOffResetCmd } from './vscode/powerCycle';
 import { auditRepairCmd } from './vscode/auditCmd';
 import { ConfigView } from './vscode/configView';
 import { addLinkedFolderCmd, removeLinkedFolderCmd, changeLinkedFolderPathCmd, revealProducts } from './vscode/linkedFolders';
@@ -41,6 +41,7 @@ import { openWithMrsCmd } from './vscode/openMrs';
 import { mrsValidateCmd, mrsValidateAllCmd, buildWithMrsCmd } from './vscode/mrsValidate';
 import { initSdiMonitor, sdiPrintMonitorCmd, sdiPrintStopCmd } from './vscode/sdiMonitor';
 import { onSdiPrintfStatusChanged } from './core/sdiState';
+import { notePowerOutputRail, onPowerOutputRailChanged, powerOutputRail } from './core/powerState';
 import { ensureIntellisenseConfig, applyCacheOverrides, resolveProjectForFile, switchContext, maybePromptCppTools } from './vscode/intellisense';
 import { addProjectToSolutionCmd, addProjectsByBatchCmd, setBuildOrderCmd, closeSolutionCmd, modifySolutionToolchainCmd, recoverSolutionPath } from './vscode/solutionLife';
 import { generateCMakeListCmd, exportAsCMakeCmd } from './vscode/cmakeExport';
@@ -165,6 +166,9 @@ function startExtension(context: vscode.ExtensionContext): void {
       }
     })
   );
+  // the Info view's power-output row mirrors the session rail — a manual
+  // switch from anywhere (QuickPick) must repaint it
+  context.subscriptions.push(onPowerOutputRailChanged(() => info.refresh()));
 
   // lazy workspace init (0.2.8): opening a folder must NOT start MRVC —
   // no scan, no compile databases, no cpptools prompt — until the user
@@ -256,17 +260,26 @@ function startExtension(context: vscode.ExtensionContext): void {
   const treeDecorations = new TreeDecorations();
   context.subscriptions.push(vscode.window.registerFileDecorationProvider(treeDecorations));
   const updateTreeDecorations = () => {
-    treeDecorations.setLinks(
-      store.all.flatMap((p) => p.projectFile.linkedResources.filter((l) => l.type === 2).map((l) => l.location))
-    );
-    treeDecorations.setOutputs(store.all.map((p) => p.buildDir));
-    treeDecorations.setExcludedByProject(new Map(store.all.map((p) => [ProjectStore.key(p.root), excludedResourcePaths(p)] as const)));
-    // file flags (MRS2-compatible .mrs/preferredColor.json)
-    const flagMap = new Map<string, string>();
-    for (const p of store.all) {
-      for (const m of listMarks(p.root, p.cproject.linkedFolders)) flagMap.set(ProjectStore.key(m.absFile), m.color);
+    // one feed = at most ONE full-decoration invalidation: the four setters
+    // latch inside the batch and endBatch() fires once (and only when some
+    // content actually changed — identical feeds fire nothing, which is what
+    // kept every project's file icons flickering on activation/expansion)
+    treeDecorations.beginBatch();
+    try {
+      treeDecorations.setLinks(
+        store.all.flatMap((p) => p.projectFile.linkedResources.filter((l) => l.type === 2).map((l) => l.location))
+      );
+      treeDecorations.setOutputs(store.all.map((p) => p.buildDir));
+      treeDecorations.setExcludedByProject(new Map(store.all.map((p) => [ProjectStore.key(p.root), excludedResourcePaths(p)] as const)));
+      // file flags (MRS2-compatible .mrs/preferredColor.json)
+      const flagMap = new Map<string, string>();
+      for (const p of store.all) {
+        for (const m of listMarks(p.root, p.cproject.linkedFolders)) flagMap.set(ProjectStore.key(m.absFile), m.color);
+      }
+      treeDecorations.setFlags(flagMap);
+    } finally {
+      treeDecorations.endBatch();
     }
-    treeDecorations.setFlags(flagMap);
   };
   store.onDidChange(updateTreeDecorations);
   updateTreeDecorations();
@@ -499,6 +512,27 @@ function startExtension(context: vscode.ExtensionContext): void {
   // power-off reset (掉电复位): WCH-Link rail power cycle via two short
   // OpenOCD sessions — project context menu + command palette
   reg('mrvc.powerOffReset', (item?: unknown) => void powerOffResetCmd(store, item as { project?: unknown }));
+  // flash power-output rail switch (session state, core/powerState): every
+  // window opens at 3.3 V; this QuickPick is the ONLY way to raise it to
+  // 5 V; closing the window restores 3.3 V — Info row click + palette.
+  // Refused while a download / power pass is in flight: that operation's
+  // voltage was fixed when it started, so a switch now could only change
+  // what the Info row shows without touching the running task (round50 P3)
+  reg('mrvc.powerOutputRail', async () => {
+    if (linkOpActive()) {
+      void vscode.window.showInformationMessage(t('powerRailBusy'));
+      return;
+    }
+    const current = powerOutputRail();
+    const pick = await vscode.window.showQuickPick(
+      [
+        { rail: '3v3' as const, label: t('powerRailPick3v3'), description: current === '3v3' ? t('powerRailCurrent') : '' },
+        { rail: '5v' as const, label: t('powerRailPick5v'), description: current === '5v' ? t('powerRailCurrent') : '' },
+      ],
+      { title: t('powerRailPickTitle'), placeHolder: t('powerRailPickPlaceholder') }
+    );
+    if (pick) notePowerOutputRail(pick.rail);
+  });
   // audit & repair project configuration (enumerated-value damage, address
   // format, …): modal findings list, explicit confirm before any write
   reg('mrvc.auditProject', (item?: unknown) => void auditRepairCmd(store, item as { project?: unknown }));

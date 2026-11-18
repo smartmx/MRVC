@@ -31,6 +31,7 @@
   "command.mrvc.rebuildWithMrs.title": "使用 MRS IDE 重新编译",
   "command.mrvc.cleanWithMrs.title": "使用 MRS IDE 清理",
   "command.mrvc.powerOffReset.title": "掉电复位",
+  "command.mrvc.powerOutputRail.title": "Flash 电源输出（3.3 V / 5 V）",
   "command.mrvc.auditProject.title": "检测并修复工程配置",
   "command.mrvc.syncProjectName.title": "从文件夹名同步工程名",
   "command.mrvc.syncSettings.title": "跨工程同步设置",

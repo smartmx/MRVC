@@ -196,6 +196,9 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     'zh-cn': '未找到 make——已查找 {0} 下的自带 make 与 PATH 中的系统 make',
   },
   makefileGenFailed: { en: 'Makefile generation failed: {0}', 'zh-cn': 'Makefile 生成失败：{0}' },
+  // the terminal success line for static libraries (their archive recipe is
+  // @-silent and libs have no size/lst output — nothing else shows success)
+  buildFinished: { en: 'Build finished: {0}', 'zh-cn': '编译完成：{0}' },
   neverBuilt: { en: 'MRVC: "{0}" has never been built — nothing to clean.', 'zh-cn': 'MRVC：" {0} " 尚未编译过——没有可清理的内容。' },
   rebuildCleanFailed: { en: 'MRVC: rebuild aborted — clean failed (exit {0}).', 'zh-cn': 'MRVC：重建中止——清理失败（退出码 {0}）。' },
   nothingToClean: { en: 'nothing to clean', 'zh-cn': '无可清理内容' },
@@ -414,7 +417,6 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   infoPinFallback: { en: ' preference fell back', 'zh-cn': '（偏好未满足，已回退）' },
   infoOpenSettings: { en: 'Open MRVC Settings', 'zh-cn': '打开 MRVC 设置' },
   infoProjectCat: { en: 'Active project', 'zh-cn': '当前工程' },
-  infoToolchainCat: { en: 'Toolchain', 'zh-cn': '工具链' },
   infoSdiCat: { en: 'SDI Printf', 'zh-cn': 'SDI Printf' },
   infoSdiEnabled: {
     en: 'SDI print enabled',
@@ -451,6 +453,38 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   infoSdiOpenMonitor: { en: 'Open SDI PRINT Monitor', 'zh-cn': '打开 SDI PRINT 监视器' },
   infoPowerOffReset: { en: 'Power-Off Reset', 'zh-cn': '掉电复位' },
   infoPowerCat: { en: 'WCH-Link power rail', 'zh-cn': 'WCH-Link 电源轨' },
+  infoPowerOutputCat: { en: 'Flash power output', 'zh-cn': 'Flash 电源输出' },
+  infoPowerOutput3v3: { en: '3.3 V', 'zh-cn': '3.3 V' },
+  infoPowerOutput5v: { en: '5 V', 'zh-cn': '5 V' },
+  infoPowerOutputSwitch: { en: 'Switch Flash Power Output Rail', 'zh-cn': '切换 Flash 电源输出电压' },
+  infoPowerOutputTooltip: {
+    en:
+      'The rail voltage the WCH-Link feeds the target with during a power-off-reset download (mrvc.flash.resetMode=powerOff) ' +
+      'and the Power-Off Reset row below. Session state: every window opens at 3.3 V, only a manual switch (click this row) ' +
+      'raises it to 5 V, and closing the window restores 3.3 V — the rail is never persisted. What this row shows is what ' +
+      'the NEXT operation will use; while a download or power pass is running the switch is refused (that operation\'s ' +
+      'voltage was fixed when it started). ' +
+      'Only LinkE / DAPLink / LinkW can switch rails; the plain WCH-Link is blocked with a notice by the operations themselves.',
+    'zh-cn':
+      '掉电复位下载（mrvc.flash.resetMode=powerOff）与下方「掉电复位」行给目标重新上电时，WCH-Link 输出的电源轨电压。' +
+      '会话级状态：每个窗口打开时都是 3.3 V，只有手动切换（点击本行）才会到 5 V，关闭窗口后恢复 3.3 V——不持久化。' +
+      '本行显示的是**下一次**操作将使用的电压；下载/电源操作进行中切换会被拒绝（该操作的电压在其开始时已固定）。' +
+      '仅 LinkE / DAPLink / LinkW 支持电源轨切换；普通版 WCH-Link 会被操作自身拦截并弹窗说明。',
+  },
+  powerRailPickTitle: { en: 'Flash power output rail', 'zh-cn': 'Flash 电源输出电压' },
+  powerRailPickPlaceholder: {
+    en: '3.3 V is the default of every window; 5 V lasts until the window closes.',
+    'zh-cn': '每个窗口默认 3.3 V；5 V 只保留到窗口关闭。',
+  },
+  powerRailPick3v3: { en: '3.3 V', 'zh-cn': '3.3 V' },
+  powerRailPick5v: { en: '5 V', 'zh-cn': '5 V' },
+  powerRailCurrent: { en: 'current', 'zh-cn': '当前' },
+  powerRailBusy: {
+    en:
+      'A download or power operation is running — its voltage was fixed when it started. Switch the rail after it finishes; the Info row shows what the NEXT operation will use.',
+    'zh-cn':
+      '下载或电源操作进行中——本次操作的电压在其开始时已固定。请等它结束后再切换电源轨；Info 行显示的是下一次操作将使用的电压。',
+  },
   infoPowerTooltip: {
     en:
       'Click to power-cycle the target through the WCH-Link rail (OFF → delay → ON). ' +

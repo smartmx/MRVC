@@ -655,7 +655,19 @@ export class BuildManager {
             // the clean wrapper (no record writes, same metacharacter safety)
             wrapperExecution(this.writeCleanWrapper(project.root, project.buildDir, makeExe, cleanFlags, install.label), envPath)
           : wrapperExecution(
-              this.writeBuildWrapper(project.root, project.buildDir, makeExe, makeArgs, buildRecordFile(project.root), install.label),
+              this.writeBuildWrapper(
+                project.root,
+                project.buildDir,
+                makeExe,
+                makeArgs,
+                buildRecordFile(project.root),
+                install.label,
+                // a static library's archive recipe is @-silent and it has no
+                // size/lst steps — without this line the successful build ends
+                // right after the make command line with no terminal-visible
+                // indication (user report 2026-11-18)
+                project.cproject.artifactType === 'staticLib' ? t('buildFinished', `${project.cproject.targetName}.a`) : undefined
+              ),
               envPath
             );
     const task = new vscode.Task(
@@ -865,8 +877,8 @@ export class BuildManager {
    * record always reflects the last build; generation itself lives in
    * core/taskWrapper (pure, testable — see tools/wrapper-test.js).
    */
-  private writeBuildWrapper(projectRoot: string, buildDir: string, makeExe: string, makeArgs: string[], recordFile: string, installLabel = ''): string {
-    return writeBuildTaskWrapper(projectRoot, { buildDir, makeExe, makeArgs, recordFile, label: installLabel });
+  private writeBuildWrapper(projectRoot: string, buildDir: string, makeExe: string, makeArgs: string[], recordFile: string, installLabel = '', doneLine?: string): string {
+    return writeBuildTaskWrapper(projectRoot, { buildDir, makeExe, makeArgs, recordFile, label: installLabel, doneLine });
   }
 
   /**

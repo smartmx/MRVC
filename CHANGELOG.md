@@ -1,5 +1,51 @@
 # MRVC 更新日志
 
+## V0.3.2（2026-11-18）
+
+### 变更
+
+- **修复静态库工程构建成功后终端无任何成功信息（真实库工程实测）**：静态库的归档规则（`ar`）是 `@` 静默
+  的，且库工程没有 size/lst 等输出步骤——可执行工程末尾有 size 表可作成功标志，库工程则只打印
+  make 命令行就结束。现构建包装器新增**成功完成行**：make 退出码为 0 时终端打印
+  `编译完成：libX.a`（`Build finished: …`，仅库工程、仅终端——构建记录保持纯 make 输出；失败时不打印）。
+  Windows PowerShell 链与 POSIX bash 链同步实现。
+
+- **修复激活/展开工程时全部工程的文件图标闪烁（真实多工程工作区实测）**：文件装饰提供器（链接文件夹
+  蓝色/输出目录红色/排除置灰/旗标）的三个喂入方法把"新旧**并集**非空"误当作"有变化"——只要工作区存在
+  任何一个链接目录/输出目录/排除路径（常态如此），每次工程激活/展开触发的重喂**即使内容完全相同**也会
+  发出"全部装饰失效"（`fire(undefined)`），VSCode 据此重绘**所有可见行**，读感即全工程文件图标闪烁，
+  且一次喂入最多触发 4 次。现按**内容对称差**判定变化：相同喂入零触发；真实变化经批量窗口
+  （`beginBatch/endBatch`）合并为**至多一次**失效。
+- **Info 视图重排 + Flash 电源输出改会话状态（用户需求）**：**删除 GCC 工具链行与当前工作区行**
+  （GCC 解析不再在该视图渲染；工作区在资源管理器本身可见）。新增 **Flash 电源输出行**：显示当前电源轨
+  3.3 V / 5 V——掉电复位下载（`mrvc.flash.resetMode=powerOff`）与「掉电复位」行给目标重新上电时
+  WCH-Link 实际输出的电压。**电压改为会话级状态（新 `mrvc.powerOutputRail` 命令/Info 行点击弹切换框）**：
+  每个工作区/窗口打开时**默认必为 3.3 V**，只有手动切换才会到 5 V，**关闭窗口后恢复 3.3 V**——
+  原 `mrvc.flash.powerOutput` 持久化设置**已移除**（设过 5 V 的用户每窗口回到 3.3 V，需重新手动切换）；
+  `mrvc.flash.powerOffDelayMs` 断电时长设置不变。tooltip 注明仅 LinkE / DAPLink / LinkW 支持电源轨切换，
+  且本行显示的是**下一次**操作将使用的电压——下载/电源操作进行中切换会被拒绝
+  （该操作的电压在其开始时已固定）。
+  新行序：配置 → 当前工程 → SDI Printf → Flash 电源输出 → 掉电复位。infotree-test 重写为
+  24 断言（行序/图标/命令/会话语义/设置惰性/SDI 记账/无工程退化）。
+- **修复工程根目录头文件编译报 `No such file or directory`（真实库工程实测发现）**：MRS 工程模板把
+  工程根目录本身作为一条 C/C++ 包含路径存进 `.cproject`（裸形态
+  `"${workspace_loc:/${ProjName}}"`，与 `.wvproj` 同目录的头文件全靠它命中；
+  MRS 生成 makefile 时输出 `-I"<工程目录>"`）。MRVC 的路径解析里
+  `${workspace_loc:/…}` 兜底正则先命中，把字面 `${ProjName}` 宏当成路径段解析成
+  `<工程根>/${ProjName}`（永不存在的路径），再被“缺失目录丢弃”规则**静默丢弃** → 生成的 makefile
+  缺根目录 `-I`，子目录源码包含根目录头文件全部失败。现裸根形态（含引号、尾斜杠变体）优先按工程根
+  解析；该解析是**共用一条路径**——C / C++ / 汇编三族编译器的 `-I`、`-isystem`、`-include` 列表与
+  链接脚本/其他目标文件/MAP 文件名等全部 consumers 同步修正（IntelliSense 编译数据库与 CMake 导出
+  亦随之修正）。缺失目录仍按 MRS 行为丢弃（工程里不存在的目录条目）。
+  由真实库工程实测：修复后头文件解析正常、构建产物与 MRS 一致。
+- **修复静态库工程（`.a`）被当成可执行文件链接而失败**：MRS 静态库工程的
+  `buildArtefactType` 是 CDT 的 `…buildArtefactType.staticLib`（本机 MRS 2.5.0 工程实证），旧判定
+  只认 `staticLibrary` 拼写 → 库工程被判为 exe，生成的 makefile 用
+  `riscv-wch-elf-gcc … -T "…/Ld/Link.ld"` 链接（静态库工程没有 `Ld` 目录）→ 构建报
+  `cannot open linker script file …/Ld/Link.ld: Invalid argument`。现按 `staticLib`/`staticLibrary`
+  两种拼写识别库工程，生成 `riscv-wch-elf-ar -cr "libX.a"` 归档规则（不再产生链接/二次输出规则）；
+  新建库工程写回 MRS 的 `staticLib` 拼写。29 个金标字节不变。
+
 ## V0.3.1（2026-11-17）
 
 ### 变更
@@ -57,7 +103,7 @@
   缺省显示 gnu11 / gnu++11；Create flash/listing/print size 三个开关缺省显示为**勾选**（EP 模型
   enabled=true）；Print size 的 Size format 缺省 Berkeley、Create flash 的 Output file format 缺省
   Intel HEX。反之 `Linker flags`（`c.linker.flags`）与 `Library search path`（`c.linker.paths`）在
-  MRS 模型里默认就是**空表**——ADC_DMA 截图里的 `-print-memory-usage` 与 `../`、`StdPeriphDriver`
+  MRS 模型里默认就是**空表**——属性页截图里的 `-print-memory-usage` 与 `../`、`StdPeriphDriver`
   是该工程**实际存储**的行，并非默认值，故这两项保持空表显示。未改动时 Apply 不写盘，字节保持原样。
 - **工程属性：Target Processor 页与 MRS 完全对齐（用户报告三项）**：补上遗漏的
   `Floating point`（None/RVF/RVFD/RVFDQ）下拉与 `Vector Cryptography extensions (RVV)` 勾选——
@@ -251,7 +297,7 @@ reset+enable 的 CDC 实时输出、clean 阶段取消 rebuild 的终端行为�
   `value` 属性整个删除**；而 MRS 自己的解析器对 rvGcc 选项**无保护地 `value.match(...)`**——属性
   缺失即扩展崩溃，工程树挂载失败，**该工程在 MRS2/MRS3 里也打不开**。已修复：枚举读取识别 base
   形态（下拉正确显示当前值）；enumerated 选项的清除**永不删除 value 属性**（MRS 硬约束）。
-  受影响工程（TCP_SERVER / MACRAW / TCP_CLIENT，属性 Apply 过即中招）的 `.cproject` 已按其
+  受影响工程（属性页 Apply 过即中招）的 `.cproject` 已按其
   GCC8 工具链补回 `value` 属性，可直接打开。**本轮再加一道结构性保险**：Apply 先按渲染时的
   快照逐字段比对，**只写入用户真正改动的字段**——未改动选项在 `.cproject` 里保持逐字节不变
   （回归探针：整表原值回发后文件字节相同）；下拉框不认识的既有枚举值渲染为 `(current)` 并
@@ -347,7 +393,7 @@ reset+enable 的 CDC 实时输出、clean 阶段取消 rebuild 的终端行为�
   CH32V002/4/5/6/7）在提示里全部列出，避免显示错别名。无 `.template` 的 EVT 工程（下载地址
   由源文件前缀推导）没有可比对的目标芯片，**不会发起一次无意义的 Link 查询**。
 - **下载目标修正（.template Target Path，先询问不自动改）**：EVT 工程常记录跨工程的
-  Target Path（如 `CH394Q__MACRAW` 记录的是 `obj\CH394Q__TCP_SERVER.hex`，本机并不存在该文件），
+  Target Path（如安装包工程记录的是同一工作区内**另一工程**的 `.hex` 相对路径，本机并不存在该文件），
   下载时虽已按回退链使用本工程产物，但 `.template` 仍留着失效值。现在**点下载时**若记录的
   Target Path 指向不存在的文件、而本工程构建产物存在，则**弹窗询问是否修改 `.template`**
   （默认不修改：取消则保留原值、按回退目标照常下载）；用户确认后回写为相对本工程的产物路径
@@ -500,7 +546,7 @@ reset+enable 的 CDC 实时输出、clean 阶段取消 rebuild 的终端行为�
 - **树装饰与排除引擎同口径**（复审 round9 F3）：`exclusionFsPaths`（树装饰/灰色标记）此前仍按
   已废除的"深度无关基名"语义在链接目录里递归（深度 ≤6）找裸 token 的目标——引擎已改为严格路径
   语义后，装饰可能把**实际会编译**的文件标成灰色。现在裸 token 只解析链接根下的**直接子项**
-  （CH585 的"裸文件名写在链接根"真实用法不受影响）；`taskWrapper.ts` 的模块头注释也改写为
+  （真实工程"裸文件名写在链接根"的用法不受影响）；`taskWrapper.ts` 的模块头注释也改写为
   现状实现（逐行直写、干跑走同一读取器）。
 - **工序与工具收尾**：README 写死发布工序为 `npx tsc`（测试产物）→ `node esbuild.js`（发布 bundle）→
   `npm run package` → `npm run verify`；并把"顺序陷阱"提示里过时的体积锚点（"10KB / ~978KB"，实际约
@@ -512,14 +558,14 @@ reset+enable 的 CDC 实时输出、clean 阶段取消 rebuild 的终端行为�
 
 - **排除匹配把"裸 token"当基名，导致整个目录被漏编译**：`excluding` 的 token 现在严格按 CDT 语义
   解析——**相对该 sourceEntry 目录的路径**（裸 token 即该目录下的直接子项）；此前的匹配器额外允许
-  "任意层级的同名匹配"（`endsWith('/' + token)`），于是真实工程 `finger_11_27` 根条目里那个失效的
+  "任意层级的同名匹配"（`endsWith('/' + token)`），于是真实工程根条目里那个失效的
   token `lib` 把 `FRFXLL/src/lib`（指纹库 10 个 `.cpp`）整个排除掉了：MRS2 编译它们（其 `obj` 下有
   `FRFXLL/src/lib/*.o`），MRVC 不编译 → 链接期 `undefined reference to FRFXLLCreateFeatureSetFromRaw /
   FRFXLLExport / FRFXLLCloseHandle …`，构建失败。修掉基名匹配后：源文件 **57 → 67**，构建 **exit 0**，
   且产出的 `.hex` 与 MRS2 的构建结果**逐字节相同**（`02416e845fe9d7d4…`；`.elf` 仅因构建路径不同
   影响调试信息而略有差异）。
-  回归面：对 CH585 / CH587 / CH592 / NFC_DEVELOP / DEVELOP 共 **2,650 个真实工程**做"排除决策
-  前后对比"，**只有 finger_11_27 一个工程的源集合发生变化**（正是被漏编译的那个），其余零变化。
+  回归面：对本地多棵芯片工作树共 **2,650 个真实工程**做"排除决策
+  前后对比"，**只有一个工程的源集合发生变化**（正是被漏编译的那个），其余零变化。
   新增 7 条断言把语义钉住：嵌套 `FRFXLL/src/lib` 不被裸 token `lib` 误伤、该目录的文件确实被扫描、
   真实存在于根目录的 `lib/` 仍被该 token 排除、带斜杠的路径 token 照常排除其文件、以及"token 命名
   的是路径而非基名"的对照。
@@ -558,8 +604,8 @@ reset+enable 的 CDC 实时输出、clean 阶段取消 rebuild 的终端行为�
 - **C++ 工程从未真正按 C++ 编译**（0.1.x 起的缺陷）：判定工程是否 C++ 用的 nature ID
   是 `org.eclipse.cdt.core.cxxnature`——该 ID 在 CDT 中不存在（真实 ID 为
   `org.eclipse.cdt.core.ccnature`），于是 C++ 工程一律按 C 工程处理，`.cpp/.cc/.cxx/.C`
-  源文件被整体跳过（实测 FingerCode 工程的 `FRFXLL/src/lib` 与 `afis` 两个目录消失
-  → `FRFXLL*` 符号未定义；链接器也从 g++ 退化为 gcc）。配套问题：MRVC 自己的
+  源文件被整体跳过（真实 C++ 工程实测：两个源目录消失
+  → 库符号未定义；链接器也从 g++ 退化为 gcc）。配套问题：MRVC 自己的
   「C++ 工程」开关写的也是这个假 ID（自写自读自测所以一直是绿灯，MRS2 并不认）。
   修法：以 `ccnature` 为准判定并继续接受旧假 ID（迁移），开关改写真 ID、切换时清掉
   假 ID。实测（MRS2 工具链真编译）：源文件 48 → 72，`.cpp` 走 `g++ -std=gnu++17`、
@@ -609,15 +655,15 @@ reset+enable 的 CDC 实时输出、clean 阶段取消 rebuild 的终端行为�
   2,687 个 `.project` 中 1,485 个含此写法，示例文件 1,067 → 1,022 字节）。现在解析时
   记住源形态、写回时按原样输出，连自闭合标签里 ` />` 前的空格也一并保留（另有 8 个
   工程是这种写法）；只有"原本有子元素、被编辑清空"的元素才落到既有的 `<x/>` 形式
-  （不把空块形态强加给新写入的选项）。实测口径：`F:/CH585`、`F:/CH592`、`F:/CH587`
-  三棵芯片树（含各自 EXAM、NFC_DEVELOP 与"需要更新的"备份树）共 5,372 个文件——
+  （不把空块形态强加给新写入的选项）。实测口径：本地三棵芯片工作树
+  （含各自 EXAM、开发与备份子树）共 5,372 个文件——
   `.project` 2,687 与 `.cproject` 2,685 全部"解析→序列化"逐字节还原（修前
   `.project` 有 1,485 个不符），单次写回不再产生无关的空白/形态 diff。
 
 ### 内部
 
 - **工具链前缀读取加固**：`storedPrefix` 原先只认裸 `command.prefix`。全树普查
-  （CH585/CH592/CH587 共 2,685 个 `.cproject`、2,919 个前缀选项）显示真实工程
+  （本地真实工程普查共 2,685 个 `.cproject`、2,919 个前缀选项）显示真实工程
   **全部**是裸形态，因此当前无实际影响；读取现同时接受 `c.command.prefix` /
   `cpp.command.prefix`（本语言优先，其次裸形态，再次另一语言），使"没有 `rvGcc`
   选项的工程"不会因为写法不同而静默落到 GCC8 默认值。普查另确认：625 个无
@@ -667,7 +713,7 @@ reset+enable 的 CDC 实时输出、clean 阶段取消 rebuild 的终端行为�
   有声明。
 - **`-lm` 强制注入（MRS 2.3.0+ 行为）**：可执行工程配置库中没有 `m` 时，
   `objects.mk` 的 `LIBS` 行自动追加 `-lm`（实证：1.8.5–2.2.18 不加，
-  2.3.0/2.4.0/2.5.0 全加；LiteOS+IOTC 工程因 `libcjson` 缺 libm 链接失败即此故）。
+  2.3.0/2.4.0/2.5.0 全加；真实 RTOS 工程因 `libcjson` 缺 libm 链接失败即此故）。
 - **WCH 助手库位置**：`-lIQmath_RV32` / `-lprintf` / `-lprintfloat` 从
   `objects.mk` 移到链接 recipe 的 `$(LIBS)` 之后（MRS 2.5.0 与 1.9.2 金标一致）。
 - **工程树移除「工作区文件」节点**：树只显示扫描到的工程本身，不再列出工程
@@ -699,8 +745,8 @@ reset+enable 的 CDC 实时输出、clean 阶段取消 rebuild 的终端行为�
 
 ### 修复
 
-- **含括号的工程路径可编译**：路径段含 `(` / `)` 的 EVT 发布目录（例如
-  `CH592EVT_V1.9_(20261016)`）此前被 makefile 前置检查误判拒绝；经真实工程 + 打包
+- **含括号的工程路径可编译**：路径段含 `(` / `)` 的 EVT 发布目录（带括号版本后缀的
+  发布包目录名）此前被 makefile 前置检查误判拒绝；经真实工程 + 打包
   make 实证后放行（括号在 make 规则词与引号参数中均为字面量）。
 - **路径字符支持加固**（真实工程逐字符复制 + 打包 make 实编验证）：
   - **工程根**（无链接目录）`( ) ; % #` 全支持，反引号一律拒绝；
@@ -721,7 +767,7 @@ reset+enable 的 CDC 实时输出、clean 阶段取消 rebuild 的终端行为�
 
 ### 内部
 
-- `enhancements-test` 增路径字符永久回归：真实 FreeRTOS 含链接布局逐字符复制→重新
+- `enhancements-test` 增路径字符永久回归：真实工程含链接布局逐字符复制→重新
   生成→打包 make 实编的字符矩阵（第 8 节），以及 USER_OBJS / LIBS / 源文件名 / 根
   反引号的边界负向断言（第 9-12 节）；路径字符审查六轮复审闭环。
 
@@ -964,7 +1010,7 @@ IntelliSense 配置改外科手术式写入并支持多根工作区。回归：1
   BackupUpgrade_IAP 引用 HAL/LIB/Profile、BLE_UART 引用 APP/2g4，全树皆然）。IntelliSense
   链路的 `intellisenseArgs` 与 makefile 链路不同，没有 dropMissing 过滤，这些悬空路径进入
   compile commands 后被收进 MRVC 条目的 includePath 兜底数组，而 cpptools 会逐条校验
-  includePath 并在问题面板报一条 "Cannot find"——打开 CH585EVT/EXAM 这类多工程工作区时
+  includePath 并在问题面板报一条 "Cannot find"——打开多工程工作区（EVT 包典型形态）时
   报几十条。现三处 resolveList（include.paths/systempaths/include.files）与 makefile 链路
   一样补上 dropMissing 过滤，真实链接目标路径不受影响（`core/flags.ts`；`intellisense-test`
   新增 4 断言）。
@@ -993,7 +1039,7 @@ IntelliSense 配置改外科手术式写入并支持多根工作区。回归：1
   目标内部时，链接目标的 copyTree 未跳过导出目录，递归自拷贝直到路径超长失败、在共享目录留下
   嵌套垃圾。现提取 copyLinkedFolders 助手并同样传入 skipDir（`cmakeExport.ts`；新增 3 断言）。
 - **Exclude/Include From Build 写路径大小写折叠**（第四轮审查 P2）：查询/扫描侧已折叠比较，写回
-  却是字面比较——token 与磁盘拼写大小写不一致的工程（CH587 USBPD 式）"恢复编译"静默无效、重复
+  却是字面比较——token 与磁盘拼写大小写不一致的工程"恢复编译"静默无效、重复
   "排除"追加大小写变体重复 token。现 excludeResource/includeResource 按 win32 折叠匹配
   （`cproject.ts`；`exclude-test` 新增 7.5 组 5 断言）。
 - **扫描器对链接目录命名 entry 的令牌查找折叠大小写**（第四轮审查 P2）：.cproject 命名 entry 名与
@@ -1077,7 +1123,7 @@ IntelliSense 配置改外科手术式写入并支持多根工作区。回归：1
   CMakeLists.txt，而 copyTree 不跳过 `CMakeLists.txt`——凡原地生成过 CMakeLists 的工程，
   导出产物被含本机绝对路径的旧文件静默覆盖。现调换顺序：先 copyTree 后生成
   （`cmakeExport.ts`）。
-- **带命名 sourceEntry 的顶层文件夹 Exclude From Build 真实生效**（CH585 式工程）：CDT 联合
+- **带命名 sourceEntry 的顶层文件夹 Exclude From Build 真实生效**（真实工程实测形态）：CDT 联合
   语义下根 entry 里与目录同名的 token 只是"防双扫标记"，扫描器经命名 entry 把文件夹重新
   纳入——排除命令报告成功、构建照常编译。现排除 = 删除该命名 entry 并在根 entry 写入
   token（entry 不在时 token 即真实排除），恢复 = 重建 entry（MRS2 手写形态
@@ -1199,7 +1245,7 @@ IntelliSense 配置改外科手术式写入并支持多根工作区。回归：1
   （复审口径 50 条字面量 → 9 处调用点，2 种通用错误转发写法）；清理 14 个随
   EVT 功能移除而失效的字典键。
 - **2.x 配方完全对齐：金标回归 29/29 全绿**（此前 18 identical / 11 different）。对 MRS 2.1.0
-  代次（HarmonyOS 金标）补齐全部行级模板差异：链接/objcopy/lst 配方单 `@` 前缀且不再有配方
+  代次（2.1.0 金标样本）补齐全部行级模板差异：链接/objcopy/lst 配方单 `@` 前缀且不再有配方
   尾行、size 行无 `@`（构建输出可见）且尾行为空行、链接行携带 `-fmax-errors=20`、objcopy 参数
   单空格、clean 变量序（`$(OBJS)` 提前）且尾行为空行、objects.mk/sources.mk 头部布局与变量声明
   顺序（DEPS 组提前、`:=` 无尾随空格）、objects.mk 与 makefile 无文件尾换行、外链目录 subdir
@@ -1335,18 +1381,18 @@ IntelliSense 配置改外科手术式写入并支持多根工作区。回归：1
   ASCII 内容字节不变（金标比对基线不变）。实验证据：同一份中文路径 makefile，
   UTF-8 编译失败 / GBK 编译成功（真 make + GCC8）。引入首个运行时依赖
   iconv-lite（esbuild 已打入 bundle）
-- **金标比对 FreeRTOS 未通过**（外部审查发现）：EVT 工程的 include 列表可含
-  磁盘上不存在的目录（FreeRTOS 的 APP 条目），MRS 金标生成器会丢弃该条目
+- **金标比对一处未通过**（外部审查发现）：EVT 工程的 include 列表可含
+  磁盘上不存在的目录条目，MRS 金标生成器会丢弃该条目
   （8 条 -I 只输出 7 条），MRVC 此前全量输出导致逐字节比对失败。现 include
   类路径（C/C++/ASM 的 include.paths）对解析成功但磁盘不存在的目录按 MRS
-  行为丢弃；FreeRTOS 金标恢复逐字节一致（18 identical，比基线多 5 个文件）
-- **HarmonyOS 2.1.0 模板对齐**（外部审查发现）：CDT 不同代次的 subdir.mk
+  行为丢弃；金标恢复逐字节一致（18 identical，比基线多 5 个文件）
+- **2.1.0 模板对齐**（外部审查发现）：CDT 不同代次的 subdir.mk
   变量块顺序不同——MRS 1.9.2 金标为 SRCS → OBJS → DEPS 分组，MRS 2.1.0
   金标为每个 SRCS 后紧跟 DEPS。makefile 生成器新增 `blocksFirst` 模式，
   golden-check 按金标 header 的 MRS Version 选择（1.x=分组式 / 2.x=交错式）。
   同轮按金标逐行比对将 2.1.0 代次的头部布局（header 后无空行、`RM :=` 前
   单空行）、`all:` → `main-build` 递归目标、配方单 `@` 前缀、
-  `-fmax-errors=20` 位置、SECONDARY 块行尾一并对齐——HarmonyOS 剩余差异
+  `-fmax-errors=20` 位置、SECONDARY 块行尾一并对齐——2.1.0 金标剩余差异
   为 2.x 模板的行级细节（配方尾行、`size` 前缀、`objects.mk` 空行、
   `sources.mk` 声明顺序）与两处命令内空格，选项序列本身已一致。
   工具修复：golden-check 工具链前缀改为从金标文本推断（消除固定前缀假象）、
@@ -1442,7 +1488,7 @@ IntelliSense 配置改外科手术式写入并支持多根工作区。回归：1
   配置变更再生）、`tools/mrstools-test.js`（8 断言：六工具真实路径/缺失降级）、
   webview-test 扩至 28 断言（Sync 页面渲染/注入探针/双工程批量写回/宏冲突边界）、
   flash-test 扩至 29（反斜杠 fixture）
-- 12 套件全绿；mass-test 972 工程无回归；真实工具链编译 CH585 / CH32H417 双核通过
+- 12 套件全绿；mass-test 972 工程无回归；真实工具链编译验证（两个芯片家族、含双核工程）通过
 
 ## V0.1.2（2026-09-26）
 
@@ -1536,4 +1582,4 @@ IntelliSense 配置改外科手术式写入并支持多根工作区。回归：1
 - `tools/wlink-test.mjs`：PowerShell 桥脚本生成、load.wcfg 解析、真实 DLL 存在性、降级路径
 - `tools/flash-test.mjs`：cfg 内容/地址覆盖/verify-reset 组合/非法地址/真实模板形态
 - `tools/print-menus.mjs`：按节点类型打印右键菜单排序（开发辅助）
-- 既有测试全部更新并通过；真实工具链编译验证覆盖 CH585 / CH32V307 / CH32H417 双核
+- 既有测试全部更新并通过；真实工具链编译验证覆盖多个芯片家族（含双核工程）

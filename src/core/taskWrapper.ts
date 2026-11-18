@@ -81,6 +81,13 @@ export interface BuildWrapperSpec {
   recordFile: string;
   /** active install label for the "MRS: …" line (optional) */
   label?: string;
+  /** printed to the TERMINAL (record stays pure make output) when make exits
+   *  0. A static library has no unsilenced recipe — ar is @-silent and libs
+   *  have no size/lst steps — so the build would otherwise end right after
+   *  the make command line with no terminal-visible success indication
+   *  (user report 2026-11-18). Executable builds show the size table and
+   *  don't need it. */
+  doneLine?: string;
 }
 
 /** phase 1: make with stderr merged into one stream (the tee reads this).
@@ -162,6 +169,8 @@ export function buildTeeScript(spec: BuildWrapperSpec, buildCmd: string, dryCmd:
     `}\n` +
     // the record ends with every command the makefile drives — record only
     `$code = Invoke-Make ${psQuote(buildCmd)} $true\n` +
+    // success line (static libraries: terminal-only — see BuildWrapperSpec)
+    (spec.doneLine ? `if ($code -eq 0) { [Console]::Out.WriteLine(${psQuote(spec.doneLine)}) }\n` : '') +
     `$writer.WriteLine('')\n` +
     `$writer.WriteLine('===== All Build Commands (dry run: make -n -B) =====')\n` +
     `[void](Invoke-Make ${psQuote(dryCmd)} $false)\n` +
@@ -208,6 +217,8 @@ export function buildPosixBuildScript(spec: BuildWrapperSpec): string {
     `rm -f "$record"\n` +
     `${make} ${spec.makeArgs.join(' ')} 2>&1 | tee "$record"\n` +
     `code=\${PIPESTATUS[0]}\n` +
+    // success line (static libraries: terminal-only — see BuildWrapperSpec)
+    (spec.doneLine ? `if [ "$code" -eq 0 ]; then echo ${shQuote(spec.doneLine)}; fi\n` : '') +
     // the record ends with every command the makefile drives — record only
     `{\n` +
     `  echo ''\n` +

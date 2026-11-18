@@ -31,6 +31,7 @@
   "command.mrvc.rebuildWithMrs.title": "Rebuild With MRS IDE",
   "command.mrvc.cleanWithMrs.title": "Clean With MRS IDE",
   "command.mrvc.powerOffReset.title": "Power-Off Reset",
+  "command.mrvc.powerOutputRail.title": "Flash Power Output (3.3 V / 5 V)",
   "command.mrvc.auditProject.title": "Audit And Repair Project Configuration",
   "command.mrvc.syncProjectName.title": "Sync Project Name from Folder",
   "command.mrvc.syncSettings.title": "Sync Setting Across Projects",
