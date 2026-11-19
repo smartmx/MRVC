@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { ProjectStore, MrsProject, getInstall } from './projects';
+import { ppCheckAfterApply } from './ppCheck';
 import { Cproject } from '../core/cproject';
 import { TemplateData, readTemplate, writeTemplate } from '../core/templateFile';
 import { ADDRESS_RE, displayTargetPath } from '../core/flash';
@@ -593,37 +594,6 @@ export function jsonForScript(v: unknown): string {
   return JSON.stringify(v).replace(/</g, '\\u003C');
 }
 
-/**
- * Cross-page macro conflicts in the preprocessor defines: the same macro
- * name defined with different values in the C / C++ / Assembler pages.
- * Values compare as strings; a bare name counts as an empty value.
- */
-export function macroConflicts(values: Record<string, string>): string[] {
-  const lists: Array<[string, string]> = [
-    ['C Compiler', values['defs'] ?? ''],
-    ['C++ Compiler', values['cppdefs'] ?? ''],
-    ['Assembler', values['asmdefs'] ?? ''],
-  ];
-  const seen = new Map<string, { value: string; page: string }>();
-  const conflicts: string[] = [];
-  for (const [page, text] of lists) {
-    for (const line of text.split(/\r?\n/)) {
-      const t = line.trim();
-      if (!t) continue;
-      const eq = t.indexOf('=');
-      const name = (eq < 0 ? t : t.slice(0, eq)).trim();
-      const value = eq < 0 ? '' : t.slice(eq + 1).trim();
-      const prev = seen.get(name);
-      if (prev && prev.value !== value) {
-        conflicts.push(`${name}: ${prev.page} = "${prev.value || '(no value)'}"  vs  ${page} = "${value || '(no value)'}"`);
-      } else if (!prev) {
-        seen.set(name, { value, page });
-      }
-    }
-  }
-  return conflicts;
-}
-
 /** Macros MRS2/Eclipse expands inside list paths. Anything else is almost
  *  always a typo that would silently break the build, so Apply asks first. */
 const KNOWN_PATH_MACROS = new Set(['workspace_loc', 'ProjName', 'project', 'workspace_parent', 'build_type', 'config_name']);
@@ -1000,19 +970,6 @@ export class ConfigView {
       return;
     }
     if (m.command === 'save' && m.values) {
-      // cross-page macro conflict check: the same -D macro defined with
-      // DIFFERENT values in the C / C++ / Assembler preprocessor pages —
-      // legal per-compiler but almost always a mistake. Second-confirm.
-      const conflicts = macroConflicts(m.values);
-      if (conflicts.length) {
-        const apply = await vscode.window.showWarningMessage(
-          t('macroConflictTitle', conflicts.length),
-          { modal: true, detail: conflicts.join('\n') },
-          t('macroConflictApply'),
-          t('macroConflictBack')
-        );
-        if (apply !== t('macroConflictApply')) return;
-      }
       // path-entry gate: new rows in include/linker path lists must at least
       // be well-formed (hard error), and unknown macros / missing targets get
       // an MRS2-style "continue anyway?" prompt BEFORE anything is written
@@ -1124,6 +1081,13 @@ export class ConfigView {
         project.reload();
         this.panel.webview.postMessage({ command: 'saved' });
         vscode.window.showInformationMessage(t('propertiesSaved', path.basename(project.root)));
+        // preprocessor consistency (0.3.3, THE one trigger per user decision):
+        // after a successful save, automatically check the C / C++ / Assembler
+        // define lists for the same macro holding different values — any
+        // divergence opens the unify flow right here; a consistent state is
+        // completely silent (this replaces the old pre-save conflict modal,
+        // which had no fix path)
+        void ppCheckAfterApply(this.store, project);
       } catch (e) {
         vscode.window.showErrorMessage(t('propertiesSaveFailed', e instanceof Error ? e.message : String(e)));
       }

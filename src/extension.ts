@@ -11,6 +11,8 @@ import { InfoTreeProvider } from './vscode/infoTree';
 import { BuildManager } from './vscode/tasks';
 import { flashProject, openLinkUtility, openMrsTerminal } from './vscode/flash';
 import { linkOpActive, powerOffResetCmd } from './vscode/powerCycle';
+import { projectSearchScope, searchInScope, searchRootFrom, SearchItem } from './vscode/search';
+import { ppCheckCommand } from './vscode/ppCheck';
 import { auditRepairCmd } from './vscode/auditCmd';
 import { ConfigView } from './vscode/configView';
 import { addLinkedFolderCmd, removeLinkedFolderCmd, changeLinkedFolderPathCmd, revealProducts } from './vscode/linkedFolders';
@@ -86,11 +88,25 @@ function migrateLegacyState(context: vscode.ExtensionContext): void {
   }
 }
 
+/** first-run disclaimer (user request): one modal per installation, shown on
+ *  the first activation. The flag is set however the dialog is dismissed —
+ *  Esc counts as seen; reinstalling the extension starts over. */
+function showDisclaimerOnce(context: vscode.ExtensionContext): void {
+  if (context.globalState.get('mrvc.disclaimerShown')) return;
+  void vscode.window
+    .showInformationMessage(t('disclaimerTitle'), { modal: true, detail: t('disclaimerDetail') }, t('disclaimerAck'))
+    .then(() => void context.globalState.update('mrvc.disclaimerShown', true));
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   migrateLegacyState(context);
   // UI language: mrvc.language ('auto' follows VSCode's display language)
   const langCfg = vscode.workspace.getConfiguration('mrvc').get<string>('language', 'auto');
   setLanguage(langCfg === 'zh-cn' || (langCfg === 'auto' && vscodeLanguageIsChinese(vscode.env.language)) ? 'zh-cn' : 'en');
+  // first-run disclaimer: VSCode runs no code at install time, so first
+  // ACTIVATION is the earliest reliable point; globalState marks it seen —
+  // once per installation, never re-nags on window reloads
+  showDisclaimerOnce(context);
   // the strings are captured at activation — a language change needs a
   // window reload; offer the restart instead of leaving a stale UI silently
   context.subscriptions.push(
@@ -583,6 +599,44 @@ function startExtension(context: vscode.ExtensionContext): void {
   reg('mrvc.file.reveal', (item?: unknown) => revealInExplorer(item as never));
   reg('mrvc.file.rename', (item?: unknown) => renameNode(item as never));
   reg('mrvc.file.delete', (item?: unknown) => deleteNode(item as never));
+  // scoped text search (0.3.3): open the workbench Search view with "files
+  // to include" pre-set to the project root / folder path. No query and no
+  // triggerSearch are passed — the user types into the focused query box, so
+  // an empty query never sweeps the scope.
+  reg('mrvc.searchInProject', (item?: unknown) => {
+    // a project spans its root AND its linked folders (EVT trees keep
+    // HAL/LIB/StdPeriphDriver-style trees outside the project directory as
+    // links) — the scope is the root plus every linked folder's resolved
+    // physical directory (deduped, links inside the root dropped)
+    const proj = (item as { project?: MrsProject } | undefined)?.project ?? store.active;
+    if (!proj) {
+      vscode.window.showErrorMessage(t('noActiveProject'));
+      return;
+    }
+    searchInScope(projectSearchScope(proj.root, proj.cproject.linkedFolders.values()));
+  });
+  reg('mrvc.searchInFolder', (item?: unknown) => {
+    // command-palette / keybinding calls carry no tree item — fall back to
+    // the active project's root; with NOTHING to scope to the command must
+    // say so instead of dying silently (round55 P3)
+    const root = searchRootFrom(item as SearchItem | undefined, store.active?.root);
+    if (!root) {
+      vscode.window.showErrorMessage(t('noActiveProject'));
+      return;
+    }
+    searchInScope([root]);
+  });
+  // preprocessor consistency (0.3.3): manual check from the project tree —
+  // the same detection the properties page runs after Apply, but an
+  // all-clear is reported
+  reg('mrvc.checkPreprocessor', (item?: unknown) => {
+    const project = (item as { project?: MrsProject } | undefined)?.project ?? store.active;
+    if (!project) {
+      vscode.window.showErrorMessage(t('noActiveProject'));
+      return;
+    }
+    void ppCheckCommand(store, project);
+  });
   reg('mrvc.restoreRemoved', (item?: unknown) => restoreRemovedCmd(store, item));
   reg('mrvc.flagFile', (item?: unknown) => flagFileCmd(store, item));
   reg('mrvc.clearFlag', (item?: unknown) => clearFlagCmd(store, item));

@@ -6,12 +6,13 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Cproject } from '../core/cproject';
-import { MrsProjectFile, readProjectFile, linkedFolderMap } from '../core/projectFile';
+import { MrsProjectFile, readProjectFile, linkedFolderMap, watchableLinkedDirs } from '../core/projectFile';
 import { migrateLegacyCppNature } from '../core/projectType';
 import { readTemplate, TemplateData } from '../core/templateFile';
 import { selectInstall, InstallSelection, InstallFieldCheck, flavorLabel, launcherFileNames, mergeCustomToolchains, CustomToolchain, MrsInstall, selectToolchain, toolchainArchProblem, ToolchainInfo } from '../core/toolchain';
 import { findProjectRoots, isLegalProjectRoot } from '../core/discover';
 import { parseSolution } from '../core/solution';
+import { SOURCE_WATCHER_GLOB } from '../core/scan';
 import { t } from '../core/i18n';
 
 export class MrsProject {
@@ -610,6 +611,10 @@ export class ProjectStore implements vscode.Disposable {
         } catch {
           return;
         }
+        // the .project may have gained/lost/retargeted linked folders
+        // (Add/Remove Linked Folder, a MRS2-side edit) — re-align their
+        // watchers with the fresh state
+        this.syncLinkedWatchers(p);
         this._onDidChange.fire();
       }
     };
@@ -626,7 +631,7 @@ export class ProjectStore implements vscode.Disposable {
     // live OUTSIDE the workspace folders (the workspace-wide watcher in
     // watchWorkspaceSources cannot see them). Content EDITS don't change the
     // tree (same entry, same flags) — only create/delete do.
-    const srcWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{c,h,cpp,hpp,s,S}'));
+    const srcWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, SOURCE_WATCHER_GLOB));
     const srcBump = (uri: vscode.Uri) => this.noteTreeDirs(path.dirname(uri.fsPath));
     this.watchers.set(key, [
       watcher,
@@ -638,6 +643,54 @@ export class ProjectStore implements vscode.Disposable {
       srcWatcher.onDidDelete(srcBump),
       ...this.watchBuildDir(key, root),
     ]);
+    // linked folders OUTSIDE the root get their own watchers (they are not
+    // covered by any of the above); re-synced whenever the .project changes,
+    // because links can be added/removed/retargeted at any time
+    const p = this.projects.get(key);
+    if (p) this.syncLinkedWatchers(p);
+  }
+
+  /** linked-dir watchers per project: key = resolved absolute directory →
+   *  watcher + event disposables. Create/delete of source files there must
+   *  refresh the tree like everywhere else — before this, changes in the
+   *  external HAL/LIB/StdPeriphDriver-style trees were invisible until a
+   *  manual Refresh (user request 0.3.3). */
+  private readonly linkedWatchers = new Map<string, Map<string, vscode.Disposable[]>>();
+
+  /** re-align the linked-dir watchers with the project's CURRENT links:
+   *  dispose the stale, watch the new (an absent directory is skipped —
+   *  a broken/broken-yet link stays unwatched until it exists) */
+  private syncLinkedWatchers(p: MrsProject): void {
+    const key = ProjectStore.key(p.root);
+    let perKey = this.linkedWatchers.get(key);
+    if (!perKey) {
+      perKey = new Map();
+      this.linkedWatchers.set(key, perKey);
+    }
+    const wanted = new Set(watchableLinkedDirs(p.root, p.cproject.linkedFolders.values()));
+    for (const [dir, list] of [...perKey]) {
+      if (!wanted.has(dir)) {
+        for (const d of list) d.dispose();
+        perKey.delete(dir);
+      }
+    }
+    for (const dir of wanted) {
+      if (perKey.has(dir)) continue;
+      if (!fs.existsSync(dir)) continue;
+      const w = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(dir, SOURCE_WATCHER_GLOB));
+      const bump = (uri: vscode.Uri) => this.noteTreeDirs(path.dirname(uri.fsPath));
+      perKey.set(dir, [w, w.onDidCreate(bump), w.onDidDelete(bump)]);
+    }
+  }
+
+  private unwatchLinked(key: string): void {
+    const perKey = this.linkedWatchers.get(key);
+    if (perKey) {
+      for (const list of perKey.values()) {
+        for (const d of list) d.dispose();
+      }
+      this.linkedWatchers.delete(key);
+    }
   }
 
   /**
@@ -666,9 +719,7 @@ export class ProjectStore implements vscode.Disposable {
   private watchWorkspaceSources(): void {
     if (this.srcWatchers.length) return;
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
-      const watcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(folder, '**/*.{c,h,cpp,hpp,s,S}')
-      );
+      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, SOURCE_WATCHER_GLOB));
       const bump = (uri: vscode.Uri) => this.noteTreeDirs(path.dirname(uri.fsPath));
       this.srcWatchers.push(watcher, watcher.onDidCreate(bump), watcher.onDidDelete(bump));
     }
@@ -676,6 +727,7 @@ export class ProjectStore implements vscode.Disposable {
 
   private unwatchProject(root: string): void {
     const key = ProjectStore.key(root);
+    this.unwatchLinked(key);
     const list = this.watchers.get(key);
     if (list) {
       for (const d of list) d.dispose();
@@ -690,6 +742,14 @@ export class ProjectStore implements vscode.Disposable {
     this.watchers.clear();
     for (const d of this.srcWatchers) d.dispose();
     this.srcWatchers = [];
+    // linked-dir watchers are created by syncLinkedWatchers OUTSIDE the
+    // per-project lists — they must die with the store too (round53 P3-2)
+    for (const perKey of this.linkedWatchers.values()) {
+      for (const list of perKey.values()) {
+        for (const d of list) d.dispose();
+      }
+    }
+    this.linkedWatchers.clear();
     if (this.treeDirsTimer) clearTimeout(this.treeDirsTimer);
     this._onDidChange.dispose();
     this._onTreeDirsChanged.dispose();

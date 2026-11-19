@@ -13,6 +13,13 @@ import { listRemovedResources } from './projectFile';
 export const C_SOURCE_EXTS = ['c', 's', 'S'];
 export const CPP_SOURCE_EXTS = ['c', 's', 'S', 'cpp', 'C', 'cc', 'cxx'];
 
+/** brace-glob covering EVERY source extension the scanner accepts plus the
+ *  headers the tree lists. The file watchers must not cover fewer kinds
+ *  than the scanner — round53 P3-1: a hand-written glob missed .cc/.cxx/.C,
+ *  so new files of those kinds never refreshed the tree. Single source of
+ *  truth: extending CPP_SOURCE_EXTS automatically extends the watchers. */
+export const SOURCE_WATCHER_GLOB = `**/*.{${[...CPP_SOURCE_EXTS, 'h', 'hpp'].join(',')}}`;
+
 export interface LogicFile {
   /** path relative to project root (or linked-name rooted), posix separators */
   logicName: string;

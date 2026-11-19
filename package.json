@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "Unofficial, independent project — not developed or supported by WCH or MounRiver. MRVC opens, configures and builds MounRiver (MRS) projects for WCH MCUs directly in VSCode; for development and debugging use.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "smartmx",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -463,6 +463,21 @@
       {
         "command": "mrvc.powerOutputRail",
         "title": "%command.mrvc.powerOutputRail.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.searchInProject",
+        "title": "%command.mrvc.searchInProject.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.searchInFolder",
+        "title": "%command.mrvc.searchInFolder.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.checkPreprocessor",
+        "title": "%command.mrvc.checkPreprocessor.title%",
         "category": "MRVC"
       },
       {
@@ -987,6 +1002,11 @@
           "group": "folder@10"
         },
         {
+          "command": "mrvc.searchInFolder",
+          "when": "view == mrvc.projectExplorer && (viewItem == folder || viewItem == folder.excluded || viewItem == linkedFolder)",
+          "group": "folder@11"
+        },
+        {
           "command": "mrvc.file.newFile",
           "when": "view == mrvc.projectExplorer && viewItem == linkedFolder",
           "group": "linkdir@1"
@@ -1157,6 +1177,11 @@
           "group": "3_project@8"
         },
         {
+          "command": "mrvc.searchInProject",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
+          "group": "3_link@0"
+        },
+        {
           "command": "mrvc.addLinkedFolder",
           "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "3_link@1"
@@ -1215,6 +1240,11 @@
           "command": "mrvc.showCallAnalysis",
           "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "3_project@13"
+        },
+        {
+          "command": "mrvc.checkPreprocessor",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
+          "group": "3_project@14"
         },
         {
           "submenu": "mrvc.mrsOperations",

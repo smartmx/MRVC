@@ -555,20 +555,30 @@ await view.show(store.active);
     }
   }
 
-  // ---- cross-page macro conflict detection ----
-  const { macroConflicts } = require(path.join(__dirname, '..', 'out', 'vscode', 'configView.js'));
-  let r = macroConflicts({ defs: 'DEBUG=0\nFOO', cppdefs: 'DEBUG=0\nBAR', asmdefs: '' });
-  check('macro: same value across pages = no conflict', r.length === 0);
-  r = macroConflicts({ defs: 'DEBUG=0', cppdefs: 'DEBUG=1' });
-  check('macro: conflicting value detected with both page names', r.length === 1 && r[0].includes('DEBUG') && r[0].includes('C Compiler') && r[0].includes('C++ Compiler'));
-  r = macroConflicts({ defs: 'DEBUG', cppdefs: 'DEBUG=0' });
-  check('macro: bare name vs valued counts as conflict', r.length === 1);
-  r = macroConflicts({ defs: 'USE_A', cppdefs: 'USE_A' });
-  check('macro: both bare = no conflict', r.length === 0);
-  r = macroConflicts({ defs: 'X=1', cppdefs: 'X=2', asmdefs: 'X=3' });
-  check('macro: three-way conflict reported once per deviation', r.length === 2);
-  r = macroConflicts({ defs: 'abc=1', cppdefs: 'ABC=2' });
-  check('macro: names are case-sensitive', r.length === 0);
+  // ---- preprocessor consistency wiring (0.3.3, Apply-only trigger) ----
+  // the old pre-save macroConflicts modal is GONE; the check now runs AFTER
+  // a successful Apply (configView save handler -> ppCheckAfterApply) and
+  // the detection itself lives in core/ppConsistency (ppcheck-test covers it)
+  {
+    const compiled = fs.readFileSync(path.join(__dirname, '..', 'out', 'vscode', 'configView.js'), 'utf-8');
+    check('pp wiring: save handler calls ppCheckAfterApply', compiled.includes('ppCheckAfterApply'));
+    check('pp wiring: the pre-save conflict modal is removed', !compiled.includes('macroConflictTitle'));
+    const ppCompiled = fs.readFileSync(path.join(__dirname, '..', 'out', 'vscode', 'ppCheck.js'), 'utf-8');
+    check('pp wiring: check is silent when consistent (no prompt on the clean path)', ppCompiled.includes('if (!divergences.length)'));
+  }
+
+  // ---- first-run disclaimer wiring (once per installation) ----
+  {
+    const extSrc = fs.readFileSync(path.join(__dirname, '..', 'out', 'extension.js'), 'utf-8');
+    check('disclaimer: activation shows the modal and marks it seen via globalState', extSrc.includes('disclaimerShown') && extSrc.includes('showInformationMessage'));
+    // the guard precedes the dialog INSIDE showDisclaimerOnce (bundle-wide
+    // indexOf would compare against an earlier unrelated call site)
+    const fnStart = extSrc.indexOf('function showDisclaimerOnce');
+    const fnBody = extSrc.slice(fnStart, fnStart + 500);
+    check('disclaimer: seen flag short-circuits BEFORE the dialog (no re-nag on reload)', fnBody.indexOf('disclaimerShown') < fnBody.indexOf('showInformationMessage'));
+    const i18nCompiled = fs.readFileSync(path.join(__dirname, '..', 'out', 'core', 'i18n.js'), 'utf-8');
+    check('disclaimer: i18n carries title + detail + ack in both languages', ['disclaimerTitle', 'disclaimerDetail', 'disclaimerAck'].every((k) => i18nCompiled.includes(k)) && i18nCompiled.includes('我已知晓'));
+  }
 
   // ---- batch Clean All / Delete Output must respect the build guard ----
   // (a running `make all` and `make clean` on the same obj/ collided before)

@@ -755,9 +755,44 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   // properties / download settings pages
   downloadSettingsSaved: { en: 'MRVC: download settings saved ({0})', 'zh-cn': 'MRVC：下载设置已保存（{0}）' },
   downloadSettingsSaveFailed: { en: 'MRVC: failed to save download settings ({0})', 'zh-cn': 'MRVC：保存下载设置失败（{0}）' },
-  macroConflictTitle: { en: 'Macro definition conflict ({0}):', 'zh-cn': '宏定义冲突（{0} 个）：' },
-  macroConflictApply: { en: 'Apply anyway', 'zh-cn': '仍然保存' },
-  macroConflictBack: { en: 'Go back', 'zh-cn': '返回修改' },
+  // preprocessor consistency check (C / C++ / Assembler define lists) —
+  // triggered by the properties page's Apply + project right-click (user decision)
+  ppToolC: { en: 'C', 'zh-cn': 'C' },
+  ppToolCpp: { en: 'C++', 'zh-cn': 'C++' },
+  ppToolAsm: { en: 'Assembler', 'zh-cn': '汇编' },
+  ppValueEmpty: { en: '(no value)', 'zh-cn': '（无值）' },
+  ppCheckFailed: { en: 'MRVC: preprocessor check failed ({0})', 'zh-cn': 'MRVC：预处理宏一致性检测失败（{0}）' },
+  ppFlowBusy: {
+    en: 'A preprocessor unify flow is already open — finish it first.',
+    'zh-cn': '预处理宏统一流程已在进行中，请先完成当前流程。',
+  },
+  ppAllConsistent: {
+    en: '{0}: the C / C++ / Assembler preprocessor lists have no divergent macros.',
+    'zh-cn': '{0}：C / C++ / 汇编三份预处理宏列表无同名不同值宏。',
+  },
+  ppPickValueTitle: { en: 'Unify macro {0} — pick the value to write everywhere', 'zh-cn': '统一宏 {0} —— 选择要统一写入的值' },
+  ppPickValuePh: { en: 'Holders shown per value', 'zh-cn': '每个值旁标注当前使用的预处理器' },
+  ppFixSkip: { en: 'Skip this macro', 'zh-cn': '跳过该宏' },
+  ppPickToolsTitle: { en: 'Write {0} to which preprocessors?', 'zh-cn': '将 {0} 写入哪些预处理器？' },
+  ppPickToolsPh: {
+    en: 'Enter confirms — uncheck a list to skip it (absent macros are appended)',
+    'zh-cn': '回车确认；取消勾选可跳过某份列表（缺失的列表会补齐该宏）',
+  },
+  ppUnified: {
+    en: '{0} macro(s) unified in {1} — details in the MRVC Preprocessor output.',
+    'zh-cn': '已在 {1} 中统一 {0} 个宏的值，详情见 MRVC Preprocessor 输出。',
+  },
+  ppNoChange: { en: 'Nothing was changed.', 'zh-cn': '未做任何修改。' },
+  // first-run disclaimer (shown once per installation, on first activation)
+  disclaimerTitle: {
+    en: 'Unofficial, independent project — not developed or supported by WCH or MounRiver.',
+    'zh-cn': '非官方独立项目——并非由 WCH 或 MounRiver 开发或提供支持。',
+  },
+  disclaimerDetail: {
+    en: 'MRVC opens, configures and builds MounRiver (MRS) projects for WCH MCUs directly in VSCode; for development and debugging use.',
+    'zh-cn': 'MRVC 在 VSCode 中直接打开、配置和构建面向 WCH MCU 的 MounRiver（MRS）工程，仅供开发与调试使用。',
+  },
+  disclaimerAck: { en: 'I understand', 'zh-cn': '我已知晓' },
   propertiesSaved: { en: 'MRVC: project properties saved ({0})', 'zh-cn': 'MRVC：工程属性已保存（{0}）' },
   propertiesSaveFailed: { en: 'MRVC: failed to save configuration ({0})', 'zh-cn': 'MRVC：保存配置失败（{0}）' },
   propertiesXmlInvalid: {

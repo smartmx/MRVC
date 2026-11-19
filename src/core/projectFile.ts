@@ -74,6 +74,27 @@ export function linkedFolderMap(p: MrsProjectFile): Map<string, string> {
   return m;
 }
 
+/** Linked directories worth a FILE WATCHER: resolved absolute dirs that lie
+ *  OUTSIDE the project root (the root's own watcher covers everything inside
+ *  it), deduplicated case-insensitively on win32 (NTFS paths), empty entries
+ *  dropped. Directories that do not currently exist are KEPT in the list —
+ *  the watcher side decides whether an absent directory can be watched. */
+export function watchableLinkedDirs(root: string, dirs: Iterable<string>): string[] {
+  const norm = (p: string) => (process.platform === 'win32' ? p.replace(/\//g, path.sep).toLowerCase() : path.normalize(p));
+  const rootN = norm(root);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const dir of dirs) {
+    if (!dir) continue;
+    const dirN = norm(dir);
+    if (dirN === rootN || dirN.startsWith(rootN + path.sep)) continue;
+    if (seen.has(dirN)) continue;
+    seen.add(dirN);
+    out.push(dir);
+  }
+  return out;
+}
+
 /**
  * Append a linked folder to .project (in place) and save.
  * `target` may be outside the workspace; it will be expressed with

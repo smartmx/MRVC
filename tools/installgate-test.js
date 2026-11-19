@@ -461,7 +461,7 @@ const last = () => messages[messages.length - 1];
     let fullFires = 0;
     store.onDidChange(() => fullFires++);
     const outW = fakeWatchers.find((w) => w.pattern.includes('obj'));
-    const srcW = fakeWatchers.find((w) => /c,h,cpp/.test(w.pattern));
+    const srcW = fakeWatchers.find((w) => w.pattern.includes('cxx')); // round53: the glob is now derived from scan.CPP_SOURCE_EXTS
     const bumpObj = (name) => outW.handlers.change.forEach((fn) => fn({ fsPath: path.join(projRoot, 'obj', name) }));
     const createSrc = (name) => srcW.handlers.create.forEach((fn) => fn({ fsPath: path.join(projRoot, 'src', name) }));
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));

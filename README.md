@@ -20,7 +20,7 @@
 | 打开 MRS 工程 | 与 MRS 一致：**明确通过 `工程名.wvproj` 打开工程**（这是工程的标记与入口）。**合法性三文件**：`工程名.wvproj` + `.project`（可解析工程描述）+ `.cproject`（构建配置）**三者同时存在才进入发现树**——任一缺失的残缺目录（半删除/拷贝残留）会在发现阶段直接跳过；仅有 `.project` + `.cproject` 的 MRS1-era 旧目录不再进入树。**Open MRS Project / Solution 的文件过滤器只处理 `.wvproj` 与 `.wvsln`**（`.project`/`.cproject` 是附属文件，不是打开对象）；选中后在**新 VSCode 窗口**打开：选 `.wvproj` → 打开其所在目录并自动发现；选 `.wvsln` → 生成同名 `.code-workspace` 并在新窗口加载 solution；**打开整个 EVT/EXAM 目录用 VSCode 自带的 文件 → 打开文件夹**（扩展自动递归发现全部工程：最深 8 层嵌套）。**自动修复打包残留**：EVT 工程的链接文件夹若指向打包机器的绝对路径，首次打开时自动按"最近祖先+尾段"定位真实目录并回写为可移植的 `PARENT-N-PROJECT_LOC` 形式（与 MRS2 的 rewriteLinkedFolders 行为一致；MRS1 风格的 `<location>` 自动转换为 `<locationURI>`） |
 | Solution（工程组） | 支持 MRS 新增的 `.wvsln` 解决方案：**仅当显式打开 `.wvsln` 文件时启用**——Open MRS Project / Solution 选中该文件后，生成同名 `.code-workspace` 并在**新 VSCode 窗口**打开，打开 MRVC 视图时自动加载 solution；树中显示为 solution 节点，成员工程按 MRS2 的 `BuildOrder=` 行（缺省按文件行序）排列、每个成员都是完整工程节点。解析兼容 MRS2 的宽松语法；生成的 solution 与 MRS2 完全兼容 |
 | 生成 Solution | 树标题栏 `…` 菜单 → **Generate Solution From All Projects**：把当前已发现的全部工程生成一个 solution 并立即出现在树顶，MRS2 可直接打开 |
-| 工程树 | 活动栏 MRVC 容器内的 "Project Explorer"：标题栏 4 个按钮（**Open Mrs Project**（文件对话框）/ **Open Mrs Folder**（只选目录）/ 折叠全部 / **刷新**——外部改名/新增/删除的工程会被自动识别与清理）。工程 → 链接文件夹（蓝色名称）/ 实体目录 / **根级源文件** / 编译输出目录（红色）。树只显示扫描到的工程本身，不列工程目录之外的散落文件。**源文件自动刷新**：工作区与每个工程内的源文件新建/删除即时反映到树（400ms 防抖），配置文件有专属监听。**作用域刷新（0.3.0）**：文件新增/删除只重读所在目录的节点、编译结束后只刷新输出目录节点（编译期间树冻结）——不再整树重绘导致链接文件夹蓝↔白闪烁；配置文件变更仍触发工程重解析与全树刷新。**单击工程行即激活（0.3.0）**：选择即设为活动工程，Info/编译/下载随动 |
+| 工程树 | 活动栏 MRVC 容器内的 "Project Explorer"：标题栏 4 个按钮（**Open Mrs Project**（文件对话框）/ **Open Mrs Folder**（只选目录）/ 折叠全部 / **刷新**——外部改名/新增/删除的工程会被自动识别与清理）。工程 → 链接文件夹（蓝色名称）/ 实体目录 / **根级源文件** / 编译输出目录（红色）。树只显示扫描到的工程本身，不列工程目录之外的散落文件。**源文件自动刷新**：工作区与每个工程内的源文件新建/删除即时反映到树（400ms 防抖），**外部链接文件夹同样受监视（0.3.3）**——工程根之外的链接目录里增删源文件也会即时刷新（链接目录增删/改目标后自动重对齐监视），配置文件有专属监听。**作用域刷新（0.3.0）**：文件新增/删除只重读所在目录的节点、编译结束后只刷新输出目录节点（编译期间树冻结）——不再整树重绘导致链接文件夹蓝↔白闪烁；配置文件变更仍触发工程重解析与全树刷新。**单击工程行即激活（0.3.0）**：选择即设为活动工程，Info/编译/下载随动 |
 | 文件管理 | 树节点右键（每类节点独立菜单）：New File / New Folder / **Copy→Paste**（插件内剪贴板，同名自动 `- copy` 递增，文件夹递归复制）/ Copy Absolute Path / **Copy Project Relative Path**（`${workspace_loc:/${ProjName}/…}` 形式的 CDT 逻辑路径）/ Copy File Name / Rename / Delete（均带确认）/ Open Containing Folder。链接文件夹禁用 Rename/Delete（防误删真实目录），其内部文件操作不受限 |
 | 排除 / 恢复编译 | 文件与文件夹右键 **Exclude From Build / Include From Build**（与 MRS 的 Resource Configurations → Exclude from Build 等价）：写回 `.cproject` 活动配置（首个 `cconfiguration`）`sourceEntries` 的 `excluding` 列表（`|` 分隔；目录带命名 sourceEntry 时写目录内相对路径，否则写工程根相对全路径并在缺失时自动创建根 entry——与 MRS2 两种工程风格完全一致；**排除带命名 entry 的顶层文件夹 = 移除该 entry 并在根 entry 写入 token**，恢复时重建 entry）。被排除的资源在树中显示为**灰色**（行尾 `×`）并排在最后；下次编译生效；编译输出目录不可排除 |
 | 编译 / 重建 / 清理 | 每次构建前从 `.cproject` 重新生成 CDT 风格 makefile（**默认按当前 MounRiver 2.3+/2.5 风格**——含强制 `-lm`、WCH 助手库走链接 recipe；1.9.2/2.1.0 布局保留为显式复现模式，golden 29/29 逐字节一致），再调 MRS 自带 `make`；错误进问题面板（`$mrvcgcc` problemMatcher）。行内 Build / Rebuild / Download 按钮 + 右键菜单；Build All / Clean All / Solution 构建批处理（单工程失败不中断、可取消带汇总）；**Pre-build / Post-build steps** 参与生成的 makefile |
@@ -37,7 +37,8 @@
 | Switch Project Type (C/C++) | 工程右键一键切换工程类型：写 `.project` 的 CDT C++ nature（`org.eclipse.cdt.core.ccnature`——与 MRS2 的判定键一致；旧版 MRVC 写入的假 ID 会在工程加载时自动规范化），**切到 C++ 时同时把 C 选项整组镜像进 C++ 选项集**（值/列表按原写法逐项复制、元数据按 CDT/MRS2 原生形态补齐，另补 C++ 编译器的 `<inputType>`），因此 C++ 属性页显隐、`.cpp` 源扫描、makefile 生成与 MRS2 打开后的构建都联动正确。**范围**：只处理 `.cproject` 的第一个配置（多配置工程的其余配置不镜像）；切回 C 会移除转换新增的 `<inputType>`，镜像的 C++ 选项值保留（与 MRS2 的 C++ 工程两套选项并存的形态一致） |
 | 配置修改 | "MRVC: Project Properties"（右键工程打开）——**按 MRS2 原版属性页布局复刻**：Tool Settings 分类树（Target Processor / Optimization / Warnings / Debugging / Assembler / C Compiler / C Linker / C++ Compiler / C++ Linker / Create Flash Image / Listing / Print Size 各含子页），左侧树结构、右侧页内容、底部描述区 + **Apply/Cancel**。涵盖工具链（rvGcc）、全部 ISA 扩展、17 项警告、C/C++ 编译与链接、hex/bin 双产物、objcopy/objdump 细项、WCH 专属库（`-lprintf`/`-lprintfloat`/`-lIQmath_RV32`）。**Includes 页为表格编辑器**（Add/Edit/Delete，Add 支持 Project 内复选框树浏览或 Local Folder，工程内路径自动写成 MRS2 实际使用的 `${workspace_loc:/${ProjName}/…}` 宏）。仅 C++ 工程（Switch Project Type 切换）显示 C++ 配置页。**Apply 只写改动项**：按渲染时快照逐字段比对，用户未改动的选项在 `.cproject` 中保持**逐字节不变**（整表原值回发后文件字节相同）；既有但下拉表未收录的枚举值会显示为 `(current)` 并原值回写，不会被第一项覆盖；`.cproject` 严格结构与语法（标签栈/标记位置/实体/属性值/字符数据/XML 1.0 字符范围/严格 UTF-8 解码）校验不通过（严格 XML 解析器会拒绝）时 Apply **直接报错、不写任何字节** |
 | 外部链接文件夹 | 右键工程 → Add Linked Folder：同时更新 `.project`（linkedResources，支持 PARENT-N-PROJECT_LOC）与 `.cproject`（include 路径 + sourceEntries） |
-| **Sync Setting Across Projects** | 树标题栏 `…` 菜单打开专用页面（Properties 同款两级导航树）：123 个可同步编译开关（bool/enum）逐行带**同步选择框**（默认不勾）与值控件（值取自活动工程）；勾选后 Apply 批量写入全部工程（C++ 选项自动跳过 C 工程并计数、可取消、输出频道逐工程 [OK/FAIL] 汇总） |
+| **Sync Setting Across Projects** | 树标题栏 `…` 菜单打开专用页面（Properties 同款两级导航树）：140 个可同步编译开关（bool/enum，0.3.1 补齐 C++ 编译器/链接器与 picolibc 后）逐行带**同步选择框**（默认不勾）与值控件（值取自活动工程）；勾选后 Apply 批量写入全部工程（C++ 选项自动跳过 C 工程并计数、可取消、输出频道逐工程 [OK/FAIL] 汇总） |
+| **检测预处理宏一致性（0.3.3）** | 两个入口，同一检测：① 工程右键 Properties 属性页 **Apply** 保存成功后自动检测；② 工程右键 **Check Preprocessor Macros（检测预处理宏一致性）**手动检测（读盘上最新 .cproject，无发散明确报一致）。检测内容：C / C++ / 汇编三份 Defined symbols (-D) 列表里**同一个宏名被定义成不同值**时逐宏弹出统一流程（比较口径与原保存门禁一致：裸 `FOO` ≠ `FOO=1`；同列表同名重复项按 GCC 语义取最后一条）；Apply 路径三份一致则完全静默。统一流程：先选定要写入的值（每个取值旁标注当前哪些预处理器在用，可跳过该宏），再勾选写入哪些列表（默认三项全选，缺失的列表补齐追加、在场列表原地改写），每个宏确认即落盘并刷新工程，明细汇入 **MRVC Preprocessor** 输出面板；未提及的宏永不改动。原属性页保存前的冲突二次确认模态已移除（同一发散由统一流程处理） |
 | **IntelliSense 自动配置** | 自动生成每个工程的编译数据库（`.vscode/mrvc/cc/`）并维护 `c_cpp_properties.json`——c 文件的宏定义/头文件路径随工程精确解析，无需手动配置 includePath；**工程树点选工程即切换分析上下文**（cpptools 多数据库数组，≥1.23.5） |
 | MRS Tools 工具集 | **（仅 Windows 安装提供——Linux/macOS 的 MRS 不带这些 GUI 工具）** 树标题栏 `…` 菜单 → Tools 组（对齐 MRS2 Tools 菜单）：一键拉起 WCH-LinkUtility / WCH In-System Programmer (WchIspStudio) / WCH Touchkey Calibrate Tool / WCHGUIDesigner / HexBin Studio / Serial Port Debug Tool (COMTransmit)，分离进程启动；**当前生效的安装是 MRS3 时**（MRS2 没有该组件）额外多一项 **WCH 工具集（MRS3）** = WCHToolKit.exe |
 | WCH-LinkUtility | **（仅 Windows 安装提供）** 命令面板 **Open WCH-LinkUtility**：直接拉起 MRS2 自带的 GUI 下载器（调试器模式切换/固件升级等深度操作）；也已归入 `…` 菜单 Tools 组 |
@@ -75,11 +76,16 @@ npm run package      # 生成 mrvc-<version>.vsix（@vscode/vsce，--no-dependen
 - 命令行：`code --install-extension mrvc-X.Y.Z.vsix`（X.Y.Z 换成实际版本号；不要写 `<version>`，尖括号在 cmd 里是重定向符）
 - 直接把 `.vsix` 拖进扩展视图
 
-> `.vscodeignore` 已配置只打包 `out/extension.js`(+map)、`media/*.svg`、README、package.json；
-> 版本号升级后重新 `npm run package` 即可（输出文件名跟随 `package.json` 的 version）。
+> `.vscodeignore` 打包清单（以 `tools/verify-vsix.mjs` 的白名单为权威校验）：`out/extension.js`(+map)、
+> `package.json` + `package.nls.json` + `package.nls.zh-cn.json`、README、`media/*.svg`、`resources/icon.png`、
+> **vendor 运行时两棵树**——`vendor-ffi/node_modules/koffi`（wlink 桥 FFI：JS + 各平台 prebuild + 许可证）与
+> `vendor-serial/node_modules`（SDI 串口监视器 serialport 运行时 + N-API prebuild）。
+> 版本号升级后重新 `npm run package` 即可（输出文件名跟随 `package.json` 的 version），打包后跑 `npm run verify`。
 
 ## 使用
 
+> **首次激活会弹出免责声明**（每次安装仅一次）：MRVC 是**非官方独立项目**，并非由 WCH 或 MounRiver 开发或
+> 提供支持；它直接打开、配置和构建面向 WCH MCU 的 MounRiver（MRS）工程，仅供开发与调试使用。
 > **前置条件：一个 MounRiver 安装或一份纯工具链**（[mounriver.com](https://www.mounriver.com/)）。
 > MRVC 不自带工具链，而是复用 MounRiver 的 RISC-V 工具链（GCC8/12/15）、make、OpenOCD 与芯片库组件。
 > **Windows**：MRS2 / MRS3 IDE（装在 `C:\MounRiver\...` 可零配置自动探测）；**Linux**：MRS3 IDE
@@ -193,6 +199,7 @@ src/
     ├── configView.ts  # 工程属性 webview（MRS2 布局复刻：芯片选择器/Includes 表格/Download Settings）
     ├── intellisense.ts# .vscode 双库写入与工程上下文切换（cpptools 多数据库）
     ├── syncPage.ts    # Sync Setting Across Projects 页面（批量同步编译开关）
+    ├── ppCheck.ts     # 预处理宏一致性检测与统一流程（工程右键/打开提醒）
     ├── mrsTools.ts    # MRS2 Tools 工具启动器
     ├── fileOps.ts     # 文件管理右键（新建/复制/粘贴/重命名/删除/路径复制）
     ├── exclude.ts     # Exclude/Include From Build 命令与装饰数据

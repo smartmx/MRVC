@@ -81,6 +81,46 @@ check('unknown link name leaves .project untouched', before.equals(fs.readFileSy
   check('converted link resolves back to the original target', !!l2 && path.resolve(l2.location) === path.resolve(SRC_TARGET));
 }
 
+// watchable linked dirs (0.3.3, user request): the auto-refresh watchers
+// must cover linked folders OUTSIDE the project root only — links that
+// resolve inside the root are already covered by the root's own watcher,
+// duplicates are useless, empty entries are noise. Case-insensitive on win32.
+{
+  const { watchableLinkedDirs } = require('../out/core/projectFile.js');
+  const ROOTW = 'C:\\work\\Demo';
+  const dirs = watchableLinkedDirs(ROOTW, [
+    'C:\\work\\LIB\\HAL', // outside -> kept
+    'C:\\work\\Demo\\inc', // inside the root -> dropped
+    'C:\\WORK\\LIB\\HAL', // case variant of the first -> dropped (win32)
+    '', // empty -> dropped
+    'C:/work/LIB/StdPeriphDriver', // forward slashes kept verbatim (dedupe by folded form)
+    'C:\\work\\LIB\\HAL', // exact duplicate -> dropped
+  ]);
+  check(
+    'watchable: outside dirs kept once, inside-root/case-dupes/empty dropped',
+    JSON.stringify(dirs) === JSON.stringify(['C:\\work\\LIB\\HAL', 'C:/work/LIB/StdPeriphDriver'])
+  );
+  check('watchable: no links -> empty list', JSON.stringify(watchableLinkedDirs(ROOTW, [])) === '[]');
+  check(
+    'watchable: forward-slash link matching the root (different separator) is dropped',
+    JSON.stringify(watchableLinkedDirs('C:/work/Demo', ['C:/work/Demo/inc'])) === '[]'
+  );
+}
+
+// round53 P3-1/P3-2: the watchers must cover every source kind the scanner
+// accepts (glob DERIVED from CPP_SOURCE_EXTS, so the two cannot drift) and
+// the store's dispose must free the linked watchers with everything else
+{
+  const { SOURCE_WATCHER_GLOB, CPP_SOURCE_EXTS } = require('../out/core/scan.js');
+  check('watcher glob covers every scanner extension', CPP_SOURCE_EXTS.every((e) => SOURCE_WATCHER_GLOB.includes(e)));
+  check('watcher glob covers the listed headers too', SOURCE_WATCHER_GLOB.includes('h') && SOURCE_WATCHER_GLOB.includes('hpp'));
+  check('watcher glob includes the round53-missed kinds (C/cc/cxx)', ['cc', 'cxx', ',C,'].every((k) => SOURCE_WATCHER_GLOB.includes(k)));
+  const projectsSrc = fs.readFileSync(path.join(__dirname, '..', 'out', 'vscode', 'projects.js'), 'utf-8');
+  check('compiled watchers use the derived glob (no hand-written leftovers)', !projectsSrc.includes('{c,h,cpp,hpp,s,S}') && projectsSrc.includes('SOURCE_WATCHER_GLOB'));
+  const disposeBody = projectsSrc.slice(projectsSrc.indexOf('dispose() {'), projectsSrc.indexOf('dispose() {') + 900);
+  check('store dispose() frees the linked watchers too', disposeBody.includes('linkedWatchers') && disposeBody.includes('clear()'));
+}
+
 fs.rmSync(WS, { recursive: true, force: true });
 console.log(failures ? `\n${failures} FAILURES` : '\nall linkedfolder tests passed');
 process.exit(failures ? 1 : 0);
