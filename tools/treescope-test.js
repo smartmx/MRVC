@@ -10,6 +10,8 @@ const fs = require('fs');
 const path = require('path');
 
 let failures = 0;
+// async command-layer checks drain before the exit (see the tail)
+const asyncChecks = [];
 const check = (name, cond) => {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
   if (!cond) failures++;
@@ -40,15 +42,30 @@ class EventEmitter {
   }
 }
 
+const uiMessages = [];
+let clipboardText = '';
+let warnPick = undefined;
+const executedCommands = [];
 const vscodeStub = {
   TreeItem,
   TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
   EventEmitter,
-  Uri: { file: (p) => ({ fsPath: p }), joinPath: () => ({ fsPath: '' }) },
+  Uri: { file: (p) => ({ fsPath: p, with: (o) => ({ fsPath: p, ...o }) }), joinPath: () => ({ fsPath: '' }) },
   ThemeColor: class {},
   ThemeIcon: class {},
   FileDecoration: class {},
   workspace: { workspaceFolders: [] },
+  commands: { executeCommand: (cmd) => executedCommands.push(cmd) },
+  env: { clipboard: { writeText: async (t) => { clipboardText = t; } } },
+  // command-layer tests (excludeFromBuild/includeFromBuild/deleteNode)
+  // report through these; the recorders let assertions prove no error path
+  // fired. showWarningMessage returns the modal button picked via warnPick.
+  window: {
+    showErrorMessage: (m) => uiMessages.push(['error', String(m)]),
+    showInformationMessage: (m) => uiMessages.push(['info', String(m)]),
+    showWarningMessage: async () => warnPick,
+    setStatusBarMessage: (m) => uiMessages.push(['status', String(m)]),
+  },
 };
 
 const Module = require('module');
@@ -507,5 +524,286 @@ ${cfgBlock('c1', 'obj1')}${cfgBlock('c2', 'obj')}\t</storageModule>
   );
 }
 
-process.exit(failures ? 1 : 0);
+// --- the PRODUCTION end of the same contract: the tree must actually fold
+//     real rows into every variant the menus consume (`file.src`,
+//     `file.src.excluded`, `file.excluded`, `folder.excluded`) — without
+//     these, a gating fix can silently aim at values nothing produces
+{
+  const ctx = path.join(WS, 'Ctx');
+  fs.rmSync(ctx, { recursive: true, force: true });
+  fs.mkdirSync(path.join(ctx, 'lib'), { recursive: true });
+  fs.mkdirSync(path.join(ctx, 'inc'), { recursive: true });
+  fs.mkdirSync(path.join(ctx, 'lib2'), { recursive: true });
+  // four linked folders: StdLib pre-excluded by a root token (the state whole-
+  // link Exclude From Build writes once the named entry is gone), LibX clean,
+  // Alias targeting a directory INSIDE the project root (round1 P2: its logic
+  // name differs from the physical dir the link points at), RemovedLink
+  // logically removed from the project (round1 P1: must not render a row)
+  const stdTarget = path.join(WS, 'CtxLibs', 'StdLib');
+  const libxTarget = path.join(WS, 'CtxLibs', 'LibX');
+  const rmTarget = path.join(WS, 'CtxLibs', 'RemovedLink');
+  const aliasTarget = path.join(ctx, 'Shared');
+  fs.mkdirSync(stdTarget, { recursive: true });
+  fs.mkdirSync(libxTarget, { recursive: true });
+  fs.mkdirSync(rmTarget, { recursive: true });
+  fs.mkdirSync(path.join(aliasTarget, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(stdTarget, 's.c'), 'int s(){return 3;}\n');
+  fs.writeFileSync(path.join(libxTarget, 'x.c'), 'int x(){return 4;}\n');
+  fs.writeFileSync(path.join(aliasTarget, 'sub', 'x.c'), 'int a(){return 5;}\n');
+  fs.writeFileSync(path.join(ctx, 'main.c'), 'int main(){return 0;}\n');
+  fs.writeFileSync(path.join(ctx, 'lib', 'helper.c'), 'int h(){return 1;}\n');
+  fs.writeFileSync(path.join(ctx, 'inc', 'app.h'), '#pragma once\n');
+  fs.writeFileSync(path.join(ctx, 'lib2', 'x.c'), 'int x(){return 2;}\n');
+  fs.writeFileSync(
+    path.join(ctx, '.project'),
+    `<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>Ctx</name><linkedResources>` +
+    `<link><name>StdLib</name><type>2</type><location>${stdTarget}</location></link>` +
+    `<link><name>LibX</name><type>2</type><location>${libxTarget}</location></link>` +
+    `<link><name>Alias</name><type>2</type><location>${aliasTarget}</location></link>` +
+    `<link><name>RemovedLink</name><type>2</type><location>${rmTarget}</location></link>` +
+    `</linkedResources></projectDescription>`
+  );
+  // logical removal via the real API so the filter XML shape stays canonical
+  require('../out/core/projectFile.js').appendRemovedResource(ctx, '', 'removedlink', true);
+  fs.writeFileSync(
+    path.join(ctx, '.cproject'),
+    `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<?fileVersion 4.0.0?><cproject storage_type_id="org.eclipse.cdt.core.XmlProjectDescriptionStorage">
+\t<storageModule moduleId="org.eclipse.cdt.core.settings">
+\t\t<cconfiguration id="c1">
+\t\t\t<storageModule moduleId="cdtBuildSystem" version="4.0.0">
+\t\t\t\t<configuration id="c1" artifactName="Ctx" artifactExtension="elf" name="obj">
+\t\t\t\t\t<toolChain superClass="ilg.gnumcueclipse.managedbuild.cross.riscv.toolchain.elf.release"/>
+\t\t\t\t\t<sourceEntries><entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name="" excluding="lib/helper.c|inc/app.h|lib2|StdLib"/></sourceEntries>
+\t\t\t\t</configuration>
+\t\t\t</storageModule>
+\t\t</cconfiguration>
+\t</storageModule>
+</cproject>
+`,
+    'utf-8'
+  );
+  const { MrsProject } = require('../out/vscode/projects.js');
+  const mpCtx = new MrsProject(ctx);
+  const ctxStore = {
+    all: [mpCtx],
+    solutionList: [],
+    active: mpCtx,
+    onDidChange: () => ({ dispose() {} }),
+    onTreeDirsChanged: () => ({ dispose() {} }),
+    reloadProject: () => {},
+  };
+  const provider3 = new ProjectTreeProvider(ctxStore, { joinPath: () => ({ fsPath: '' }) });
+  const ctxProj = provider3.getChildren().find((n) => n.nodeType === 'project');
+  const lvl = provider3.getChildren(ctxProj);
+  // context values are folded in getTreeItem (VSCode calls it per rendered
+  // row) — the raw getChildren node still carries the bare nodeType, so every
+  // assertion below must pass through the real getChildren → getTreeItem pipe
+  const rendered = (p, prov) => {
+    prov = prov || provider3;
+    const top = prov.getChildren(prov.getChildren().find((n) => n.nodeType === 'project'));
+    const node = top.find((n) => n.fsPath === p) ||
+      prov.getChildren(top.find((n) => n.fsPath === path.dirname(p))).find((n) => n.fsPath === p);
+    return node ? prov.getTreeItem(node).contextValue : `<row not found: ${p}>`;
+  };
+  check('ctx: non-excluded .c folds to file.src', rendered(path.join(ctx, 'main.c')) === 'file.src',
+    rendered(path.join(ctx, 'main.c')));
+  check('ctx: excluded .c folds to file.src.excluded', rendered(path.join(ctx, 'lib', 'helper.c')) === 'file.src.excluded',
+    rendered(path.join(ctx, 'lib', 'helper.c')));
+  check('ctx: excluded .h folds to file.excluded', rendered(path.join(ctx, 'inc', 'app.h')) === 'file.excluded',
+    rendered(path.join(ctx, 'inc', 'app.h')));
+  check('ctx: non-excluded folder stays plain folder', rendered(path.join(ctx, 'lib')) === 'folder',
+    rendered(path.join(ctx, 'lib')));
+  check('ctx: excluded folder folds to folder.excluded', rendered(path.join(ctx, 'lib2')) === 'folder.excluded',
+    rendered(path.join(ctx, 'lib2')));
+  // whole-link state (0.3.5, MRS parity): the link row itself folds
+  check('ctx: excluded whole link folds to linkedFolder.excluded', rendered(stdTarget) === 'linkedFolder.excluded',
+    rendered(stdTarget));
+  check('ctx: clean link folds to plain linkedFolder', rendered(libxTarget) === 'linkedFolder',
+    rendered(libxTarget));
+  // round1 P1: a logically-removed ROOT-level link must not render a row
+  // removedlink (lowercase) vs the RemovedLink link — the scanner folds on
+  // Windows, so the TREE must fold too or the row would render while its
+  // content is already hidden (round2 P3; on case-sensitive platforms both
+  // sides treat the spelling as a different name and the row stays)
+  const expectRfHidden = process.platform === 'win32';
+  check(
+    'ctx: removed root link row is hidden (case-folded on win32)',
+    lvl.some((n) => n.fsPath === rmTarget) === !expectRfHidden,
+    JSON.stringify(lvl.filter((n) => n.nodeType === 'linkedFolder').map((n) => n.fsPath)));
+  // round1 P2 fixture: the root-internal link Alias points at ctx/Shared —
+  // rendered before its exclusion round below
+  check('ctx: root-internal link folds to plain linkedFolder', rendered(aliasTarget) === 'linkedFolder',
+    rendered(aliasTarget));
+
+  // command layer end-to-end: Exclude/Include From Build must accept the
+  // linkedFolder ROW (the glue that historically whitelisted file/folder)
+  const { excludeFromBuild, includeFromBuild } = require('../out/vscode/exclude.js');
+  const { Cproject } = require('../out/core/cproject.js');
+  const libxRow = lvl.find((n) => n.fsPath === libxTarget);
+  asyncChecks.push(
+    excludeFromBuild(ctxStore, libxRow)
+      .then(() => {
+        const toks = Cproject.load(ctx).sourceEntries.find((e) => e.name === '').excluding;
+        check('link-cmd: exclude wrote the link-name token', toks.includes('LibX'), toks.join('|'));
+        check('link-cmd: no error path fired', !uiMessages.some(([k]) => k === 'error'), JSON.stringify(uiMessages));
+        // fresh provider = post-reload state: the row now folds excluded
+        const mp2 = new MrsProject(ctx);
+        const prov2 = new ProjectTreeProvider({ all: [mp2], solutionList: [], active: mp2, onDidChange: () => ({ dispose() {} }), onTreeDirsChanged: () => ({ dispose() {} }) }, { joinPath: () => ({ fsPath: '' }) });
+        check('link-cmd: row refolds to linkedFolder.excluded', rendered(libxTarget, prov2) === 'linkedFolder.excluded',
+          rendered(libxTarget, prov2));
+        const row2 = prov2.getChildren(prov2.getChildren().find((n) => n.nodeType === 'project')).find((n) => n.fsPath === libxTarget);
+        return includeFromBuild(ctxStore, row2).then(() => {
+          const toks2 = Cproject.load(ctx).sourceEntries.find((e) => e.name === '').excluding;
+          check('link-cmd: include removed the token again', !toks2.includes('LibX'), toks2.join('|'));
+          const mp3 = new MrsProject(ctx);
+          const prov3 = new ProjectTreeProvider({ all: [mp3], solutionList: [], active: mp3, onDidChange: () => ({ dispose() {} }), onTreeDirsChanged: () => ({ dispose() {} }) }, { joinPath: () => ({ fsPath: '' }) });
+          check('link-cmd: row refolds back to plain linkedFolder', rendered(libxTarget, prov3) === 'linkedFolder',
+            rendered(libxTarget, prov3));
+          // round1 P2: a link INSIDE the project root must exclude under its
+          // LINK name (Alias), not the physical directory it points at (Shared)
+          const aliasRow = prov3.getChildren(prov3.getChildren().find((n) => n.nodeType === 'project')).find((n) => n.fsPath === aliasTarget);
+          const { scanSources: scanSrc } = require('../out/core/scan.js');
+          return excludeFromBuild(ctxStore, aliasRow).then(() => {
+            const toks3 = Cproject.load(ctx).sourceEntries.find((e) => e.name === '').excluding;
+            check('alias-cmd: exclude wrote the LINK name', toks3.includes('Alias') && !toks3.includes('Shared'), toks3.join('|'));
+            const scanAfter = [...scanSrc(Cproject.load(ctx)).values()].flat().map((x) => x.logicName);
+            check('alias-cmd: link logic tree dropped from scan', !scanAfter.includes('Alias/sub/x.c'), scanAfter.join(','));
+            check('alias-cmd: the physical directory keeps scanning', scanAfter.includes('Shared/sub/x.c'), scanAfter.join(','));
+            const mp4 = new MrsProject(ctx);
+            const prov4 = new ProjectTreeProvider({ all: [mp4], solutionList: [], active: mp4, onDidChange: () => ({ dispose() {} }), onTreeDirsChanged: () => ({ dispose() {} }) }, { joinPath: () => ({ fsPath: '' }) });
+            check('alias-cmd: row refolds to linkedFolder.excluded', rendered(aliasTarget, prov4) === 'linkedFolder.excluded',
+              rendered(aliasTarget, prov4));
+            const row4 = prov4.getChildren(prov4.getChildren().find((n) => n.nodeType === 'project')).find((n) => n.fsPath === aliasTarget);
+            return includeFromBuild(ctxStore, row4).then(() => {
+              const toks4 = Cproject.load(ctx).sourceEntries.find((e) => e.name === '').excluding;
+              check('alias-cmd: include removed the Alias token', !toks4.includes('Alias'), toks4.join('|'));
+              const scanBack = [...scanSrc(Cproject.load(ctx)).values()].flat().map((x) => x.logicName);
+              check('alias-cmd: link logic tree scans again', scanBack.includes('Alias/sub/x.c'), scanBack.join(','));
+              // round2 P2: a CHILD under the root-internal link must key on the
+              // LINK logic path (Alias/sub/x.c), not the physical path its
+              // fsPath suggests — the linkedName has to propagate down
+              const mp5 = new MrsProject(ctx);
+              const prov5 = new ProjectTreeProvider({ all: [mp5], solutionList: [], active: mp5, onDidChange: () => ({ dispose() {} }), onTreeDirsChanged: () => ({ dispose() {} }) }, { joinPath: () => ({ fsPath: '' }) });
+              const proj5 = prov5.getChildren().find((n) => n.nodeType === 'project');
+              const aliasRow5 = prov5.getChildren(proj5).find((n) => n.fsPath === aliasTarget);
+              const subRow5 = prov5.getChildren(aliasRow5).find((n) => n.fsPath === path.join(aliasTarget, 'sub'));
+              const xcRow5 = prov5.getChildren(subRow5).find((n) => n.fsPath === path.join(aliasTarget, 'sub', 'x.c'));
+              check('alias-child: descendant rows carry the link root', !!xcRow5 && xcRow5.linkedName === 'Alias', `${!!subRow5}/${!!xcRow5}/${xcRow5 && xcRow5.linkedName}`);
+              return excludeFromBuild(ctxStore, xcRow5).then(() => {
+                const toks5 = Cproject.load(ctx).sourceEntries.find((e) => e.name === '').excluding;
+                // the token lands in the root entry (full path) OR — when the
+                // whole-link include round rebuilt the paired named entry — in
+                // the named `Alias` entry (folder-relative, MRS2 convention);
+                // either way the LINK logic tree must be the target
+                const cpAfter = Cproject.load(ctx);
+                const rootTok = cpAfter.sourceEntries.find((e) => e.name === '').excluding;
+                const aliasEntry = cpAfter.sourceEntries.find((e) => e.name === 'Alias');
+                const aliasTok = aliasEntry ? aliasEntry.excluding : [];
+                const wroteLink =
+                  (rootTok.includes('Alias/sub/x.c') && !rootTok.includes('Shared/sub/x.c')) || aliasTok.includes('sub/x.c');
+                check('alias-child: exclude wrote the LINK logic token', wroteLink, `root=[${rootTok.join('|')}] alias=[${aliasTok.join('|')}]`);
+                const scan5 = [...scanSrc(Cproject.load(ctx)).values()].flat().map((x) => x.logicName);
+                check('alias-child: link logic file dropped from scan', !scan5.includes('Alias/sub/x.c'), scan5.join(','));
+                check('alias-child: physical file keeps scanning', scan5.includes('Shared/sub/x.c'), scan5.join(','));
+                const mp6 = new MrsProject(ctx);
+                const prov6 = new ProjectTreeProvider({ all: [mp6], solutionList: [], active: mp6, onDidChange: () => ({ dispose() {} }), onTreeDirsChanged: () => ({ dispose() {} }) }, { joinPath: () => ({ fsPath: '' }) });
+                const proj6 = prov6.getChildren().find((n) => n.nodeType === 'project');
+                const aliasRow6 = prov6.getChildren(proj6).find((n) => n.fsPath === aliasTarget);
+                const xcRow6 = prov6.getChildren(prov6.getChildren(aliasRow6).find((n) => n.fsPath === path.join(aliasTarget, 'sub'))).find((n) => n.fsPath === path.join(aliasTarget, 'sub', 'x.c'));
+                prov6.getTreeItem(xcRow6);
+                check('alias-child: row folds to file.src.excluded', xcRow6.contextValue === 'file.src.excluded', xcRow6.contextValue);
+                return includeFromBuild(ctxStore, xcRow6).then(() => {
+                  const toks6 = Cproject.load(ctx).sourceEntries.find((e) => e.name === '').excluding;
+                  check('alias-child: include removed the LINK logic token', !toks6.includes('Alias/sub/x.c'), toks6.join('|'));
+                  const scan6 = [...scanSrc(Cproject.load(ctx)).values()].flat().map((x) => x.logicName);
+                  check('alias-child: link logic file scans again', scan6.includes('Alias/sub/x.c'), scan6.join(','));
+                  // round3 P2: the remaining three consumers (Remove / Copy
+                  // Project Relative Path / Compile Single File) must key on
+                  // the link logic path too — placed BEFORE the alias-removed
+                  // round, which hides the sub row from expansion
+                  const { copyProjectRelativePath, deleteNode } = require('../out/vscode/fileOps.js');
+                  const { nodeLogicPath: nlp } = require('../out/vscode/logicPath.js');
+                  const { objectTargetFor } = require('../out/core/makefile.js');
+                  const i18nMod = require('../out/core/i18n.js');
+                  const mp8 = new MrsProject(ctx);
+                  const prov8 = new ProjectTreeProvider({ all: [mp8], solutionList: [], active: mp8, onDidChange: () => ({ dispose() {} }), onTreeDirsChanged: () => ({ dispose() {} }) }, { joinPath: () => ({ fsPath: '' }) });
+                  const proj8 = prov8.getChildren().find((n) => n.nodeType === 'project');
+                  const subRow8 = prov8.getChildren(prov8.getChildren(proj8).find((n) => n.fsPath === aliasTarget)).find((n) => n.fsPath === path.join(aliasTarget, 'sub'));
+                  const xcRow8 = prov8.getChildren(subRow8).find((n) => n.fsPath === path.join(aliasTarget, 'sub', 'x.c'));
+                  check('ops-seam: nodeLogicPath on the row is the link logic file', nlp(xcRow8) === 'Alias/sub/x.c', nlp(xcRow8));
+                  check('ops-seam: link logic file targets Alias/sub/x.o', objectTargetFor('Alias/sub/x.c') === 'Alias/sub/x.o');
+                  clipboardText = '';
+                  return copyProjectRelativePath(xcRow8).then(() => {
+                    check('ops: copy relative yields the link logic path', clipboardText === '${workspace_loc:/${ProjName}/Alias/sub/x.c}', clipboardText);
+                    warnPick = i18nMod.t('remove');
+                    const mp9 = new MrsProject(ctx);
+                    const prov9 = new ProjectTreeProvider({ all: [mp9], solutionList: [], active: mp9, onDidChange: () => ({ dispose() {} }), onTreeDirsChanged: () => ({ dispose() {} }) }, { joinPath: () => ({ fsPath: '' }) });
+                    const subRow9 = prov9.getChildren(prov9.getChildren(prov9.getChildren().find((n) => n.nodeType === 'project')).find((n) => n.fsPath === aliasTarget)).find((n) => n.fsPath === path.join(aliasTarget, 'sub'));
+                    const xcRow9 = prov9.getChildren(subRow9).find((n) => n.fsPath === path.join(aliasTarget, 'sub', 'x.c'));
+                    return deleteNode(xcRow9).then(() => {
+                      const rem = require('../out/core/projectFile.js').listRemovedResources(ctx).find((r) => r.name === 'x.c');
+                      check('ops: remove wrote parentLogic=Alias/sub', !!rem && rem.parentLogic === 'Alias/sub' && !rem.isFolder, JSON.stringify(rem));
+                      const scan8 = [...scanSrc(Cproject.load(ctx)).values()].flat().map((x) => x.logicName);
+                      check('ops: removed link file out of scan, physical stays', !scan8.includes('Alias/sub/x.c') && scan8.includes('Shared/sub/x.c'), scan8.join(','));
+                    });
+                  });
+                  // second manifestation: logical removal UNDER the link must
+                  // hide the expanded child (the tree's parentLogic used to
+                  // resolve to the physical directory and miss the entry)
+                  require('../out/core/projectFile.js').appendRemovedResource(ctx, 'Alias', 'sub', true);
+                  const mp7 = new MrsProject(ctx);
+                  const prov7 = new ProjectTreeProvider({ all: [mp7], solutionList: [], active: mp7, onDidChange: () => ({ dispose() {} }), onTreeDirsChanged: () => ({ dispose() {} }) }, { joinPath: () => ({ fsPath: '' }) });
+                  const proj7 = prov7.getChildren().find((n) => n.nodeType === 'project');
+                  const aliasRow7 = prov7.getChildren(proj7).find((n) => n.fsPath === aliasTarget);
+                  const childNames = prov7.getChildren(aliasRow7).map((n) => n.label);
+                  check('alias-removed: removed sub folder hidden in expansion', !childNames.includes('sub'), JSON.stringify(childNames));
+                  const scan7 = [...scanSrc(Cproject.load(ctx)).values()].flat().map((x) => x.logicName);
+                  check('alias-removed: scan agrees with the tree', !scan7.includes('Alias/sub/x.c') && scan7.includes('Shared/sub/x.c'), scan7.join(','));
+                });
+              });
+            });
+          });
+        });
+      })
+      .catch((e) => {
+        failures += 1;
+        console.log(`FAIL  link-cmd: threw — ${e && e.message}`);
+      })
+      .finally(() => fs.rmSync(ctx, { recursive: true, force: true }))
+  );
+}
+
+// --- menu when-clauses must cover every context value the tree can produce
+// (user report: .c files lost Include/Exclude From Build — 0.3.4 introduced
+// `file.src` for the compile menu but the exclude/include gating still listed
+// only the bare `file`/`folder` variants, so `file.src` and `file.src.excluded`
+// matched nothing) ---
+{
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const items = pkg.contributes.menus['view/item/context'];
+  const whenOf = (cmd) => (items.find((i) => i.command === cmd) || {}).when || '';
+  // extract the viewItem alternation from the anchored regex form and rebuild
+  // a REAL regex — the same semantics VSCode applies to `viewItem =~ /…/`
+  const rxOf = (when) => {
+    const m = when.match(/viewItem =~ \/\^\((.*?)\)\$\//);
+    return m ? new RegExp('^(' + m[1] + ')$') : null;
+  };
+  const excl = rxOf(whenOf('mrvc.excludeFromBuild'));
+  const incl = rxOf(whenOf('mrvc.includeFromBuild'));
+  check('menu: exclude gating parses as the anchored regex form', !!excl);
+  check('menu: include gating parses as the anchored regex form', !!incl);
+  for (const v of ['file', 'file.src', 'folder', 'linkedFolder']) {
+    check(`menu: Exclude From Build shows on ${v}`, !!excl && excl.test(v));
+    check(`menu: Exclude From Build hidden on ${v}.excluded`, !!excl && !excl.test(`${v}.excluded`));
+  }
+  for (const v of ['file.excluded', 'file.src.excluded', 'folder.excluded', 'linkedFolder.excluded']) {
+    check(`menu: Include From Build shows on ${v}`, !!incl && incl.test(v));
+  }
+  for (const v of ['file', 'file.src', 'folder', 'linkedFolder', 'outputFile', 'products', 'project', 'solution']) {
+    check(`menu: Include From Build hidden on ${v}`, !!incl && !incl.test(v));
+  }
+}
+
+Promise.all(asyncChecks).then(() => process.exit(failures ? 1 : 0));
 })();

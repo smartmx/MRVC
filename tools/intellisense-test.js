@@ -84,6 +84,60 @@ const { readProjectFile, addLinkedFolder, removeLinkedFolder } = require('../out
   check('contextDatabases: non-referencing project gets canonical fallback (lowest root wins)', dbs[2].length === 1 && dbs[2][0].file === 'F:/common/S.c' && dbs[2][0].arguments[0] === 'a2');
 }
 
+// excluded files must keep their IntelliSense entries (user report
+// 2026-11-20: an excluded *same_16bit_char.c variant fell out of the db and
+// cpptools downgraded it to the folder-level includePath) — and the language
+// kind must come from the SAME classifier the build uses (a local ext table
+// here handed .Cxx to the C compiler)
+{
+  const base = path.join(__dirname, '..', '.scratch', 'intellisense-excl');
+  const proj = path.join(base, 'proj');
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.mkdirSync(path.join(proj, 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'main.c'), 'int main(){return 0;}\n');
+  fs.writeFileSync(path.join(proj, 'alt.c'), 'int alt(){return 1;}\n');
+  fs.writeFileSync(path.join(proj, 'variant.Cxx'), 'int v(){return 2;}\n');
+  fs.writeFileSync(path.join(proj, 'lib', 'sib.c'), 'int sib(){return 3;}\n');
+  fs.writeFileSync(path.join(proj, 'lib', 'helper.c'), 'int h(){return 4;}\n');
+  fs.writeFileSync(
+    path.join(proj, '.project'),
+    '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>Ctx</name>' +
+      '<natures><nature>org.eclipse.cdt.core.cnature</nature><nature>org.eclipse.cdt.core.ccnature</nature></natures>' +
+      '<filteredResources></filteredResources></projectDescription>'
+  );
+  fs.writeFileSync(
+    path.join(proj, '.cproject'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n' +
+      '<entry excluding="lib/helper.c|alt.c" flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>\n' +
+      '</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+  );
+  const cpX = Cproject.load(proj);
+  const tcX = {
+    name: 'GCC8', dir: 'C:/tc', compilerC: 'C:/tc/bin/riscv-none-embed-gcc.exe', compilerCpp: 'C:/tc/bin/riscv-none-embed-g++.exe',
+    linkerC: 'gcc', linkerCpp: 'g++', debugger: 'gdb', objcopy: 'o', objdump: 'o', size: 's', prefix: 'riscv-none-embed-',
+  };
+  const plainMap = scanSources(cpX);
+  const plainFiles = [...plainMap.values()].flat().map((f) => f.logicName);
+  check('excl-db: plain scan (build path) still drops excluded', !plainFiles.includes('alt.c') && !plainFiles.includes('lib/helper.c'), plainFiles.join(','));
+  const entriesX = buildCompileEntries(cpX, tcX);
+  const byFile = (suffix) => entriesX.find((e) => e.file.replace(/\\/g, '/').endsWith(suffix));
+  check('excl-db: root-token-excluded alt.c has an entry', !!byFile('alt.c'));
+  check('excl-db: dir-token-excluded helper.c has an entry', !!byFile('lib/helper.c'));
+  const total = [...scanSources(cpX, { includeExcluded: true }).values()].reduce((n, v) => n + v.length, 0);
+  check(`excl-db: one entry per file incl. excluded (${entriesX.length}/${total})`, entriesX.length === total && total === 5);
+  const helper = byFile('lib/helper.c');
+  const sib = byFile('lib/sib.c');
+  check(
+    'excl-db: excluded file inherits the sibling parse parameters',
+    !!helper && !!sib && JSON.stringify(helper.arguments.slice(0, -1)) === JSON.stringify(sib.arguments.slice(0, -1))
+  );
+  const main = byFile('main.c');
+  const variant = byFile('variant.Cxx');
+  check('excl-db: .c entry uses the C compiler', !!main && main.arguments[0] === path.resolve(tcX.compilerC));
+  check('excl-db: case-variant .Cxx entry uses the C++ compiler', !!variant && variant.arguments[0] === path.resolve(tcX.compilerCpp));
+  fs.rmSync(base, { recursive: true, force: true });
+}
+
 const HAS_LED = !!PROJ;
 
 if (HAS_LED) {
@@ -93,8 +147,12 @@ if (HAS_LED) {
     linkerC: 'gcc', linkerCpp: 'g++', debugger: 'gdb', objcopy: 'o', objdump: 'o', size: 's', prefix: 'riscv-none-embed-',
   };
   const entries = buildCompileEntries(cp, tc);
-  const srcCount = [...scanSources(cp).values()].reduce((n, v) => n + v.length, 0);
-  check(`one entry per source (${entries.length}/${srcCount})`, entries.length === srcCount && srcCount > 0);
+  // the db covers the build universe INCLUDING excluded files (0.3.5) — the
+  // same universe scanSources reports with includeExcluded
+  const srcCount = [...scanSources(cp, { includeExcluded: true }).values()].reduce((n, v) => n + v.length, 0);
+  check(`one entry per source incl. excluded (${entries.length}/${srcCount})`, entries.length === srcCount && srcCount > 0);
+  const buildOnly = [...scanSources(cp).values()].reduce((n, v) => n + v.length, 0);
+  check(`plain scanSources (build path) stays exclusion-filtered (${buildOnly} < ${srcCount})`, buildOnly <= srcCount);
   const c1 = entries.find((e) => e.file.endsWith('.c'));
   check('entry carries the real project define', c1.arguments.includes('-DDEBUG=0'));
   check('entry carries resolved absolute -I paths', c1.arguments.some((a) => a.startsWith('-I') && /[A-Z]:[\\/]/.test(a)));

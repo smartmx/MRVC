@@ -6,6 +6,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ProjectStore, MrsProject, MrsSolution } from './projects';
 import { classifySourceExt, isLogicExcluded } from '../core/scan';
+import { foldPathOnPlatform } from '../core/cproject';
+import { nodeLogicPath } from './logicPath';
 import { RemovedResource, listRemovedResources } from '../core/projectFile';
 import { toPosix } from '../core/macros';
 import { themeColorFor } from '../core/colorMarks';
@@ -42,6 +44,12 @@ export class TreeNode extends vscode.TreeItem {
     this.resourceUri = fresh.resourceUri;
   }
 }
+
+/**
+ * The LOGIC path a tree row keys on — lives in ./logicPath (no vscode-class
+ * dependencies, see there); re-exported for the tree's own consumers.
+ */
+export { nodeLogicPath } from './logicPath';
 
 /**
  * Tree decorations: linked (virtual) folders get a blue tint + hover
@@ -451,7 +459,7 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     }
     // exclude/include menu visibility rides on contextValue
     if (
-      (el.nodeType === 'file' || el.nodeType === 'folder') &&
+      (el.nodeType === 'file' || el.nodeType === 'folder' || el.nodeType === 'linkedFolder') &&
       el.project &&
       el.fsPath &&
       // EVERY configuration's output directory, not just the active one —
@@ -459,7 +467,10 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       // "Exclude From Build" (it would write nonsense tokens into .cproject)
       !el.project.outputDirs.some((d) => el.fsPath!.startsWith(d + path.sep))
     ) {
-      const logic = el.project.logicPathOf(el.fsPath);
+      // linked rows (the link itself and everything under it) key on the
+      // LINK's logic root — logicPathOf would resolve a root-internal link
+      // target to the physical directory name and miss the token (round1/2 P2)
+      const logic = nodeLogicPath(el);
       if (logic && isLogicExcluded(el.project.cproject, logic)) {
         el.contextValue = `${el.contextValue}.excluded`;
       }
@@ -510,8 +521,12 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 
     if (el.nodeType === 'project') {
       const nodes: TreeNode[] = [];
+      // logically-removed root-level names (filteredResources) — hoisted so
+      // the LINK loop can honour them too (round1 P1: a removed root-level
+      // link still rendered as an expandable row)
+      const removedRoot = new Set(listRemovedResources(proj.root).filter((r) => !r.parentLogic).map((r) => foldPathOnPlatform(r.name)));
       for (const link of proj.projectFile.linkedResources) {
-        if (link.type === 2) {
+        if (link.type === 2 && !removedRoot.has(foldPathOnPlatform(link.name))) {
           nodes.push(
             this.cached(
               new TreeNode(
@@ -534,9 +549,11 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       } catch {
         // ignore
       }
-      const linkedNames = new Set(proj.projectFile.linkedResources.map((l) => l.name));
+      const linkedNames = new Set(proj.projectFile.linkedResources.map((l) => foldPathOnPlatform(l.name)));
       // logically-removed resources (filteredResources) are invisible
-      const removedRoot = new Set(listRemovedResources(proj.root).filter((r) => !r.parentLogic).map((r) => r.name));
+      // (removedRoot computed above, before the link loop; folded keys —
+      // hand-edited filters sometimes spell the name with a different case,
+      // and the scanner already folds its removal match — round2 P3)
       const isNodeExcluded = (fsPath: string): boolean => {
         const logic = proj.logicPathOf(fsPath);
         return !!logic && isLogicExcluded(proj.cproject, logic);
@@ -551,8 +568,8 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
             e.isDirectory() &&
             !e.name.startsWith('.') &&
             e.name !== proj.cproject.configName &&
-            !linkedNames.has(e.name) &&
-            !removedRoot.has(e.name)
+            !linkedNames.has(foldPathOnPlatform(e.name)) &&
+            !removedRoot.has(foldPathOnPlatform(e.name))
         )
         .map((e) => ({ e, full: path.join(proj.root, e.name) }))
         .sort((a, b) => {
@@ -565,7 +582,7 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       // must show them too; project management files (.wvproj/.template/
       // .launch) stay hidden; excluded ones sink below the included ones
       const rootFiles = entries
-        .filter((e) => e.isFile() && !e.name.startsWith('.') && !/\.(wvproj|template|launch)$/i.test(e.name) && !removedRoot.has(e.name))
+        .filter((e) => e.isFile() && !e.name.startsWith('.') && !/\.(wvproj|template|launch)$/i.test(e.name) && !removedRoot.has(foldPathOnPlatform(e.name)))
         .map((e) => ({ e, full: path.join(proj.root, e.name) }))
         .sort((a, b) => {
           const ex = (isNodeExcluded(a.full) ? 1 : 0) - (isNodeExcluded(b.full) ? 1 : 0);
@@ -610,21 +627,33 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       }
       // excluded-from-build resources (files and folders) sort last, so the
       // compiled sources stay grouped at the top; dirs before files, then by name
+      // logic paths under a LINK row key on the link's logic root (round2 P2:
+      // logicPathOf resolves a root-internal link target to the physical name)
+      const logicOfPath = (fsPath: string): string | undefined => {
+        if (el.linkedName) {
+          const rel = path.relative(el.fsPath!, fsPath);
+          return [el.linkedName, ...rel.split(path.sep)].join('/');
+        }
+        return proj.logicPathOf(fsPath);
+      };
       const isNodeExcluded = (fsPath: string): boolean => {
-        const logic = proj.logicPathOf(fsPath);
+        const logic = logicOfPath(fsPath);
         return !!logic && isLogicExcluded(proj.cproject, logic);
       };
-      // logically-removed entries under THIS folder are invisible
-      const parentLogic = toPosix(proj.logicPathOf(el.fsPath!) ?? '');
+      // logically-removed entries under THIS folder are invisible (folded:
+      // hand-edited or MRS-side filters sometimes spell names with a
+      // different case than the disk — round2 P3)
+      const parentLogic = toPosix(el.linkedName ?? proj.logicPathOf(el.fsPath!) ?? '');
+      const parentLogicKey = foldPathOnPlatform(parentLogic);
       const removedHere = new Set(
         listRemovedResources(proj.root)
-          .filter((r) => r.parentLogic === parentLogic)
-          .map((r) => r.name)
+          .filter((r) => foldPathOnPlatform(toPosix(r.parentLogic)) === parentLogicKey)
+          .map((r) => foldPathOnPlatform(r.name))
       );
       return this.recordChildren(
         el,
         entries
-          .filter((e) => !e.name.startsWith('.') && !removedHere.has(e.name))
+          .filter((e) => !e.name.startsWith('.') && !removedHere.has(foldPathOnPlatform(e.name)))
           .map((e) => ({ e, full: path.join(el.fsPath!, e.name) }))
           .sort((a, b) => {
             const ex = (isNodeExcluded(a.full) ? 1 : 0) - (isNodeExcluded(b.full) ? 1 : 0);
@@ -640,7 +669,8 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
                   e.name,
                   e.isDirectory() ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
                   full,
-                  proj
+                  proj,
+                  el.linkedName
                 )
               )
           )

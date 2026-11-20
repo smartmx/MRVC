@@ -25,7 +25,9 @@ function appliesTo(when, node) {
   const eq = [...when.matchAll(/viewItem == ([\w.]+)/g)].map((m) => m[1]);
   if (eq.length) return eq.includes(node);
   const rx = when.match(/viewItem =~ \/\^\((.*?)\)\$\//);
-  if (rx) return rx[1].split('|').includes(node);
+  // alternation members may carry regex escapes (`file\.src`) — strip them so
+  // the comparison is against the plain context-value names
+  if (rx) return rx[1].split('|').map((s) => s.replace(/\\(.)/g, '$1')).includes(node);
   return false;
 }
 

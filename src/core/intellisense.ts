@@ -20,7 +20,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Cproject, foldPathOnPlatform } from './cproject';
 import { ToolchainInfo } from './toolchain';
-import { scanSources } from './scan';
+import { scanSources, classifySourceExt } from './scan';
 import { intellisenseArgs } from './flags';
 
 export interface CompileCommandEntry {
@@ -28,9 +28,6 @@ export interface CompileCommandEntry {
   file: string;
   arguments: string[];
 }
-
-const ASM_EXTS = new Set(['s', 'S']);
-const CPP_EXTS = new Set(['cpp', 'C', 'cc', 'cxx']);
 
 /** picolibc headers live under the toolchain's sysroot. GCC expands
  * `--specs=picolibc.specs` into `-isystem <root>/picolibc/riscv-wch-elf/
@@ -62,9 +59,12 @@ function makeEntry(cp: Cproject, tc: ToolchainInfo, kind: 'c' | 'cpp' | 'asm', f
   };
 }
 
+/** the language kind of a logic name — the SAME classifier the scanner and
+ * makefile generator use, so a case-variant C++ spelling (.Cxx/.CPP/…) is
+ * parsed by cpptools as C++ (a local ext table here silently dropped the
+ * 0.3.4 multi-char variants and handed them to the C compiler) */
 function kindOf(logicName: string): 'c' | 'cpp' | 'asm' {
-  const ext = logicName.slice(logicName.lastIndexOf('.') + 1);
-  return ASM_EXTS.has(ext) ? 'asm' : CPP_EXTS.has(ext) ? 'cpp' : 'c';
+  return classifySourceExt(logicName)?.kind ?? 'c';
 }
 
 /** platform-stable file identity: case-insensitive only on Windows */
@@ -75,10 +75,14 @@ function fileKey(file: string): string {
 /**
  * One entry per scanned source file — ALL files the project compiles,
  * regardless of where they physically live (project root or linked
- * folder); classification happens later, across projects.
+ * folder), PLUS the excluded ones (user report 2026-11-20: an excluded
+ * variant file fell out of the database and cpptools downgraded it to the
+ * folder-level includePath). Excluded files get the same project option
+ * model as their included siblings; classification happens later, across
+ * projects. Logically removed (filteredResources) files stay invisible.
  */
 export function buildCompileEntries(cp: Cproject, tc: ToolchainInfo): CompileCommandEntry[] {
-  const map = scanSources(cp);
+  const map = scanSources(cp, { includeExcluded: true });
   const out: CompileCommandEntry[] = [];
   for (const [, files] of map.entries()) {
     for (const f of files) {

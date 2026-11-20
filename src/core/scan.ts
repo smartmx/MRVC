@@ -80,7 +80,12 @@ export function classifySourceExt(name: string): { kind: 'c' | 'cpp' | 'asm'; ex
  * that folder). Linked folders are always scanned, whether or not they have
  * their own sourceEntry.
  */
-export function scanSources(cp: Cproject): LogicDirMap {
+export function scanSources(cp: Cproject, opts?: { includeExcluded?: boolean }): LogicDirMap {
+  // includeExcluded (IntelliSense db only — the BUILD path must never pass
+  // it): excluded files stay out of makefiles but still need parse
+  // parameters, or cpptools falls back to folder-level includePath for them
+  // (user report 2026-11-20: the excluded *same_16bit_char.c variants)
+  const includeExcluded = opts?.includeExcluded === true;
   const isCpp = cp.isCpp;
   const result: LogicDirMap = new Map();
   // EVERY configuration's output directory is build output, not source
@@ -92,15 +97,28 @@ export function scanSources(cp: Cproject): LogicDirMap {
   const { rootTokens, dirTokens } = exclusionTokens(cp);
 
   // logically-removed resources (.project filteredResources — MRS2's Remove
-  // command) are invisible to the tree AND to the build: skip matches here
-  const removed = listRemovedResources(cp.projectRoot).map((r) =>
-    (r.parentLogic ? toPosix(r.parentLogic) + '/' : '') + r.name
-  );
-  const removedSet = new Set(removed);
+  // command) are invisible to the tree AND to the build: skip matches here.
+  // A FOLDER removal also hides everything under it (round1 P1: only the
+  // folder row itself matched the exact set, so a deleted User/SomeFolder
+  // still contributed User/SomeFolder/child.c to the build while the tree
+  // showed nothing); Windows folds case, mirroring the exclude-token match
+  const removedExact = new Set<string>();
+  const removedDirPrefixes = new Set<string>();
+  for (const r of listRemovedResources(cp.projectRoot)) {
+    const logic = (r.parentLogic ? toPosix(r.parentLogic) + '/' : '') + r.name;
+    if (r.isFolder) removedDirPrefixes.add(fold(toPosix(logic)) + '/');
+    else removedExact.add(fold(toPosix(logic)));
+  }
+  const isRemoved = (logicName: string): boolean => {
+    const f = fold(toPosix(logicName));
+    if (removedExact.has(f)) return true;
+    for (const p of removedDirPrefixes) if (f.startsWith(p)) return true;
+    return false;
+  };
 
   const addFile = (logicName: string, fullpath: string) => {
     const l = toPosix(logicName);
-    if (removedSet.has(l)) return; // logically removed (filteredResources)
+    if (isRemoved(l)) return; // logically removed (filteredResources)
     const dir = path.posix.dirname(l);
     const key = dir === '.' ? '' : dir;
     if (!result.has(key)) result.set(key, []);
@@ -128,7 +146,7 @@ export function scanSources(cp: Cproject): LogicDirMap {
   }
 
   // 1. real project tree (root entry tokens apply project-wide)
-  walk(cp.projectRoot, cp.projectRoot, '', rootTokens, configNames, isCpp, addFile, logicBases);
+  walk(cp.projectRoot, cp.projectRoot, '', rootTokens, configNames, isCpp, addFile, logicBases, includeExcluded);
 
   // 1.5 real-folder named entries re-scan their subtree: a root entry that
   // excludes the folder (CH32V307 RT-Thread excludes 'Core') relies on the
@@ -153,7 +171,7 @@ export function scanSources(cp: Cproject): LogicDirMap {
     } catch {
       /* unreadable root — keep the entry's own spelling */
     }
-    walk(dir, dir, base, entry.excluding, configNames, isCpp, addFile, []);
+    walk(dir, dir, base, entry.excluding, configNames, isCpp, addFile, [], includeExcluded);
   }
 
   // 2. linked folders, always scanned (MRS scans basic.linkedFolders)
@@ -181,7 +199,7 @@ export function scanSources(cp: Cproject): LogicDirMap {
       }
     }
     const tokens = [...rootTokens.filter((t) => !(fold(t) === fold(name) && named.has(fold(name)))), ...linkedTokens];
-    walk(target, target, name, tokens, configNames, isCpp, addFile, []);
+    walk(target, target, name, tokens, configNames, isCpp, addFile, [], includeExcluded);
   }
 
   // deterministic ordering: files by logicName
@@ -199,7 +217,8 @@ function walk(
   configNames: Set<string>,
   isCpp: boolean,
   add: (logicName: string, fullpath: string) => void,
-  logicBases: Array<[string, string[]]> = []
+  logicBases: Array<[string, string[]]> = [],
+  includeExcluded = false
 ): void {
   let entries: fs.Dirent[];
   try {
@@ -225,10 +244,10 @@ function walk(
         }
       }
     }
-    if (excludedHere) continue;
+    if (excludedHere && !includeExcluded) continue;
     if (ent.isDirectory()) {
       if (ent.name.startsWith('.') || SKIP_DIRS.has(ent.name) || configNames.has(fold(ent.name))) continue;
-      walk(fsRoot, full, logic, excluded, configNames, isCpp, add, logicBases);
+      walk(fsRoot, full, logic, excluded, configNames, isCpp, add, logicBases, includeExcluded);
     } else if (ent.isFile()) {
       const cl = classifySourceExt(ent.name);
       if (!cl) continue;

@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { TreeNode } from './tree';
+import { nodeLogicPath } from './logicPath';
 import { ProjectStore, MrsProject, msg } from './projects';
 import { appendRemovedResource, clearRemovedResource, listRemovedResources } from '../core/projectFile';
 import { Cproject } from '../core/cproject';
@@ -146,24 +147,17 @@ export async function copyProjectRelativePath(node: TreeNode): Promise<void> {
   const fsPath = node.fsPath;
   if (!fsPath) return;
   const proj = node.project;
-  let logic: string;
-  if (proj) {
-    const rel = path.relative(proj.root, fsPath);
-    if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
-      logic = toPosix(rel);
-    } else {
-      // outside the project root: must live under a linked folder
-      const link = proj.projectFile.linkedResources.find(
-        (l) => l.type === 2 && (fsPath === l.location || fsPath.startsWith(l.location + path.sep))
-      );
-      if (!link) {
-        vscode.window.showErrorMessage(t('relPathNoProject', path.basename(fsPath)));
-        return;
-      }
-      logic = toPosix(path.join(link.name, path.relative(link.location, fsPath)));
-    }
-  } else {
+  if (!proj) {
     vscode.window.showErrorMessage(t('nodeNotInProject'));
+    return;
+  }
+  // logic keying via nodeLogicPath: a root-INTERNAL link and its children key
+  // on the LINK name — the physical relative path would paste a CDT path that
+  // does not exist (${ProjName}/Shared/... vs the scanned ${ProjName}/Alias/...)
+  // (round3 P2)
+  const logic = nodeLogicPath(node);
+  if (!logic) {
+    vscode.window.showErrorMessage(t('relPathNoProject', path.basename(fsPath)));
     return;
   }
   const text = `\${workspace_loc:/\${ProjName}/${logic}}`;
@@ -233,8 +227,11 @@ export async function deleteNode(node: TreeNode): Promise<void> {
       return;
     }
     try {
-      const withLogic = project as { logicPathOf?: (f: string) => string | undefined; root: string };
-      const logic = withLogic.logicPathOf?.(node.fsPath);
+      // the removal must name the LOGIC resource the row shows — a root-
+      // internal link's child keys on the link name, not the physical
+      // directory (round3 P2: Remove wrote Shared/sub, Alias/sub/x.c kept
+      // building while the tree showed nothing)
+      const logic = nodeLogicPath(node);
       const parentLogicRaw = logic ? path.posix.dirname(toPosix(logic)) : '';
       appendRemovedResource(project.root, parentLogicRaw === '.' ? '' : parentLogicRaw, name, isDir);
       refresh();
@@ -300,14 +297,16 @@ export async function restoreRemovedCmd(store: ProjectStore, node?: unknown): Pr
  * IDEs key on.
  */
 export async function flagFileCmd(_store: ProjectStore, item?: unknown): Promise<void> {
-  const node = item as { fsPath?: string; project?: MrsProject } | undefined;
+  const node = item as { fsPath?: string; project?: MrsProject; nodeType?: string; linkedName?: string } | undefined;
   if (!node?.fsPath) return;
   if (!node.project?.root) {
     // defensive: a tree node with an fsPath but no owning project
     vscode.window.showErrorMessage(t('flagNotInProject'));
     return;
   }
-  const logic = node.project.logicPathOf(node.fsPath);
+  // a linked row keys on its LINK logic root (round1/2 P2 — logicPathOf
+  // would resolve a root-internal link target to the physical directory name)
+  const logic = nodeLogicPath(node);
   if (!logic) {
     vscode.window.showErrorMessage(t('flagNotInProject'));
     return;
@@ -331,13 +330,13 @@ export async function flagFileCmd(_store: ProjectStore, item?: unknown): Promise
 }
 
 export async function clearFlagCmd(_store: ProjectStore, item?: unknown): Promise<void> {
-  const node = item as { fsPath?: string; project?: MrsProject } | undefined;
+  const node = item as { fsPath?: string; project?: MrsProject; nodeType?: string; linkedName?: string } | undefined;
   if (!node?.fsPath) return;
   if (!node.project?.root) {
     vscode.window.showErrorMessage(t('flagNotInProject'));
     return;
   }
-  const logic = node.project.logicPathOf(node.fsPath);
+  const logic = nodeLogicPath(node);
   // unflagging a file MRVC can't map (no logic path) is a silent no-op —
   // there is nothing to clear and the user loses nothing
   if (!logic) return;

@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { TreeNode } from './tree';
+import { nodeLogicPath } from './logicPath';
 import { ProjectStore, MrsProject, msg } from './projects';
 import { Cproject } from '../core/cproject';
 import { isLogicExcluded, exclusionFsPaths } from '../core/scan';
@@ -19,10 +20,16 @@ interface Target {
 
 function exclusionTarget(node: TreeNode): Target | undefined {
   if (!node.fsPath || !node.project) return undefined;
-  if (node.nodeType !== 'file' && node.nodeType !== 'folder') return undefined;
-  const logic = node.project.logicPathOf(node.fsPath);
+  // logic comes from nodeLogicPath: linked rows (the link itself and
+  // everything under it) key on the LINK's logic root — logicPathOf would
+  // resolve a root-internal link target to the physical directory name
+  // (Alias -> Shared), so a child exclude wrote the physical token while the
+  // link logic tree kept building (round1/round2 P2). Outside-root links
+  // fold to the link name either way (0.3.5 whole-link Exclude/Include).
+  if (node.nodeType !== 'file' && node.nodeType !== 'folder' && node.nodeType !== 'linkedFolder') return undefined;
+  const logic = nodeLogicPath(node);
   if (!logic) return undefined;
-  return { proj: node.project, logic, label: path.basename(node.fsPath) };
+  return { proj: node.project, logic, label: node.linkedName ?? path.basename(node.fsPath) };
 }
 
 export async function excludeFromBuild(store: ProjectStore, node?: TreeNode): Promise<void> {

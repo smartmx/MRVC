@@ -30,6 +30,7 @@
   "command.mrvc.mrsValidate.title": "Validate Project With MRS",
   "command.mrvc.mrsValidateAll.title": "Validate All Projects With MRS",
   "submenu.mrvc.mrsOperations.label": "MRS Operations",
+  "submenu.mrvc.otherOperations.label": "Other Operations",
   "command.mrvc.buildWithMrs.title": "Build With MRS IDE",
   "command.mrvc.rebuildWithMrs.title": "Rebuild With MRS IDE",
   "command.mrvc.cleanWithMrs.title": "Clean With MRS IDE",

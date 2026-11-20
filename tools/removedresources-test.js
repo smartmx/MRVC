@@ -64,6 +64,45 @@ check('scan: nested removed file hidden', !files.includes('src/ch58x_drv_ledc.c'
 check('scan: other sources intact', files.includes('src/Main.c'));
 const beforeCount = files.length;
 
+// 2.5 FOLDER removal hides the whole subtree and a removed ROOT-level link's
+// content is hidden too (round1 P1: the old exact-match set only caught the
+// folder row itself — a deleted User/SomeFolder still built child.c, and a
+// removed root link kept scanning its target). Self-contained mini project
+// so the shared LED fixture's list-count assertions stay untouched.
+{
+  const base = path.join(WS, 'removed-folders');
+  const proj = path.join(base, 'proj');
+  const extTarget = path.join(base, 'external');
+  fs.mkdirSync(path.join(proj, 'User', 'SomeFolder'), { recursive: true });
+  fs.mkdirSync(extTarget, { recursive: true });
+  fs.writeFileSync(path.join(proj, 'main.c'), 'int main(){return 0;}\n');
+  fs.writeFileSync(path.join(proj, 'User', 'keep.c'), 'int k(){return 1;}\n');
+  fs.writeFileSync(path.join(proj, 'User', 'SomeFolder', 'child.c'), 'int c(){return 2;}\n');
+  fs.writeFileSync(path.join(extTarget, 'lib.c'), 'int l(){return 3;}\n');
+  fs.writeFileSync(
+    path.join(proj, '.project'),
+    '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>RF</name>' +
+      '<linkedResources><link><name>ExtLink</name><type>2</type><location>' + extTarget + '</location></link></linkedResources>' +
+      '<filteredResources></filteredResources></projectDescription>'
+  );
+  fs.writeFileSync(
+    path.join(proj, '.cproject'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n' +
+      '<entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>\n' +
+      '</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+  );
+  pf.appendRemovedResource(proj, 'User', 'SomeFolder', true);
+  pf.appendRemovedResource(proj, '', 'ExtLink', true);
+  const cpF = Cproject.load(proj);
+  const f = [...scanSources(cpF).values()].flat().map((x) => x.logicName);
+  check('rf: removed folder child hidden from build scan', !f.includes('User/SomeFolder/child.c'), f.join(','));
+  check('rf: removed root link content hidden from build scan', !f.includes('ExtLink/lib.c'), f.join(','));
+  check('rf: sibling and plain files intact', f.includes('User/keep.c') && f.includes('main.c'));
+  const fi = [...scanSources(cpF, { includeExcluded: true }).values()].flat().map((x) => x.logicName);
+  check('rf: includeExcluded still honours logical removal', !fi.includes('User/SomeFolder/child.c') && !fi.includes('ExtLink/lib.c'));
+  fs.rmSync(base, { recursive: true, force: true });
+}
+
 // 3. restore one entry -> scanner sees it again
 pf.clearRemovedResource(PROJ, 'src', 'ch58x_drv_ledc.c', false);
 const files2 = [...scanSources(Cproject.load(PROJ)).values()].flat().map((f) => f.logicName);

@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { ProjectStore, MrsProject, MrsSolution, msg, getInstall } from './projects';
+import { nodeLogicPath } from './logicPath';
 import { Cproject, foldPathOnPlatform } from '../core/cproject';
 import { generateMakefiles, objectTargetFor, singleFileMakeArg } from '../core/makefile';
 import { classifySourceExt, isLogicExcluded } from '../core/scan';
@@ -1033,7 +1034,7 @@ export class BuildManager {
    * (the record feeds download target resolution). Shared `building` guard
    * with run()/batches — one make per project's obj/ at a time.
    */
-  async compileFile(item?: { project?: MrsProject; fsPath?: unknown }): Promise<void> {
+  async compileFile(item?: { project?: MrsProject; fsPath?: unknown; nodeType?: unknown; linkedName?: unknown }): Promise<void> {
     const project = item?.project;
     const fsPath = typeof item?.fsPath === 'string' ? item.fsPath : undefined;
     if (!project || !fsPath) {
@@ -1045,7 +1046,18 @@ export class BuildManager {
       vscode.window.showErrorMessage(t('compileFileNotSource', base));
       return;
     }
-    const logic = project.logicPathOf(fsPath);
+    // the tree row's logic keying: a root-INTERNAL link's children carry the
+    // link root in linkedName — the makefile rule (and the obj/ path) exists
+    // under the LINK logic dir, not the physical directory the row's fsPath
+    // points at (round3 P2: compileFile built Shared/sub/x.o for the
+    // Alias/sub/x.c row)
+    const logic =
+      nodeLogicPath({
+        fsPath,
+        project,
+        nodeType: typeof item?.nodeType === 'string' ? item.nodeType : undefined,
+        linkedName: typeof item?.linkedName === 'string' ? item.linkedName : undefined,
+      }) ?? project.logicPathOf(fsPath);
     if (!logic) {
       vscode.window.showErrorMessage(t('compileFileOutside', base));
       return;

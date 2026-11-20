@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "Unofficial, independent project — not developed or supported by WCH or MounRiver. MRVC opens, configures and builds MounRiver (MRS) projects for WCH MCUs directly in VSCode; for development and debugging use.",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "publisher": "smartmx",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -728,6 +728,10 @@
       {
         "id": "mrvc.mrsOperations",
         "label": "%submenu.mrvc.mrsOperations.label%"
+      },
+      {
+        "id": "mrvc.otherOperations",
+        "label": "%submenu.mrvc.otherOperations.label%"
       }
     ],
     "menus": {
@@ -737,6 +741,16 @@
         { "command": "mrvc.rebuildWithMrs", "group": "1_mrs@3", "when": "view == mrvc.projectExplorer && viewItem == project && mrvc.mrsIdeActive" },
         { "command": "mrvc.mrsValidate", "group": "1_mrs@4", "when": "view == mrvc.projectExplorer && viewItem == project && mrvc.mrsIdeActive" },
         { "command": "mrvc.openWithMrs", "group": "2_open@1", "when": "view == mrvc.projectExplorer && viewItem == project" }
+      ],
+      "mrvc.otherOperations": [
+        { "command": "mrvc.switchProjectType", "group": "1_other@1", "when": "view == mrvc.projectExplorer && viewItem == project" },
+        { "command": "mrvc.generateCMakeList", "group": "1_other@2", "when": "view == mrvc.projectExplorer && viewItem == project" },
+        { "command": "mrvc.exportAsCMake", "group": "1_other@3", "when": "view == mrvc.projectExplorer && viewItem == project" },
+        { "command": "mrvc.showStackUsage", "group": "2_analysis@1", "when": "view == mrvc.projectExplorer && viewItem == project" },
+        { "command": "mrvc.showCallAnalysis", "group": "2_analysis@2", "when": "view == mrvc.projectExplorer && viewItem == project" },
+        { "command": "mrvc.checkPreprocessor", "group": "3_check@1", "when": "view == mrvc.projectExplorer && viewItem == project" },
+        { "command": "mrvc.auditProject", "group": "3_check@2", "when": "view == mrvc.projectExplorer && viewItem == project" },
+        { "command": "mrvc.restoreRemoved", "group": "4_restore@1", "when": "view == mrvc.projectExplorer && viewItem == project" }
       ],
       "view/title": [
         {
@@ -873,12 +887,12 @@
         },
         {
           "command": "mrvc.excludeFromBuild",
-          "when": "view == mrvc.projectExplorer && viewItem =~ /^(file|folder)$/",
+          "when": "view == mrvc.projectExplorer && viewItem =~ /^(file|file\\.src|folder|linkedFolder)$/",
           "group": "z_buildcfg@1"
         },
         {
           "command": "mrvc.includeFromBuild",
-          "when": "view == mrvc.projectExplorer && viewItem =~ /^(file\\.excluded|folder\\.excluded)$/",
+          "when": "view == mrvc.projectExplorer && viewItem =~ /^(file\\.excluded|file\\.src\\.excluded|folder\\.excluded|linkedFolder\\.excluded)$/",
           "group": "z_buildcfg@1"
         },
         {
@@ -1157,17 +1171,17 @@
           "group": "1_project@1"
         },
         {
-          "command": "mrvc.buildAndDownload",
+          "command": "mrvc.rebuild",
           "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@2"
         },
         {
-          "command": "mrvc.rebuild",
+          "command": "mrvc.flash",
           "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@3"
         },
         {
-          "command": "mrvc.rebuildAllConfigs",
+          "command": "mrvc.buildAndDownload",
           "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@4"
         },
@@ -1177,12 +1191,12 @@
           "group": "1_project@5"
         },
         {
-          "command": "mrvc.cleanAllConfigs",
+          "command": "mrvc.rebuildAllConfigs",
           "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@6"
         },
         {
-          "command": "mrvc.flash",
+          "command": "mrvc.cleanAllConfigs",
           "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@7"
         },
@@ -1202,7 +1216,7 @@
           "group": "5_project@7"
         },
         {
-          "command": "mrvc.switchProjectType",
+          "submenu": "mrvc.otherOperations",
           "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "5_project@8"
         },
@@ -1247,44 +1261,9 @@
           "group": "mrvc@9"
         },
         {
-          "command": "mrvc.generateCMakeList",
-          "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "5_project@9"
-        },
-        {
-          "command": "mrvc.exportAsCMake",
-          "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "5_project@10"
-        },
-        {
-          "command": "mrvc.restoreRemoved",
-          "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "5_project@11"
-        },
-        {
-          "command": "mrvc.showStackUsage",
-          "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "5_project@12"
-        },
-        {
-          "command": "mrvc.showCallAnalysis",
-          "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "5_project@13"
-        },
-        {
-          "command": "mrvc.checkPreprocessor",
-          "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "5_project@14"
-        },
-        {
           "submenu": "mrvc.mrsOperations",
           "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "4_mrs@1"
-        },
-        {
-          "command": "mrvc.auditProject",
-          "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "5_project@20"
         },
         {
           "command": "mrvc.changeLinkedFolder",
