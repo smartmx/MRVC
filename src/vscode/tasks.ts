@@ -6,13 +6,14 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { ProjectStore, MrsProject, MrsSolution, msg, getInstall } from './projects';
-import { foldPathOnPlatform } from '../core/cproject';
-import { generateMakefiles } from '../core/makefile';
+import { Cproject, foldPathOnPlatform } from '../core/cproject';
+import { generateMakefiles, objectTargetFor, singleFileMakeArg } from '../core/makefile';
+import { classifySourceExt, isLogicExcluded } from '../core/scan';
 import { clearOutputDir, removeOutputDir } from '../core/output';
 import { t } from '../core/i18n';
 import { buildRecordFile } from '../core/buildLog';
 import { writeBuildTaskWrapper, writeCleanTaskWrapper } from '../core/taskWrapper';
-import { resolveMakeExe } from '../core/toolchain';
+import { ToolchainInfo, resolveMakeExe, selectToolchain } from '../core/toolchain';
 import { downloadProject } from './flash';
 
 /**
@@ -118,6 +119,12 @@ export class BuildManager {
   /** test seam (round16 P2): is the single-build guard still held? A failed
    * or cancelled rebuild clean must release it before any build task exists. */
   buildInFlightForTests(root: string): boolean {
+    return this.isBuilding(root);
+  }
+
+  /** true while this project has a make task in flight — also used by the
+   *  properties page to refuse a configuration switch mid-build */
+  isBuilding(root: string): boolean {
     return this.building.has(foldPathOnPlatform(path.resolve(root)));
   }
 
@@ -172,6 +179,279 @@ export class BuildManager {
       needsMake: true,
       worker: (p, install) => this.rebuildOne(p, install, toolchainReq, jobs, analysis),
     });
+  }
+
+  /**
+   * MRS "ReBuild Project All Configurations" (menu label verbatim — MRS ships
+   * it untranslated; command mrs-vscode.rebuildAllConfig). 2026-11-20 user
+   * request; semantics reverse-engineered from MRS2's own extension source
+   * (build.ts cleanAllConfig/buildAllConfig, handler.ts
+   * rebuildAllTempFromSourceProgressMonitor):
+   *
+   *   phase 1  clean EVERY configuration, each `make clean` in ITS OWN output
+   *            directory (the configuration name). The first configuration
+   *            without a makefile ends the clean phase (later ones are not
+   *            cleaned either); a failed clean only reports — the build phase
+   *            ALWAYS runs.
+   *   phase 2  build EVERY configuration in .cproject file order: per-config
+   *            options/toolchain/target name, makefiles regenerated into the
+   *            config's own directory, then `make all` there. The first
+   *            failing configuration aborts the rest ("Build Failed.");
+   *            cancelling the progress aborts too.
+   *
+   * MRS quirks mirrored: exclusions always come from the ACTIVE configuration
+   * (configurations[0]) even for the other configs' builds; the download
+   * target / .template / flash config are never touched (no configuration
+   * switch happens — the .cproject stays byte-identical); the full-output
+   * record is only written for the ACTIVE (first) configuration, later ones
+   * build into a throwaway record so "Show Full Build Output" and download
+   * target resolution keep describing the active configuration's last build.
+   */
+  async rebuildAllConfigs(item?: { project?: MrsProject }): Promise<void> {
+    const project = item?.project ?? (await this.pickProject());
+    if (!project) return;
+    this.store.setActive(project); // same as a project build: the status bar target follows
+
+    const buildKey = foldPathOnPlatform(path.resolve(project.root));
+    if (this.building.has(buildKey)) {
+      const inFlight = this.building.get(buildKey)!;
+      void vscode.window
+        .showWarningMessage(t('buildAlreadyRunning', project.projectName), t('terminateBuild'))
+        .then((pick) => {
+          if (pick === t('terminateBuild')) inFlight.exec?.terminate();
+        });
+      return;
+    }
+    this.store.suspendTreeRefresh();
+    try {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: t('progressRebuildAllConfigs', project.projectName), cancellable: true },
+        (_progress, token) => this.rebuildAllConfigsInner(project, buildKey, token)
+      );
+    } finally {
+      this.store.resumeTreeRefresh();
+    }
+  }
+
+  private async rebuildAllConfigsInner(
+    project: MrsProject,
+    buildKey: string,
+    token?: vscode.CancellationToken
+  ): Promise<void> {
+    const install = getInstall();
+    const makeExe = resolveMakeExe(install);
+    if (!install || !makeExe) {
+      vscode.window.showErrorMessage(t('makeNotFound', install?.makeBin ?? '?'));
+      return;
+    }
+    const cfg = vscode.workspace.getConfiguration('mrvc');
+    const toolchainReq = cfg.get<string>('toolchain', 'auto');
+    const jobs = parallelJobsSetting();
+    const analysis = cfg.get<boolean>('build.analysis', false);
+    const verbosity = buildVerbosity();
+    const cleanFlags = buildMakeArgs('clean', jobs, verbosity).slice(0, -1);
+    // file order — index 0 is the ACTIVE configuration, and every name is
+    // also that configuration's output directory (MRS: name = 输出目录名)
+    const names = project.cproject.configurationNames;
+    if (!names.length) {
+      vscode.window.showErrorMessage(t('makefileGenFailed', '.cproject: no <cconfiguration> found'));
+      return;
+    }
+
+    // from the first clean on, a make may run: hold the single-build guard
+    // for the WHOLE two-phase flow (executeAndWait releases nothing)
+    this.building.set(buildKey, {});
+    try {
+      // ---- phase 1: clean every configuration that has a makefile ----
+      for (const name of names) {
+        if (token?.isCancellationRequested) {
+          vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
+          return;
+        }
+        const dir = path.join(project.root, name);
+        // MRS: the first configuration without a makefile ends the clean
+        // phase — later configurations are not cleaned either (they may
+        // never have been built); the build phase below regenerates
+        // everything anyway
+        if (!fs.existsSync(path.join(dir, 'makefile'))) break;
+        const cleanTask = new vscode.Task(
+          { type: 'mrvc-clean', project: project.projectName, root: project.root },
+          `MRVC: clean [${name}] - ${project.projectName}`,
+          'MRVC',
+          wrapperExecution(
+            this.writeCleanWrapper(project.root, dir, makeExe, cleanFlags, install.label),
+            [install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter)
+          ),
+          []
+        );
+        cleanTask.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
+        const cleanCode = await this.executeAndWait(cleanTask, 'mrvc-clean', this.building.get(buildKey), token);
+        if (token?.isCancellationRequested) {
+          vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
+          return;
+        }
+        // the clean touched THIS configuration's dir — the tree must hear
+        // about it even when it is not the active configuration (round4 P3);
+        // notes made while the refresh is suspended flush on resume
+        this.store.noteTreeDirs(dir);
+        // MRS: a failed clean logs "Clean Failed." and stops the clean phase
+        // — the build phase still runs
+        if (cleanCode !== 0 && cleanCode !== undefined) {
+          vscode.window.showWarningMessage(t('rebuildAllCleanFailed', name, cleanCode));
+          break;
+        }
+      }
+
+      // ---- phase 2: build every configuration, first failure aborts ----
+      this.store.reloadActiveQuiet();
+      for (let i = 0; i < names.length; i++) {
+        const name = names[i];
+        if (token?.isCancellationRequested) {
+          vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
+          return;
+        }
+        // per-config model: options/target name/output dir follow THIS
+        // configuration; the exclusion table still comes from the active one
+        // (Cproject.loadConfigAt). Toolchain per config too — the rvGcc
+        // option selects GCC8/12/15 per configuration.
+        let cpConfig: Cproject;
+        let tc: ToolchainInfo | null;
+        try {
+          cpConfig = Cproject.loadConfigAt(project.root, i);
+          tc = selectToolchain(install, toolchainReq, cpConfig.rvGccVersion, cpConfig.storedPrefix);
+        } catch (e) {
+          vscode.window.showErrorMessage(t('makefileGenFailed', msg(e)));
+          return;
+        }
+        if (!tc) {
+          vscode.window.showErrorMessage(t('noToolchainFound'));
+          return;
+        }
+        try {
+          generateMakefiles(cpConfig, tc, { analysis });
+        } catch (e) {
+          vscode.window.showErrorMessage(t('makefileGenFailed', msg(e)));
+          return;
+        }
+        if (token?.isCancellationRequested) {
+          vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
+          return;
+        }
+        const buildDir = path.join(project.root, cpConfig.configName);
+        const wrapper = this.writeBuildWrapper(
+          project.root,
+          buildDir,
+          makeExe,
+          buildMakeArgs('build', jobs, verbosity),
+          // only the ACTIVE configuration's build feeds the canonical record —
+          // later configurations must not overwrite what download target
+          // resolution and "Show Full Build Output" read
+          i === 0 ? buildRecordFile(project.root) : path.join(os.tmpdir(), 'mrvc-rebuildall-config-record.log'),
+          install.label,
+          cpConfig.artifactType === 'staticLib' ? t('buildFinished', `${cpConfig.targetName}.a`) : undefined
+        );
+        const task = new vscode.Task(
+          { type: 'mrvc-build', task: `MRVC: build [${name}]`, project: project.projectName, root: project.root },
+          `MRVC: build [${name}] - ${project.projectName}`,
+          'MRVC',
+          wrapperExecution(wrapper, [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter)),
+          ['$mrvcgcc']
+        );
+        task.group = vscode.TaskGroup.Build;
+        task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, focus: false, clear: true };
+        const code = await this.executeAndWait(task, 'mrvc-build', this.building.get(buildKey), token);
+        if (token?.isCancellationRequested) {
+          vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
+          return;
+        }
+        // this configuration's obj/ just changed — scope the refresh to it
+        // (round4 P3: the task-end path only notes the ACTIVE buildDir)
+        this.store.noteTreeDirs(buildDir);
+        if (code !== 0) {
+          // MRS: "Build Failed." — the remaining configurations are skipped
+          vscode.window.showErrorMessage(t('rebuildAllBuildFailed', name, code ?? 'unknown'));
+          return;
+        }
+      }
+      vscode.window.showInformationMessage(t('rebuildAllConfigsDone', project.projectName, names.length));
+    } finally {
+      this.building.delete(buildKey);
+    }
+  }
+
+  /**
+   * MRVC-specific "Clean Project All Configurations" (user request
+   * 2026-11-20; MRS has NO standalone counterpart — its Clean Project is
+   * active-configuration-only, and a per-config clean exists only inside
+   * ReBuild Project All Configurations). Clean EVERY configuration's output
+   * directory independently: a configuration without a makefile (never
+   * built) is skipped, a failed clean never stops the run (MRVC's own
+   * batch-clean convention — the opposite of MRS's abort-on-first quirk).
+   * The .cproject / download chain is untouched. Silent like a single Clean
+   * (no progress notification); the single-build guard covers the sequence.
+   */
+  async cleanAllConfigs(item?: { project?: MrsProject }): Promise<void> {
+    const project = item?.project ?? (await this.pickProject());
+    if (!project) return;
+    this.store.setActive(project); // same as a project clean: the status bar target follows
+
+    const buildKey = foldPathOnPlatform(path.resolve(project.root));
+    if (this.building.has(buildKey)) {
+      const inFlight = this.building.get(buildKey)!;
+      void vscode.window
+        .showWarningMessage(t('buildAlreadyRunning', project.projectName), t('terminateBuild'))
+        .then((pick) => {
+          if (pick === t('terminateBuild')) inFlight.exec?.terminate();
+        });
+      return;
+    }
+    const install = getInstall();
+    const makeExe = resolveMakeExe(install);
+    if (!install || !makeExe) {
+      vscode.window.showErrorMessage(t('makeNotFound', install?.makeBin ?? '?'));
+      return;
+    }
+    const cleanFlags = buildMakeArgs('clean', parallelJobsSetting(), buildVerbosity()).slice(0, -1);
+    const names = project.cproject.configurationNames;
+
+    this.building.set(buildKey, {});
+    this.store.suspendTreeRefresh();
+    const cleaned: string[] = [];
+    const failed: string[] = [];
+    try {
+      for (const name of names) {
+        const dir = path.join(project.root, name);
+        // never built — nothing to clean in this configuration
+        if (!fs.existsSync(path.join(dir, 'makefile'))) continue;
+        const cleanTask = new vscode.Task(
+          { type: 'mrvc-clean', project: project.projectName, root: project.root },
+          `MRVC: clean [${name}] - ${project.projectName}`,
+          'MRVC',
+          wrapperExecution(
+            this.writeCleanWrapper(project.root, dir, makeExe, cleanFlags, install.label),
+            [install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter)
+          ),
+          []
+        );
+        cleanTask.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
+        const code = await this.executeAndWait(cleanTask, 'mrvc-clean', this.building.get(buildKey));
+        // the cleaned configuration's dir may not be the active one — note it
+        // for the scoped refresh (round4 P3)
+        this.store.noteTreeDirs(dir);
+        if (code === 0) cleaned.push(name);
+        else failed.push(name);
+      }
+    } finally {
+      this.building.delete(buildKey);
+      this.store.resumeTreeRefresh();
+    }
+    if (failed.length) {
+      vscode.window.showErrorMessage(t('cleanAllConfigsFailed', failed.join(', '), project.projectName));
+    } else if (cleaned.length) {
+      vscode.window.showInformationMessage(t('cleanAllConfigsDone', project.projectName, cleaned.length));
+    } else {
+      vscode.window.showInformationMessage(t('neverBuilt', project.projectName));
+    }
   }
 
   /**
@@ -741,6 +1021,140 @@ export class BuildManager {
    * fresh firmware; the download never runs after a failed build. */
   async buildAndDownload(proj?: MrsProject): Promise<void> {
     await this.run('build', proj, { andDownload: true });
+  }
+
+  /**
+   * Compile ONE source file (0.3.4, user request; the MRS 编译单个文件
+   * counterpart): regenerate the project makefiles exactly like a build,
+   * then run `make <logic dir>/<base>.o` — the object rule carries the
+   * project's real flags, so the result is what a full build would produce
+   * for this file. The full-output record is pointed at a throwaway temp
+   * file: a single-file compile must not masquerade as the last full build
+   * (the record feeds download target resolution). Shared `building` guard
+   * with run()/batches — one make per project's obj/ at a time.
+   */
+  async compileFile(item?: { project?: MrsProject; fsPath?: unknown }): Promise<void> {
+    const project = item?.project;
+    const fsPath = typeof item?.fsPath === 'string' ? item.fsPath : undefined;
+    if (!project || !fsPath) {
+      vscode.window.showErrorMessage(t('noActiveProject'));
+      return;
+    }
+    const base = path.basename(fsPath);
+    if (!classifySourceExt(base)) {
+      vscode.window.showErrorMessage(t('compileFileNotSource', base));
+      return;
+    }
+    const logic = project.logicPathOf(fsPath);
+    if (!logic) {
+      vscode.window.showErrorMessage(t('compileFileOutside', base));
+      return;
+    }
+    if (isLogicExcluded(project.cproject, logic)) {
+      vscode.window.showErrorMessage(t('compileFileExcluded', base));
+      return;
+    }
+    const target = objectTargetFor(logic);
+    const mkArg = singleFileMakeArg(target);
+    if (mkArg.error || !mkArg.arg) {
+      vscode.window.showErrorMessage(t('compileFileBadName', base));
+      return;
+    }
+    this.store.setActive(project); // same as a project build: the status bar target follows
+    const buildKey = foldPathOnPlatform(path.resolve(project.root));
+    if (this.building.has(buildKey)) {
+      const inFlight = this.building.get(buildKey)!;
+      void vscode.window
+        .showWarningMessage(t('buildAlreadyRunning', project.projectName), t('terminateBuild'))
+        .then((pick) => {
+          if (pick === t('terminateBuild')) inFlight.exec?.terminate();
+        });
+      return;
+    }
+    // obj/ writes (regenerated makefiles + the fresh .o/.d) must not blink
+    // the tree — same suspension contract as run()
+    this.store.suspendTreeRefresh();
+    try {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: t('progressCompileFile', base, project.projectName), cancellable: true },
+        (_progress, token) => this.compileFileInner(project, base, target, mkArg.arg!, buildKey, token)
+      );
+    } finally {
+      this.store.resumeTreeRefresh();
+    }
+  }
+
+  private async compileFileInner(
+    project: MrsProject,
+    base: string,
+    displayTarget: string,
+    targetArg: string,
+    buildKey: string,
+    token?: vscode.CancellationToken
+  ): Promise<void> {
+    const install = getInstall();
+    const tc = project.toolchain(install, vscode.workspace.getConfiguration('mrvc').get('toolchain', 'auto'));
+    if (!tc) {
+      vscode.window.showErrorMessage(t('noToolchainFound'));
+      return;
+    }
+    const makeExe = resolveMakeExe(install);
+    if (!install || !makeExe) {
+      vscode.window.showErrorMessage(t('makeNotFound', install?.makeBin ?? '?'));
+      return;
+    }
+    try {
+      generateMakefiles(project.cproject, tc, {
+        analysis: vscode.workspace.getConfiguration('mrvc').get<boolean>('build.analysis', false),
+      });
+    } catch (e) {
+      vscode.window.showErrorMessage(t('makefileGenFailed', msg(e)));
+      return;
+    }
+    if (token?.isCancellationRequested) {
+      vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
+      return;
+    }
+    this.building.set(buildKey, {});
+    try {
+      this.store.reloadActiveQuiet();
+      const verbosity = buildVerbosity();
+      const flags = verbosity === 'full' ? ['--trace', 'VERBOSE=1'] : verbosity === 'concise' ? ['-s'] : [];
+      // one file needs no `-j`; the object recipe itself is @-silent (no
+      // Building/Finished echoes in the 2.x style), so the terminal needs a
+      // done line to show success — same reason the static-lib build has one
+      const wrapper = this.writeBuildWrapper(
+        project.root,
+        project.buildDir,
+        makeExe,
+        [...flags, targetArg],
+        // throwaway record: never overwrite the last FULL build's record
+        path.join(os.tmpdir(), 'mrvc-single-file-record.log'),
+        install.label,
+        t('buildFinished', displayTarget)
+      );
+      const task = new vscode.Task(
+        { type: 'mrvc-compile-file', project: project.projectName, root: project.root },
+        `${t('compileFileTaskTitle')} - ${base} - ${project.projectName}`,
+        'MRVC',
+        wrapperExecution(wrapper, [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter)),
+        ['$mrvcgcc']
+      );
+      task.group = vscode.TaskGroup.Build;
+      task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, focus: false, clear: true };
+      const code = await this.executeAndWait(task, 'mrvc-compile-file', this.building.get(buildKey), token);
+      if (token?.isCancellationRequested) {
+        vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
+        return;
+      }
+      if (code !== 0) {
+        vscode.window.showErrorMessage(t('compileFileFailed', base, code ?? 'unknown'));
+      } else {
+        vscode.window.showInformationMessage(t('compileFileDone', base));
+      }
+    } finally {
+      this.building.delete(buildKey);
+    }
   }
 
   /** Execute a task and resolve when ITS process ends (matched by execution

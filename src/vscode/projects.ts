@@ -58,6 +58,18 @@ export class MrsProject {
   }
 
   /**
+   * Every configuration's output directory — a configuration's name IS its
+   * output directory name (MRS convention), so a multi-configuration project
+   * owns one output dir per configuration. `buildDir` is the ACTIVE one; the
+   * tree decorations must recognize all of them (user report 2026-11-20: in
+   * BLE-like dual-config projects only the active dir was colored, the other
+   * configuration's directory looked like an ordinary folder).
+   */
+  get outputDirs(): string[] {
+    return this.cproject.configurationNames.map((n) => path.join(this.root, n));
+  }
+
+  /**
    * CDT logic path (posix, project-root relative, linked content rooted at
    * the link name) of a file/folder inside this project, or undefined when
    * it lives outside both.
@@ -513,10 +525,14 @@ export class ProjectStore implements vscode.Disposable {
   }
 
   reloadActive(): void {
-    try {
-      this._active?.reload();
-    } catch {
-      // project files temporarily broken (mid-save) — ignore
+    const p = this._active;
+    if (p) {
+      try {
+        p.reload();
+        brokenConfigWarned.delete(ProjectStore.key(p.root));
+      } catch (e) {
+        warnBrokenConfig(p.root, e);
+      }
     }
     this._onDidChange.fire();
   }
@@ -525,19 +541,25 @@ export class ProjectStore implements vscode.Disposable {
    *  build path right before makefile generation (nothing visible changes;
    *  a full re-render here blinked the whole tree at build start) */
   reloadActiveQuiet(): void {
+    const p = this._active;
+    if (!p) return;
     try {
-      this._active?.reload();
-    } catch {
-      // project files temporarily broken (mid-save) — ignore
+      p.reload();
+      brokenConfigWarned.delete(ProjectStore.key(p.root));
+    } catch (e) {
+      warnBrokenConfig(p.root, e);
     }
   }
 
   /** reload one project after a direct .project/.cproject edit and notify views */
   reloadProject(proj: MrsProject): void {
-    try {
-      proj.reload();
-    } catch {
-      // project files temporarily broken (mid-save) — ignore
+    if (proj) {
+      try {
+        proj.reload();
+        brokenConfigWarned.delete(ProjectStore.key(proj.root));
+      } catch (e) {
+        warnBrokenConfig(proj.root, e);
+      }
     }
     this._onDidChange.fire();
   }
@@ -608,13 +630,19 @@ export class ProjectStore implements vscode.Disposable {
       if (p) {
         try {
           p.reload();
-        } catch {
+          // the file was fixed — a LATER breakage must warn again
+          brokenConfigWarned.delete(key);
+        } catch (e) {
+          warnBrokenConfig(root, e);
           return;
         }
         // the .project may have gained/lost/retargeted linked folders
         // (Add/Remove Linked Folder, a MRS2-side edit) — re-align their
-        // watchers with the fresh state
+        // watchers with the fresh state; the .cproject may have changed the
+        // configuration set (switch/add/rename/delete) — re-align the
+        // output-dir watcher too (round4 P3)
         this.syncLinkedWatchers(p);
+        this.syncOutputWatchers(p);
         this._onDidChange.fire();
       }
     };
@@ -641,13 +669,19 @@ export class ProjectStore implements vscode.Disposable {
       srcWatcher,
       srcWatcher.onDidCreate(srcBump),
       srcWatcher.onDidDelete(srcBump),
-      ...this.watchBuildDir(key, root),
     ]);
     // linked folders OUTSIDE the root get their own watchers (they are not
     // covered by any of the above); re-synced whenever the .project changes,
-    // because links can be added/removed/retargeted at any time
+    // because links can be added/removed/retargeted at any time. The
+    // output-dir watcher lives in its own map (it is rebuilt whenever the
+    // configuration set changes — syncOutputWatchers).
     const p = this.projects.get(key);
-    if (p) this.syncLinkedWatchers(p);
+    if (p) {
+      this.syncLinkedWatchers(p);
+      this.syncOutputWatchers(p);
+    } else {
+      this.outputWatchers.set(key, this.watchBuildDir(key, root));
+    }
   }
 
   /** linked-dir watchers per project: key = resolved absolute directory →
@@ -656,6 +690,10 @@ export class ProjectStore implements vscode.Disposable {
    *  external HAL/LIB/StdPeriphDriver-style trees were invisible until a
    *  manual Refresh (user request 0.3.3). */
   private readonly linkedWatchers = new Map<string, Map<string, vscode.Disposable[]>>();
+  /** per-project output-dir watcher + the glob it was built from (recreated
+   *  when the configuration set changes — see syncOutputWatchers) */
+  private readonly outputWatchers = new Map<string, vscode.Disposable[]>();
+  private readonly outputWatchGlob = new Map<string, string>();
 
   /** re-align the linked-dir watchers with the project's CURRENT links:
    *  dispose the stale, watch the new (an absent directory is skipped —
@@ -694,19 +732,34 @@ export class ProjectStore implements vscode.Disposable {
   }
 
   /**
-   * Build-output watcher: the output directory's contents (.o/.hex/...) and
-   * its own existence are invisible to both watchers above, yet deletions
-   * from the Explorer or the OS must refresh the tree (the products node
-   * renders only while the directory exists). Every event scopes to the
-   * products NODE itself (its fsPath is the build dir) — never the whole
-   * tree.
+   * Build-output watcher: the output directories' contents (.o/.hex/...) and
+   * their own existence are invisible to both watchers above, yet deletions
+   * from the Explorer or the OS must refresh the tree. EVERY configuration's
+   * directory is covered (round4 P3: with two configurations only the active
+   * one was watched, so the other config's rows went stale after ReBuild/Clean
+   * All); events note the containing DIRECTORY (scoped refresh — the products
+   * node for the active dir, the folder node for the inactive ones).
    */
   private watchBuildDir(key: string, root: string): vscode.Disposable[] {
-    const outName = this.projects.get(key)?.cproject.configName ?? 'obj';
-    const buildDir = path.join(root, outName);
-    const outWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, `{${outName},${outName}/**}`));
-    const bump = () => this.noteTreeDirs(buildDir);
+    const names = this.projects.get(key)?.cproject.configurationNames ?? ['obj'];
+    const outWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, outputWatchPattern(names)));
+    const bump = (uri: vscode.Uri) => this.noteTreeDirs(path.dirname(uri.fsPath));
     return [outWatcher, outWatcher.onDidChange(bump), outWatcher.onDidCreate(bump), outWatcher.onDidDelete(bump)];
+  }
+
+  /**
+   * Re-align the output-dir watcher after the configuration set changed
+   * (switch / add / rename / delete — from MRVC's own pages or a MRS2-side
+   * .cproject edit): rebuild only when the watcher glob actually differs.
+   */
+  private syncOutputWatchers(p: MrsProject): void {
+    const key = ProjectStore.key(p.root);
+    const next = outputWatchPattern(p.cproject.configurationNames);
+    if (this.outputWatchGlob.get(key) === next) return;
+    const old = this.outputWatchers.get(key);
+    if (old) for (const d of old) d.dispose();
+    this.outputWatchers.set(key, this.watchBuildDir(key, p.root));
+    this.outputWatchGlob.set(key, next);
   }
 
   /**
@@ -728,6 +781,12 @@ export class ProjectStore implements vscode.Disposable {
   private unwatchProject(root: string): void {
     const key = ProjectStore.key(root);
     this.unwatchLinked(key);
+    const out = this.outputWatchers.get(key);
+    if (out) {
+      for (const d of out) d.dispose();
+      this.outputWatchers.delete(key);
+    }
+    this.outputWatchGlob.delete(key);
     const list = this.watchers.get(key);
     if (list) {
       for (const d of list) d.dispose();
@@ -750,6 +809,11 @@ export class ProjectStore implements vscode.Disposable {
       }
     }
     this.linkedWatchers.clear();
+    for (const list of this.outputWatchers.values()) {
+      for (const d of list) d.dispose();
+    }
+    this.outputWatchers.clear();
+    this.outputWatchGlob.clear();
     if (this.treeDirsTimer) clearTimeout(this.treeDirsTimer);
     this._onDidChange.dispose();
     this._onTreeDirsChanged.dispose();
@@ -758,6 +822,39 @@ export class ProjectStore implements vscode.Disposable {
 
 export function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Watcher brace-glob over EVERY configuration's output directory (the name
+ * IS the dir name): `{obj1,obj2,obj1/**,obj2/**}`. Configuration names are
+ * validated safe (no glob metacharacters — see isValidConfigName), so
+ * joining them into one brace list is exact.
+ */
+export function outputWatchPattern(names: string[]): string {
+  const uniq = [...new Set(names)];
+  if (!uniq.length) uniq.push('obj');
+  return `{${[...uniq, ...uniq.map((n) => `${n}/**`)].join(',')}}`;
+}
+
+/** per-root last-warned message: a repeated .cproject change event carrying
+ *  the SAME defect must not spam; a fixed-then-rebroken file re-warns
+ *  (the successful reload clears the entry) */
+const brokenConfigWarned = new Map<string, string>();
+
+/**
+ * A persistent parse defect deserves a VISIBLE warning — the user would
+ * otherwise keep building from the stale model (round5 P3). Only the
+ * config-name validator's error qualifies: it is thrown AFTER a successful
+ * XML parse, so it can never be a mid-write artifact; everything else
+ * (truncated file, ENOENT during a save) stays silent as before.
+ */
+function warnBrokenConfig(root: string | undefined, e: unknown): void {
+  const m = e instanceof Error ? e.message : String(e);
+  if (!m.includes('unsafe configuration name')) return;
+  const key = root ? ProjectStore.key(root) : '';
+  if (brokenConfigWarned.get(key) === m) return;
+  brokenConfigWarned.set(key, m);
+  void vscode.window.showWarningMessage(t('projectConfigRejected', root ? path.basename(root) : '?', m));
 }
 
 /** one resolved install per settings combination — selectInstall re-reads

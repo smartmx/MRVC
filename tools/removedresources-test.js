@@ -124,6 +124,7 @@ check('append: idempotent', pf.listRemovedResources(PROJ).length === 3);
     root: PROJ.replace(/\//g, path.sep),
     projectName: proj.projectName,
     buildDir: path.join(PROJ.replace(/\//g, path.sep), 'obj'),
+    outputDirs: [path.join(PROJ.replace(/\//g, path.sep), 'obj')],
     cproject: proj,
     projectFile: { linkedResources: [] },
     logicPathOf: (f) => {

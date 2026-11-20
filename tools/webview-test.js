@@ -160,6 +160,65 @@ await view.show(store.active);
   const html = stubPanel.webview.html;
   check('HTML rendered (non-empty)', html.length > 5000);
   check('panel title set', stubPanel.title.includes('LED'));
+  // Configuration control in the header: a <select> when the project has
+  // several configurations, the old read-only field otherwise. The switch
+  // itself is core-tested in configswitch-test; here we only pin the wiring.
+  {
+    const cfgNames = realCp.configurationNames;
+    check(
+      cfgNames.length > 1 ? 'header: multi-config project renders a selector' : 'header: single-config project keeps the read-only field',
+      cfgNames.length > 1 ? html.includes('<select id="cfgsel"') : html.includes('Configuration <input type="text"')
+    );
+    check(
+      'header: every configuration is offered',
+      cfgNames.length <= 1 || cfgNames.every((n) => html.includes(`<option value="${n}"`))
+    );
+    check(
+      'webview: switch wiring present (collect + confirm + message)',
+      html.includes('function collectFormValues()') &&
+        html.includes("command: 'switchConfig'") &&
+        html.includes('Switch configuration?')
+    );
+    // MRS "配置管理": Manage button + dialog (add / rename / delete / activate)
+    check('header: Manage button present', html.includes('id="cfgmanage"'));
+    check(
+      'webview: Manage dialog + operations wired',
+      html.includes('id="cfgmodal"') &&
+        ['addConfig', 'renameConfig', 'deleteConfig'].every((c) => html.includes(`command: '${c}'`))
+    );
+    check(
+      'webview: Manage dialog lists every configuration',
+      cfgNames.every((n) => html.includes(`data-name="${n}"`))
+    );
+    // P3-2: ONE dirty baseline for the selector and every Manage path;
+    // Apply success re-baselines it (no false "unsaved" after Apply).
+    check(
+      'webview: dirty state is shared by selector and Manage operations',
+      html.includes('const pageDirty =') &&
+        html.includes('const manageDiscardOk =') &&
+        (html.match(/manageDiscardOk\(\)/g) || []).length >= 4
+    );
+    check(
+      'webview: saved re-baselines the dirty snapshot',
+      /e\.data\.command === 'saved'[\s\S]{0,400}pristine = JSON\.stringify/.test(html)
+    );
+    // P3-3: empty Add/Rename input is reported, not silently dropped
+    check('webview: empty configuration name shows an error', html.includes("'Name is required.'"));
+  }
+  // round-2 P3-1: Apply sends saveDl and save back to back. Only the property
+  // save may re-baseline the dirty snapshot — a saveDl 'saved' would hide the
+  // still-unapplied fields when the property save fails.
+  {
+    const host = fs.readFileSync(path.join(__dirname, '..', 'src', 'vscode', 'configView.ts'), 'utf-8');
+    const start = host.indexOf("if (m.command === 'saveDl'");
+    const end = host.indexOf("if (m.command === 'dlOp'", start);
+    const block = start >= 0 && end > start ? host.slice(start, end) : '';
+    check(
+      'host: download-settings save does not reset the property dirty baseline',
+      block.includes("command: 'savedDl'") && !block.includes("command: 'saved'"),
+      block.slice(0, 120)
+    );
+  }
   // round-11 P3-2: 'default' must only exist where CDT defines it as a real
   // enumerated choice (align / debugging.level / debugging.format) — the
   // phantom entries on cpp std / abi version made "Default" a silent no-op

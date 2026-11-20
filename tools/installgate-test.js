@@ -507,6 +507,30 @@ const last = () => messages[messages.length - 1];
         fullFires === 0,
       JSON.stringify(dirEvents)
     );
+    // round5 P3: an externally written INVALID .cproject (unsafe config
+    // name) must surface a VISIBLE warning — the user would otherwise keep
+    // building from the stale model. The reload itself stays silent and the
+    // old model is kept; the warning is deduped per defect and reset when
+    // the file is fixed.
+    {
+      const goodProjXml = fs.readFileSync(inside(ROOT, 'watch-proj/.cproject'), 'utf-8');
+      const badProjXml = goodProjXml.replace('name="obj"', 'name=".."');
+      const projWatcherC = fakeWatchers.find((w) => w.pattern.includes('.cproject'));
+      const fireChange = () => projWatcherC.handlers.change.forEach((fn) => fn({ fsPath: path.join(projRoot, '.cproject') }));
+      const warns = () => messages.filter((m) => m.kind === 'warn' && m.text.includes('unsafe configuration name')).length;
+      fs.writeFileSync(inside(ROOT, 'watch-proj/.cproject'), badProjXml);
+      fireChange();
+      check('watch: an unsafe config name shows a visible warning', warns() === 1, 'warns=' + warns());
+      check('watch: the stale model is kept (no crash, no zombie)', !!store.get(projRoot) && store.get(projRoot).cproject.configName === 'obj');
+      fireChange();
+      check('watch: the same defect does not spam', warns() === 1);
+      fs.writeFileSync(inside(ROOT, 'watch-proj/.cproject'), goodProjXml);
+      fireChange();
+      check('watch: a fixed file reloads cleanly', !!store.get(projRoot) && store.get(projRoot).cproject.configName === 'obj');
+      fs.writeFileSync(inside(ROOT, 'watch-proj/.cproject'), badProjXml);
+      fireChange();
+      check('watch: a re-broken file warns again', warns() === 2);
+    }
     // round2 §3: deleting .cproject (legality broken) turns the loaded
     // project into a zombie — the watcher's delete handler and Refresh must
     // both drop it (previously only .project deletion did)

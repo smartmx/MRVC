@@ -11,7 +11,7 @@ import * as path from 'path';
 import { encodeArtifact } from './platformEncoding';
 import { analysisFlags } from './analysis';
 import { Cproject } from './cproject';
-import { LogicDirMap, extGroups, scanSources } from './scan';
+import { LogicDirMap, dirGroups, extGroups, scanSources } from './scan';
 import { toPosix, resolveLocationUri } from './macros';
 import {
   assemblerOptions,
@@ -284,8 +284,8 @@ export function generateMakefiles(
     written.push(file);
   };
 
-  const groups = extGroups(isCpp);
-  const recipeFor = (g: (typeof groups)[number]): string => {
+  const canonicalGroups = extGroups(isCpp);
+  const recipeFor = (g: (typeof canonicalGroups)[number]): string => {
     const compiler = g.isCppFile ? compilerCpp : compilerC;
     const toolOpts = g.isAsm ? asmOpts : g.isCppFile ? cppOpts : cOpts;
     if (mrs2Style) {
@@ -301,6 +301,9 @@ export function generateMakefiles(
   for (const dir of dirsDesc) {
     const files = map.get(dir)!;
     sourceCount += files.length;
+    // per-dir compile groups: canonical exts in CDT order, case-variant C++
+    // suffixes as their own groups (deduped variable names) — see dirGroups
+    const groups = dirGroups(files, isCpp);
 
     const projPosix = toPosix(cp.projectRoot);
     // a logic dir can MIX real and linked-out files (a hand-written .project
@@ -324,7 +327,7 @@ export function generateMakefiles(
     // the byte-compare against the golden build is not.
     if (mrs2Style) {
       for (const g of groups) {
-        const group = files.filter((f) => f.logicName.endsWith('.' + g.ext));
+        const group = g.files;
         if (!group.length) continue;
         const srcs = group.map((f) => ESC(isExternal ? f.fullpath : path.posix.join('..', f.logicName)));
         vars += varBlock(`${g.variable}_SRCS`, srcs);
@@ -339,7 +342,7 @@ export function generateMakefiles(
       );
     } else {
       for (const g of groups) {
-        const group = files.filter((f) => f.logicName.endsWith('.' + g.ext));
+        const group = g.files;
         if (!group.length) continue;
         const srcs = group.map((f) => ESC(isExternal ? f.fullpath : path.posix.join('..', f.logicName)));
         vars += varBlock(`${g.variable}_SRCS`, srcs);
@@ -349,7 +352,7 @@ export function generateMakefiles(
         files.map((f) => `./${ESC(stripExt(f.logicName))}.o`)
       );
       for (const g of [...groups].reverse()) {
-        const group = files.filter((f) => f.logicName.endsWith('.' + g.ext));
+        const group = g.files;
         if (!group.length) continue;
         vars += varBlock(
           `${g.variable}_DEPS`,
@@ -360,7 +363,7 @@ export function generateMakefiles(
 
     let rules = '';
     for (const g of groups) {
-      const group = files.filter((f) => f.logicName.endsWith('.' + g.ext));
+      const group = g.files;
       if (!group.length) continue;
       if (isExternal) {
         for (const f of group) {
@@ -499,14 +502,28 @@ export function generateMakefiles(
     const hasSecondaries = flashVar || listVar || sizeVar;
 
     // 2.x generation orders the DEPS includes S_DEPS-first; 1.x leads with
-    // the assembler variants (both goldens matched respectively)
-    const depVars = mrs2Style
+    // the assembler variants (both goldens matched respectively). The
+    // canonical list below is byte-frozen for the goldens; case-variant
+    // suffixes (.cp, .c++, mixed .cxx/.Cxx) get their OWN deduped variables
+    // from dirGroups and are appended after it (P2-3: without the include a
+    // header change never reached those objects, and without the clean entry
+    // their .d files survived `make clean`).
+    const baseDepVars = mrs2Style
       ? isCpp
         ? ['S_DEPS', 'S_UPPER_DEPS', 'ASM_DEPS', 'ASM_UPPER_DEPS', 'C_DEPS', 'C_UPPER_DEPS', 'CPP_DEPS', 'CXX_DEPS', 'CC_DEPS', 'C++_DEPS']
         : ['S_DEPS', 'S_UPPER_DEPS', 'ASM_DEPS', 'ASM_UPPER_DEPS', 'C_DEPS']
       : isCpp
         ? ['ASM_UPPER_DEPS', 'ASM_DEPS', 'S_DEPS', 'S_UPPER_DEPS', 'C_DEPS', 'C_UPPER_DEPS', 'CPP_DEPS', 'CXX_DEPS', 'CC_DEPS', 'C++_DEPS']
         : ['ASM_UPPER_DEPS', 'ASM_DEPS', 'S_DEPS', 'S_UPPER_DEPS', 'C_DEPS'];
+    const canonicalDepVars = new Set(baseDepVars);
+    const extraDepVars: string[] = [];
+    for (const d of dirsDesc) {
+      for (const g of dirGroups(map.get(d)!, isCpp)) {
+        const v = `${g.variable}_DEPS`;
+        if (!canonicalDepVars.has(v) && !extraDepVars.includes(v)) extraDepVars.push(v);
+      }
+    }
+    const depVars = [...baseDepVars, ...extraDepVars];
 
     // head layout differs by generation: 1.9.2 has a blank line after the
     // header; 2.1.0 does not (the `RM :=` gap is a plain newline in both)
@@ -623,13 +640,17 @@ export function generateMakefiles(
     // C projects: byte-identical to the MRS2 golden clean line; C++ adds
     // the C++ dep-file variables the golden C order never had. The 2.x
     // golden leads with $(OBJS) and orders the dep groups S_DEPS-first.
-    const cleanVars = isCpp
-      ? mrs2Style
-        ? '$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(S_DEPS)$(S_UPPER_DEPS)$(ASM_DEPS)$(ASM_UPPER_DEPS)$(C_DEPS)$(C_UPPER_DEPS)$(CPP_DEPS)$(CXX_DEPS)$(CC_DEPS)$(C++_DEPS)'
-        : '$(ASM_UPPER_DEPS)$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(ASM_DEPS)$(S_DEPS)$(S_UPPER_DEPS)$(C_DEPS)$(C_UPPER_DEPS)$(CPP_DEPS)$(CXX_DEPS)$(CC_DEPS)$(C++_DEPS)'
-      : mrs2Style
-        ? '$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(S_DEPS)$(S_UPPER_DEPS)$(ASM_DEPS)$(ASM_UPPER_DEPS)$(C_DEPS)'
-        : '$(ASM_UPPER_DEPS)$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(ASM_DEPS)$(S_DEPS)$(S_UPPER_DEPS)$(C_DEPS)';
+    // Variant-suffix DEPS follow — they own .d files too (P2-3).
+    const extraCleanVars = extraDepVars.map((v) => `$(${v})`).join('');
+    const cleanVars =
+      (isCpp
+        ? mrs2Style
+          ? '$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(S_DEPS)$(S_UPPER_DEPS)$(ASM_DEPS)$(ASM_UPPER_DEPS)$(C_DEPS)$(C_UPPER_DEPS)$(CPP_DEPS)$(CXX_DEPS)$(CC_DEPS)$(C++_DEPS)'
+          : '$(ASM_UPPER_DEPS)$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(ASM_DEPS)$(S_DEPS)$(S_UPPER_DEPS)$(C_DEPS)$(C_UPPER_DEPS)$(CPP_DEPS)$(CXX_DEPS)$(CC_DEPS)$(C++_DEPS)'
+        : mrs2Style
+          ? '$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(S_DEPS)$(S_UPPER_DEPS)$(ASM_DEPS)$(ASM_UPPER_DEPS)$(C_DEPS)'
+          : '$(ASM_UPPER_DEPS)$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(ASM_DEPS)$(S_DEPS)$(S_UPPER_DEPS)$(C_DEPS)') +
+      extraCleanVars;
     t += `# Other Targets\nclean:\n\t-$(RM) ${cleanVars} ${target}.${isExe ? elfExt : 'a'}\n`;
     // 2.x golden: the clean tail is an empty line, not "\t-@"
     t += mrs2Style ? `\n` : `\t-@\n`;
@@ -655,4 +676,45 @@ function stripExt(logicName: string): string {
   const dot = logicName.lastIndexOf('.');
   if (dot > slash) return logicName.slice(0, dot);
   return logicName;
+}
+
+/** the make target that compiles ONE logic file, spelled exactly as the
+ *  generated subdir.mk spells it: `<logic dir>/<basename>.o` (a root file
+ *  has no dir part). In-root files compile through the `dir/%.o:
+ *  ../dir/%.ext` pattern rule, external/linked files through the explicit
+ *  per-file rules — both share this target name, so `make <target>` from
+ *  the build dir compiles just that file with the project's real flags
+ *  (0.3.4 编译单个文件). */
+export function objectTargetFor(logicName: string): string {
+  const posixPath = toPosix(logicName);
+  const dir = path.posix.dirname(posixPath);
+  const base = stripExt(path.posix.basename(posixPath));
+  return (dir === '.' ? base : `${dir}/${base}`) + '.o';
+}
+
+/** the command-line make argument for one object target. The task wrapper
+ *  joins makeArgs with bare spaces, so the target must arrive as ONE shell
+ *  argument — and the two wrappers speak different shells:
+ *
+ *  - win32: cmd.exe has no single-quote quoting, so use double quotes; inside
+ *    them cmd treats `& | < > ^ ( )` literally. `%` is the exception — a
+ *    batch file expands `%VAR%` even inside quotes, so it is doubled here
+ *    (the wrapper writes a .cmd). A literal `"` cannot appear in a Windows
+ *    file name, so it is refused defensively.
+ *  - POSIX: sh single quotes expand nothing; an embedded `'` closes/reopens.
+ *
+ *  `$` is passed through verbatim. A makefile RULE spells a literal dollar
+ *  doubled, but a command-line goal is a file name: make does not re-expand
+ *  it, so `$$` would search for a file with two dollars (P2-2: the old
+ *  helper reused the makefile rule escaping and broke `$` targets). */
+export function singleFileMakeArg(
+  target: string,
+  platform: NodeJS.Platform = process.platform
+): { arg?: string; error?: 'quote' } {
+  if (platform === 'win32') {
+    if (/["\r\n]/.test(target)) return { error: 'quote' };
+    return { arg: `"${target.replace(/%/g, '%%')}"` };
+  }
+  if (/[\r\n]/.test(target)) return { error: 'quote' };
+  return { arg: "'" + target.replace(/'/g, `'\\''`) + "'" };
 }

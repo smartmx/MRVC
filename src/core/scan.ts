@@ -15,10 +15,22 @@ export const CPP_SOURCE_EXTS = ['c', 's', 'S', 'cpp', 'C', 'cc', 'cxx'];
 
 /** brace-glob covering EVERY source extension the scanner accepts plus the
  *  headers the tree lists. The file watchers must not cover fewer kinds
- *  than the scanner — round53 P3-1: a hand-written glob missed .cc/.cxx/.C,
- *  so new files of those kinds never refreshed the tree. Single source of
- *  truth: extending CPP_SOURCE_EXTS automatically extends the watchers. */
-export const SOURCE_WATCHER_GLOB = `**/*.{${[...CPP_SOURCE_EXTS, 'h', 'hpp'].join(',')}}`;
+ *  than `classifySourceExt()` — round53 P3-1: a hand-written glob missed
+ *  .cc/.cxx/.C, so new files of those kinds never refreshed the tree; the
+ *  0.3.4 review found the same gap for `.cp` and `.c++`. The tokens below
+ *  mirror the classifier's table (canonical spellings + every case form). */
+export const SOURCE_WATCHER_GLOB = `**/*.{${[
+  ...CPP_SOURCE_EXTS,
+  'cpp',
+  'CPP',
+  '[cC][pP][pP]',
+  '[cC][xX][xX]',
+  '[cC][cC]',
+  '[cC][pP]',
+  '[cC]++',
+  'h',
+  'hpp',
+].join(',')}}`;
 
 export interface LogicFile {
   /** path relative to project root (or linked-name rooted), posix separators */
@@ -36,6 +48,30 @@ export function isSourceFile(exts: string[], name: string): boolean {
   return exts.some((e) => name.endsWith('.' + e));
 }
 
+/** language classification of ONE file by its extension (0.3.4: the
+ *  multi-char C++ suffixes are recognized case-insensitively — g++ compiles
+ *  ANY file as C++ regardless of suffix, so .Cxx/.Cc/.CC/.CPP/.cPP and
+ *  friends are all C++ sources; the SINGLE-letter pairs stay case-sensitive
+ *  because the case itself is the language: .c = C while .C = C++, .s = asm
+ *  while .S = asm-with-preprocess, exactly as GCC's suffix table defines).
+ *  Returns undefined for anything that is not a source file. `ext` carries
+ *  the spelling AS RECORDED — the makefile pattern rule must use it
+ *  verbatim (make's % matching is case-sensitive). */
+export function classifySourceExt(name: string): { kind: 'c' | 'cpp' | 'asm'; ext: string } | undefined {
+  const base = path.posix.basename(name);
+  const dot = base.lastIndexOf('.');
+  const ext = dot < 0 ? '' : base.slice(dot + 1);
+  if (!ext) return undefined;
+  if (ext === 'c') return { kind: 'c', ext };
+  if (ext === 'C') return { kind: 'cpp', ext };
+  if (ext === 's' || ext === 'S') return { kind: 'asm', ext };
+  const lower = ext.toLowerCase();
+  if (lower === 'cpp' || lower === 'cxx' || lower === 'cc' || lower === 'cp' || lower === 'c++') {
+    return { kind: 'cpp', ext };
+  }
+  return undefined;
+}
+
 /**
  * Build the logic dir -> files map for a project.
  * MRS semantics (getLogicDirFilesMap): walk the real project tree AND every
@@ -46,9 +82,12 @@ export function isSourceFile(exts: string[], name: string): boolean {
  */
 export function scanSources(cp: Cproject): LogicDirMap {
   const isCpp = cp.isCpp;
-  const exts = isCpp ? CPP_SOURCE_EXTS : C_SOURCE_EXTS;
   const result: LogicDirMap = new Map();
-  const configNames = new Set<string>([cp.configName]);
+  // EVERY configuration's output directory is build output, not source
+  // (round4 P2: with two configurations the INACTIVE dir's generated .c/.s
+  // files landed in the other config's build). The name IS the dir name;
+  // Windows folds directory-name case, so the walk comparison folds too.
+  const configNames = new Set(cp.configurationNames.map((n) => fold(n)));
 
   const { rootTokens, dirTokens } = exclusionTokens(cp);
 
@@ -74,7 +113,7 @@ export function scanSources(cp: Cproject): LogicDirMap {
     arr.push({
       logicName: l,
       fullpath: toPosix(fullpath),
-      isC: !isCpp || nameExt(logicName).isC,
+      isC: !isCpp || classifySourceExt(logicName)?.kind === 'c',
     });
   };
 
@@ -89,7 +128,7 @@ export function scanSources(cp: Cproject): LogicDirMap {
   }
 
   // 1. real project tree (root entry tokens apply project-wide)
-  walk(cp.projectRoot, cp.projectRoot, '', rootTokens, configNames, exts, addFile, logicBases);
+  walk(cp.projectRoot, cp.projectRoot, '', rootTokens, configNames, isCpp, addFile, logicBases);
 
   // 1.5 real-folder named entries re-scan their subtree: a root entry that
   // excludes the folder (CH32V307 RT-Thread excludes 'Core') relies on the
@@ -114,7 +153,7 @@ export function scanSources(cp: Cproject): LogicDirMap {
     } catch {
       /* unreadable root — keep the entry's own spelling */
     }
-    walk(dir, dir, base, entry.excluding, configNames, exts, addFile, []);
+    walk(dir, dir, base, entry.excluding, configNames, isCpp, addFile, []);
   }
 
   // 2. linked folders, always scanned (MRS scans basic.linkedFolders)
@@ -142,7 +181,7 @@ export function scanSources(cp: Cproject): LogicDirMap {
       }
     }
     const tokens = [...rootTokens.filter((t) => !(fold(t) === fold(name) && named.has(fold(name)))), ...linkedTokens];
-    walk(target, target, name, tokens, configNames, exts, addFile, []);
+    walk(target, target, name, tokens, configNames, isCpp, addFile, []);
   }
 
   // deterministic ordering: files by logicName
@@ -152,20 +191,13 @@ export function scanSources(cp: Cproject): LogicDirMap {
   return result;
 }
 
-function nameExt(logicName: string): { ext: string; isC: boolean } {
-  const base = path.posix.basename(logicName);
-  const dot = base.lastIndexOf('.');
-  const ext = dot < 0 ? '' : base.slice(dot + 1);
-  return { ext, isC: ext !== 'cpp' && ext !== 'cc' && ext !== 'cxx' && ext !== 'C' };
-}
-
 function walk(
   fsRoot: string,
   dir: string,
   logicPrefix: string,
   excluded: string[],
   configNames: Set<string>,
-  exts: string[],
+  isCpp: boolean,
   add: (logicName: string, fullpath: string) => void,
   logicBases: Array<[string, string[]]> = []
 ): void {
@@ -195,10 +227,14 @@ function walk(
     }
     if (excludedHere) continue;
     if (ent.isDirectory()) {
-      if (ent.name.startsWith('.') || SKIP_DIRS.has(ent.name) || configNames.has(ent.name)) continue;
-      walk(fsRoot, full, logic, excluded, configNames, exts, add, logicBases);
+      if (ent.name.startsWith('.') || SKIP_DIRS.has(ent.name) || configNames.has(fold(ent.name))) continue;
+      walk(fsRoot, full, logic, excluded, configNames, isCpp, add, logicBases);
     } else if (ent.isFile()) {
-      if (!isSourceFile(exts, ent.name)) continue;
+      const cl = classifySourceExt(ent.name);
+      if (!cl) continue;
+      // a plain C project has no C++ tool: cpp-kind files are not part of
+      // its build (same as the old c/s/S list for isCpp=false)
+      if (!isCpp && cl.kind === 'cpp') continue;
       add(logic, full);
     }
   }
@@ -393,4 +429,42 @@ export function extGroups(isCpp: boolean): ExtGroup[] {
       isCppFile: ext === 'cpp' || ext === 'C' || ext === 'cc' || ext === 'cxx',
     };
   });
+}
+
+/** per-directory compile groups (0.3.4 case-variant recognition): the
+ *  canonical exts keep CDT variable names and CDT order (byte-identical
+ *  goldens); a case-variant C++ suffix present in the dir gets its OWN
+ *  group — the makefile pattern rule must carry the file's actual
+ *  extension spelling, because make's % matching is case-sensitive — with
+ *  a deduped variable name so mixed spellings in one dir can't collide on
+ *  one make variable (two groups writing `CXX_OBJS` would lose one list). */
+export function dirGroups(files: LogicFile[], isCpp: boolean): Array<ExtGroup & { files: LogicFile[] }> {
+  const byExt = new Map<string, LogicFile[]>();
+  for (const f of files) {
+    const cl = classifySourceExt(f.logicName);
+    if (!cl) continue;
+    const list = byExt.get(cl.ext) ?? [];
+    list.push(f);
+    byExt.set(cl.ext, list);
+  }
+  const out: Array<ExtGroup & { files: LogicFile[] }> = [];
+  const usedVars = new Set<string>();
+  for (const g of extGroups(isCpp)) {
+    const group = byExt.get(g.ext);
+    if (!group?.length) continue;
+    usedVars.add(g.variable);
+    out.push({ ...g, files: group });
+    byExt.delete(g.ext);
+  }
+  for (const ext of [...byExt.keys()].sort()) {
+    const cl = classifySourceExt(`x.${ext}`);
+    if (!cl) continue;
+    const baseVar = ext.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    let variable = baseVar;
+    let n = 2;
+    while (usedVars.has(variable)) variable = `${baseVar}_${n++}`;
+    usedVars.add(variable);
+    out.push({ ext, variable, isAsm: cl.kind === 'asm', isCppFile: cl.kind === 'cpp', files: byExt.get(ext)! });
+  }
+  return out;
 }

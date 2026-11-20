@@ -47,6 +47,7 @@ const vscodeStub = {
   Uri: { file: (p) => ({ fsPath: p }), joinPath: () => ({ fsPath: '' }) },
   ThemeColor: class {},
   ThemeIcon: class {},
+  FileDecoration: class {},
   workspace: { workspaceFolders: [] },
 };
 
@@ -102,6 +103,7 @@ const project = {
   root: PROJ,
   projectName: 'Demo',
   buildDir: OBJ,
+  outputDirs: [OBJ],
   cproject: { configName: 'obj' },
   projectFile: { linkedResources: [] },
   logicPathOf: () => undefined,
@@ -349,6 +351,92 @@ check('cache: products node identity is stable across renders', productsNode2 ==
   check('prune-recursive: nested row gone after parent re-read', !levelAfter.some((n) => n.fsPath === nested));
 }
 
+// 13. every configuration's output directory (user report 2026-11-20): a
+//     dual-config project builds obj1/ AND obj/ — BOTH must be recognized as
+//     output dirs, not just the active configuration's (buildDir).
+{
+  const dual = path.join(WS, 'Dual');
+  fs.rmSync(dual, { recursive: true, force: true });
+  fs.mkdirSync(path.join(dual, 'obj'), { recursive: true });
+  fs.writeFileSync(path.join(dual, 'obj', 'old.hex'), ':00000001FF\n');
+  fs.mkdirSync(path.join(dual, 'obj1'), { recursive: true });
+  fs.writeFileSync(path.join(dual, 'obj1', 'Dual.hex'), ':00000001FF\n');
+  fs.writeFileSync(path.join(dual, '.project'), miniProject('Dual'));
+  const cfgBlock = (id, name) =>
+    `\t\t<cconfiguration id="${id}">
+\t\t\t<storageModule moduleId="cdtBuildSystem" version="4.0.0">
+\t\t\t\t<configuration id="${id}" artifactName="Dual" artifactExtension="elf" name="${name}">
+\t\t\t\t\t<toolChain superClass="ilg.gnumcueclipse.managedbuild.cross.riscv.toolchain.elf.release"/>${
+      name === 'obj1'
+        ? '\n\t\t\t\t\t<sourceEntries><entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name="" excluding="obj/old.hex"/></sourceEntries>'
+        : ''
+    }
+\t\t\t\t</configuration>
+\t\t\t</storageModule>
+\t\t</cconfiguration>
+`;
+  fs.writeFileSync(
+    path.join(dual, '.cproject'),
+    `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<?fileVersion 4.0.0?><cproject storage_type_id="org.eclipse.cdt.core.XmlProjectDescriptionStorage">
+\t<storageModule moduleId="org.eclipse.cdt.core.settings">
+${cfgBlock('c1', 'obj1')}${cfgBlock('c2', 'obj')}\t</storageModule>
+</cproject>
+`,
+    'utf-8'
+  );
+  const { MrsProject } = require('../out/vscode/projects.js');
+  const mp = new MrsProject(dual);
+  check(
+    'outputs: BOTH configuration dirs are output dirs (active first)',
+    JSON.stringify(mp.outputDirs.map((p) => keyOf(p))) ===
+      JSON.stringify([keyOf(path.join(dual, 'obj1')), keyOf(path.join(dual, 'obj'))]),
+    JSON.stringify(mp.outputDirs)
+  );
+  check('outputs: buildDir stays the ACTIVE configuration dir', mp.buildDir === path.join(dual, 'obj1'), mp.buildDir);
+  // the exclude/include machinery must skip EVERY output dir: the ACTIVE
+  // config's exclusion table names obj/old.hex, but that file lives in the
+  // INACTIVE config's output dir — without the skip it would be marked
+  // `.excluded` (and offered "Exclude From Build"), writing nonsense.
+  const dualStore = {
+    all: [mp],
+    solutionList: [],
+    active: mp,
+    onDidChange: () => ({ dispose() {} }),
+    onTreeDirsChanged: () => ({ dispose() {} }),
+  };
+  const provider2 = new ProjectTreeProvider(dualStore, { joinPath: () => ({ fsPath: '' }) });
+  const dualProjNode = provider2.getChildren().find((n) => n.nodeType === 'project');
+  const dualLevel1 = provider2.getChildren(dualProjNode);
+  const objNode = dualLevel1.find((n) => n.fsPath === path.join(dual, 'obj'));
+  check('outputs: the inactive config dir renders as a folder', !!objNode && objNode.nodeType === 'folder', JSON.stringify(dualLevel1.map((n) => n.fsPath)));
+  const productsNode2 = dualLevel1.find((n) => n.nodeType === 'products');
+  check(
+    'outputs: the ACTIVE config dir is the products node, never a duplicate row',
+    !!productsNode2 && productsNode2.fsPath === path.join(dual, 'obj1') && !dualLevel1.some((n) => n !== productsNode2 && n.fsPath === path.join(dual, 'obj1')),
+    JSON.stringify(dualLevel1.map((n) => `${n.nodeType}:${n.fsPath}`))
+  );
+  const objChildren = provider2.getChildren(objNode);
+  const hexNode = objChildren.find((n) => n.fsPath === path.join(dual, 'obj', 'old.hex'));
+  check(
+    'outputs: a file inside the INACTIVE config dir is NOT marked excluded',
+    !!hexNode && hexNode.contextValue === 'file',
+    String(hexNode && hexNode.contextValue)
+  );
+  fs.rmSync(dual, { recursive: true, force: true });
+
+  // the output-dir WATCHER must cover every configuration too (round4 P3)
+  const { outputWatchPattern } = require('../out/vscode/projects.js');
+  check(
+    'watch glob: every configuration dir and its contents',
+    outputWatchPattern(['obj1', 'obj2']) === '{obj1,obj2,obj1/**,obj2/**}',
+    outputWatchPattern(['obj1', 'obj2'])
+  );
+  check('watch glob: dedupes; empty set falls back to obj', outputWatchPattern(['obj', 'obj']) === '{obj,obj/**}' && outputWatchPattern([]) === '{obj,obj/**}');
+  // round5 P2: a leading '-' is MRS-legal and glob-safe
+  check('watch glob: dash names are glob-safe', outputWatchPattern(['-x']) === '{-x,-x/**}', outputWatchPattern(['-x']));
+}
+
 // ---- decorations: fire ONLY on real content change (user report
 // 2026-11-18) — activating/expanding a project re-fed IDENTICAL link/output/
 // exclusion sets and the setters fired a full decoration invalidation on
@@ -393,6 +481,30 @@ check('cache: products node identity is stable across renders', productsNode2 ==
   deco.setFlags(new Map([['proj', 'red']]));
   deco.endBatch();
   check('deco: a batched identical feed fires nothing', fires === afterFirst + 2);
+}
+
+// ---- decorations are TREE-ONLY (user report 2026-11-19): VSCode asks every
+// registered provider for EVERY view, so Explorer / search rows used to get
+// the link/output colours and the UNION of all projects' exclusions. A URI
+// without the project key in the resourceUri query must stay untouched.
+{
+  const { TreeDecorations } = require('../out/vscode/tree.js');
+  const deco = new TreeDecorations();
+  deco.setLinks([SRC]);
+  deco.setOutputs([OBJ]);
+  deco.setExcludedByProject(new Map([['proj', [SRC]]]));
+  deco.setFlags(new Map([[keyOf(SRC), 'red']]));
+  const treeRow = (p) => ({ fsPath: p, query: 'proj' });
+  const explorerRow = (p) => ({ fsPath: p });
+  check(
+    'deco-scope: tree rows keep link/output decorations',
+    !!deco.provideFileDecoration(treeRow(SRC)) && !!deco.provideFileDecoration(treeRow(OBJ))
+  );
+  check(
+    'deco-scope: Explorer rows (no project key) stay untouched',
+    deco.provideFileDecoration(explorerRow(SRC)) === undefined &&
+      deco.provideFileDecoration(explorerRow(OBJ)) === undefined
+  );
 }
 
 process.exit(failures ? 1 : 0);

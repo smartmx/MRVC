@@ -11,6 +11,7 @@ import * as crypto from 'crypto';
 import { ProjectStore, MrsProject, getInstall } from './projects';
 import { ppCheckAfterApply } from './ppCheck';
 import { Cproject } from '../core/cproject';
+import { switchConfiguration, addConfiguration, renameConfiguration, deleteConfiguration } from '../core/configSwitch';
 import { TemplateData, readTemplate, writeTemplate } from '../core/templateFile';
 import { ADDRESS_RE, displayTargetPath } from '../core/flash';
 import { resolveDownloadTarget } from './flash';
@@ -811,7 +812,9 @@ export class ConfigView {
 
   constructor(
     private store: ProjectStore,
-    private context: vscode.ExtensionContext
+    private context: vscode.ExtensionContext,
+    /** optional: only used to refuse a configuration switch mid-build */
+    private build?: { isBuilding(root: string): boolean }
   ) {}
 
   async show(proj?: MrsProject): Promise<void> {
@@ -843,6 +846,9 @@ export class ConfigView {
     mode?: 'dir' | 'file' | 'ldfile';
     path?: string;
     op?: string;
+    name?: string;
+    newName?: string;
+    copyFrom?: string;
     chipId?: number;
     clkSpeed?: number;
     dbgMode?: number;
@@ -853,6 +859,69 @@ export class ConfigView {
     if (!project || !this.panel) return;
     if (m.command === 'close') {
       this.panel.dispose();
+      return;
+    }
+    if (m.command === 'switchConfig' && m.name) {
+      // Active configuration = first <cconfiguration>; switching reorders
+      // .cproject (+ .template Target Path, + the .wvproj snapshot). Refuse
+      // mid-build: the running make task has its cwd fixed on the old dir and
+      // its record would be filed for whichever config the page now shows.
+      if (this.build?.isBuilding(project.root)) {
+        this.panel.webview.html = this.render(project);
+        void vscode.window.showWarningMessage(t('buildAlreadyRunning', project.projectName));
+        return;
+      }
+      try {
+        const res = switchConfiguration(project.root, m.name);
+        project.reload();
+        // every field changes with the configuration — full reload, not the
+        // per-field Apply diff
+        this.panel.webview.html = this.render(project);
+        this.panel.title = `Properties - ${project.projectName}`;
+        if (res.changed) {
+          void vscode.window.showInformationMessage(t('configSwitched', res.active));
+        }
+      } catch (e) {
+        this.panel.webview.html = this.render(project);
+        void vscode.window.showErrorMessage(t('configSwitchFailed', e instanceof Error ? e.message : String(e)));
+      }
+      return;
+    }
+    if (m.command === 'addConfig' || m.command === 'renameConfig' || m.command === 'deleteConfig') {
+      // MRS "配置管理" dialog operations. They rewrite .cproject (+ .wvproj),
+      // so the same mid-build guard applies; errors stay inside the dialog
+      // (a full re-render would close it and lose the message).
+      if (this.build?.isBuilding(project.root)) {
+        this.panel.webview.postMessage({ command: 'cfgError', text: t('buildAlreadyRunning', project.projectName) });
+        return;
+      }
+      try {
+        if (m.command === 'addConfig') {
+          if (!m.name?.trim()) throw new Error('Name is required.');
+          addConfiguration(project.root, m.name.trim(), m.copyFrom);
+          void vscode.window.showInformationMessage(t('configAdded', m.name.trim()));
+        } else if (m.command === 'renameConfig') {
+          if (!m.name || !m.newName?.trim()) throw new Error('Name is required.');
+          renameConfiguration(project.root, m.name, m.newName.trim());
+          void vscode.window.showInformationMessage(t('configRenamed', m.newName.trim()));
+        } else if (m.command === 'deleteConfig') {
+          if (!m.name) throw new Error('Select a configuration first.');
+          deleteConfiguration(project.root, m.name);
+          void vscode.window.showInformationMessage(t('configDeleted', m.name));
+        } else {
+          return;
+        }
+        // names/ids/order changed — rebuild the page so the selector, the
+        // dialog rows and (for an active rename) every field show the truth
+        project.reload();
+        this.panel.webview.html = this.render(project);
+        this.panel.title = `Properties - ${project.projectName}`;
+      } catch (e) {
+        this.panel.webview.postMessage({
+          command: 'cfgError',
+          text: e instanceof Error ? e.message : String(e),
+        });
+      }
       return;
     }
     if (m.command === 'saveDl' && m.values) {
@@ -887,7 +956,11 @@ export class ConfigView {
         }
         writeTemplate(project.root, tpl);
         project.reload();
-        this.panel.webview.postMessage({ command: 'saved' });
+        // NOT 'saved': Apply sends saveDl and save back to back, and only the
+        // property save may re-baseline the webview's dirty snapshot. If the
+        // property save then fails, resetting it here would hide the unapplied
+        // edits from the configuration-switch / Manage confirm (round-2 P3-1).
+        this.panel.webview.postMessage({ command: 'savedDl' });
         vscode.window.showInformationMessage(t('downloadSettingsSaved', path.basename(project.root)));
       } catch (e) {
         vscode.window.showErrorMessage(t('downloadSettingsSaveFailed', e instanceof Error ? e.message : String(e)));
@@ -1298,6 +1371,17 @@ export class ConfigView {
     }).join('\n');
 
     const descDefault = PAGES[0];
+    // Configuration selector: MRS2's active configuration is simply the
+    // first <cconfiguration>, so switching is a reorder of that file (see
+    // core/configSwitch.ts). Single-config projects keep the old read-only
+    // field — there is nothing to choose.
+    const cfgNames = cp.configurationNames;
+    const cfgControl =
+      cfgNames.length > 1
+        ? `<select id="cfgsel" data-cur="${esc(cp.configName)}">${cfgNames
+            .map((n) => `<option value="${esc(n)}"${n === cp.configName ? ' selected' : ''}>${esc(n)}</option>`)
+            .join('')}</select>`
+        : `<input type="text" value="${esc(cp.configName)}" readonly>`;
 
     return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'"><style>
@@ -1305,7 +1389,23 @@ body { font-family: var(--vscode-font-family); font-size: 13px; color: var(--vsc
 #head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--vscode-editorWidget-border); }
 #head .title { font-weight: 600; }
 #head .cfg { display: flex; align-items: center; gap: 6px; margin-left: auto; color: var(--vscode-descriptionForeground); }
-#head input { width: 90px; }
+#head input, #head select { width: 110px; }
+#head #cfgmanage { flex: none; padding: 2px 8px; }
+#cfgmodal { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 11; }
+#cfgmodal[hidden] { display: none; }
+#cfgmodal .mbox { width: 560px; }
+.cfglist { border: 1px solid var(--vscode-editorWidget-border); max-height: 260px; overflow: auto; margin: 8px 0; }
+.cfgrow { display: flex; align-items: center; gap: 10px; padding: 5px 8px; cursor: default; }
+.cfgrow:hover { background: var(--vscode-list-hoverBackground); }
+.cfgrow.sel { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.cfgrow .nm { font-family: var(--vscode-editor-font-family); }
+.cfgrow .st { margin-left: auto; font-size: 12px; opacity: .85; }
+.cfgrow.active .st { font-weight: 600; opacity: 1; }
+.cfgform { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.cfgform label { color: var(--vscode-descriptionForeground); }
+.cfgform input[type=text] { width: 150px; }
+.cfgform select { min-width: 120px; }
+#cfgerr { min-height: 18px; color: var(--vscode-errorForeground); font-size: 12px; margin-top: 6px; }
 #main { flex: 1; display: flex; min-height: 0; }
 #nav { width: 235px; flex: none; overflow: auto; border-right: 1px solid var(--vscode-editorWidget-border); padding: 6px 0; }
 #nav details { margin: 0; }
@@ -1373,7 +1473,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
 </style></head><body>
 <div id="head">
   <span class="title">${esc(project.projectName)} — Project Properties</span>
-  <span class="cfg">Configuration <input type="text" value="${esc(cp.configName)}" readonly></span>
+  <span class="cfg">Configuration ${cfgControl}<button type="button" id="cfgmanage">Manage…</button></span>
 </div>
 <div id="main">
   <div id="nav">${nav}</div>
@@ -1392,6 +1492,31 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
     <div class="mrow"><input type="text" id="mpath" spellcheck="false"><button type="button" id="mbrowse">Browse</button></div>
     <div id="mtree" hidden></div>
     <div class="mbtns"><button type="button" id="mok">Confirm</button><button type="button" id="mcancel">Cancel</button></div>
+  </div>
+</div>
+<div id="cfgmodal" hidden>
+  <div class="mbox">
+    <div class="mhead">Manage Configurations</div>
+    <div class="cfglist" id="cfglist">${cfgNames
+      .map(
+        (n, i) =>
+          `<div class="cfgrow${i === 0 ? ' active' : ''}" data-name="${esc(n)}"><span class="nm">${esc(n)}</span><span class="st">${i === 0 ? 'Active' : ''}</span></div>`
+      )
+      .join('')}</div>
+    <div class="cfgform">
+      <label>Name</label><input type="text" id="cfgname" spellcheck="false">
+      <label>Copy from</label><select id="cfgsource">${cfgNames
+        .map((n, i) => `<option value="${esc(n)}"${i === 0 ? ' selected' : ''}>${esc(n)}</option>`)
+        .join('')}</select>
+    </div>
+    <div class="cfgform">
+      <button type="button" id="cfgadd">Add</button>
+      <button type="button" id="cfgrename" class="secondary">Rename selected</button>
+      <button type="button" id="cfgdel" class="secondary">Delete selected</button>
+      <button type="button" id="cfgactive" class="secondary">Set as Active</button>
+    </div>
+    <div id="cfgerr"></div>
+    <div class="mbtns"><button type="button" id="cfgclose">Close</button></div>
   </div>
 </div>
 <script nonce="${nonce}">
@@ -1425,7 +1550,7 @@ showPage('target');
   mirror(chipAddr, dlAddr);
   mirror(dlAddr, chipAddr);
 })();
-document.getElementById('apply').addEventListener('click', () => {
+function collectFormValues() {
   const values = {};
   document.querySelectorAll('[data-key]').forEach((el) => {
     if (el.classList.contains('listrows')) {
@@ -1441,14 +1566,128 @@ document.getElementById('apply').addEventListener('click', () => {
           : el.value;
     }
   });
+  return values;
+}
+document.getElementById('apply').addEventListener('click', () => {
+  const values = collectFormValues();
   // the Download Settings page uses data-dlkey controls, collected separately
   const dl = collectDl();
   if (dl) vscode.postMessage({ command: 'saveDl', values: dl });
   vscode.postMessage({ command: 'save', values });
 });
+// page dirty state: ONE baseline for the configuration selector AND the
+// Manage dialog. Apply success re-baselines it below ('saved'), so a switch
+// right after Apply never asks about edits that are already on disk.
+let pristine = JSON.stringify([collectFormValues(), collectDl()]);
+const pageDirty = () => JSON.stringify([collectFormValues(), collectDl()]) !== pristine;
+const confirmDiscard = (message) => !pageDirty() || confirm(message);
+// top-right configuration selector: switching rewrites .cproject's
+// configuration order and reloads this page — unapplied edits would be lost,
+// so a dirty page asks first
+const cfgSel = document.getElementById('cfgsel');
+if (cfgSel) {
+  cfgSel.addEventListener('change', () => {
+    const next = cfgSel.value;
+    const cur = cfgSel.dataset.cur;
+    if (!next || next === cur) return;
+    if (!confirmDiscard('Switch configuration? Unapplied changes on this page will be lost.')) {
+      cfgSel.value = cur;
+      return;
+    }
+    vscode.postMessage({ command: 'switchConfig', name: next });
+  });
+}
+// ---- "Manage Configurations" dialog (MRS 配置管理): add / rename / delete /
+// set active. Rows are rendered server-side; a successful operation
+// re-renders the page (the dialog closes with fresh state), a rejected one
+// keeps the dialog open and shows the reason here. Every operation reloads
+// the page, so all of them share the dirty confirm above.
+const cfgModal = document.getElementById('cfgmodal');
+if (cfgModal) {
+  const cfgListEl = document.getElementById('cfglist');
+  const cfgErr = document.getElementById('cfgerr');
+  const cfgNameInput = document.getElementById('cfgname');
+  const cfgSource = document.getElementById('cfgsource');
+  const rows = () => [...cfgListEl.querySelectorAll('.cfgrow')];
+  const activeName = () => {
+    const row = cfgListEl.querySelector('.cfgrow.active');
+    return row ? row.dataset.name : null;
+  };
+  let selected = null;
+  const select = (name) => {
+    selected = name;
+    rows().forEach((r) => r.classList.toggle('sel', r.dataset.name === name));
+  };
+  const needSelection = () => {
+    if (selected) return true;
+    cfgErr.textContent = 'Select a configuration first.';
+    return false;
+  };
+  const manageDiscardOk = () => confirmDiscard('Unapplied changes on this page will be lost. Continue?');
+  document.getElementById('cfgmanage').addEventListener('click', () => {
+    cfgErr.textContent = '';
+    cfgNameInput.value = '';
+    select(activeName());
+    if (activeName()) cfgSource.value = activeName();
+    cfgModal.hidden = false;
+  });
+  document.getElementById('cfgclose').addEventListener('click', () => {
+    cfgModal.hidden = true;
+  });
+  rows().forEach((row) => {
+    row.addEventListener('click', () => select(row.dataset.name));
+    row.addEventListener('dblclick', () => {
+      if (row.dataset.name === activeName()) return;
+      if (!manageDiscardOk()) return;
+      vscode.postMessage({ command: 'switchConfig', name: row.dataset.name });
+    });
+  });
+  document.getElementById('cfgadd').addEventListener('click', () => {
+    cfgErr.textContent = '';
+    const name = cfgNameInput.value.trim();
+    if (!name) {
+      cfgErr.textContent = 'Name is required.';
+      return;
+    }
+    if (!manageDiscardOk()) return;
+    vscode.postMessage({ command: 'addConfig', name, copyFrom: cfgSource.value });
+  });
+  document.getElementById('cfgrename').addEventListener('click', () => {
+    cfgErr.textContent = '';
+    if (!needSelection()) return;
+    const newName = cfgNameInput.value.trim();
+    if (!newName) {
+      cfgErr.textContent = 'Name is required.';
+      return;
+    }
+    if (!manageDiscardOk()) return;
+    vscode.postMessage({ command: 'renameConfig', name: selected, newName });
+  });
+  document.getElementById('cfgdel').addEventListener('click', () => {
+    cfgErr.textContent = '';
+    if (!needSelection()) return;
+    if (!manageDiscardOk()) return;
+    vscode.postMessage({ command: 'deleteConfig', name: selected });
+  });
+  document.getElementById('cfgactive').addEventListener('click', () => {
+    cfgErr.textContent = '';
+    if (!needSelection()) return;
+    if (selected === activeName()) return;
+    if (!manageDiscardOk()) return;
+    vscode.postMessage({ command: 'switchConfig', name: selected });
+  });
+}
 document.getElementById('cancel').addEventListener('click', () => vscode.postMessage({ command: 'close' }));
 window.addEventListener('message', (e) => {
+  if (e.data.command === 'cfgError') {
+    const el = document.getElementById('cfgerr');
+    if (el) el.textContent = e.data.text || '';
+  }
   if (e.data.command === 'saved') {
+    // the page content now equals what is on disk — re-baseline the dirty
+    // check so a following switch / Manage operation does not warn about
+    // edits that were just applied
+    pristine = JSON.stringify([collectFormValues(), collectDl()]);
     const s = document.getElementById('status');
     s.style.opacity = '1';
     setTimeout(() => (s.style.opacity = '0'), 1600);

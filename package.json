@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "Unofficial, independent project — not developed or supported by WCH or MounRiver. MRVC opens, configures and builds MounRiver (MRS) projects for WCH MCUs directly in VSCode; for development and debugging use.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "publisher": "smartmx",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -311,6 +311,11 @@
         "icon": "media/build_project.svg"
       },
       {
+        "command": "mrvc.compileFile",
+        "title": "%command.mrvc.compileFile.title%",
+        "category": "MRVC"
+      },
+      {
         "command": "mrvc.buildAndDownload",
         "title": "%command.mrvc.buildAndDownload.title%",
         "category": "MRVC"
@@ -395,6 +400,16 @@
         "title": "%command.mrvc.rebuild.title%",
         "category": "MRVC",
         "icon": "media/rebuild_project.svg"
+      },
+      {
+        "command": "mrvc.rebuildAllConfigs",
+        "title": "%command.mrvc.rebuildAllConfigs.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.cleanAllConfigs",
+        "title": "%command.mrvc.cleanAllConfigs.title%",
+        "category": "MRVC"
       },
       {
         "command": "mrvc.flash",
@@ -859,96 +874,101 @@
         {
           "command": "mrvc.excludeFromBuild",
           "when": "view == mrvc.projectExplorer && viewItem =~ /^(file|folder)$/",
-          "group": "buildcfg@1"
+          "group": "z_buildcfg@1"
         },
         {
           "command": "mrvc.includeFromBuild",
           "when": "view == mrvc.projectExplorer && viewItem =~ /^(file\\.excluded|folder\\.excluded)$/",
-          "group": "buildcfg@1"
+          "group": "z_buildcfg@1"
         },
         {
           "command": "mrvc.file.newFile",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "2_file@1"
+          "group": "3_file@1"
         },
         {
           "command": "mrvc.file.newFolder",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "2_file@2"
+          "group": "3_file@2"
         },
         {
           "command": "mrvc.file.copy",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "2_file@3"
+          "group": "3_file@3"
         },
         {
           "command": "mrvc.file.paste",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "2_file@4"
+          "group": "3_file@4"
         },
         {
           "command": "mrvc.file.copyPath",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "2_file@5"
+          "group": "3_file@5"
         },
         {
           "command": "mrvc.file.copyRelPath",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "2_file@6"
+          "group": "3_file@6"
         },
         {
           "command": "mrvc.file.copyName",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "2_file@7"
+          "group": "3_file@7"
         },
         {
           "command": "mrvc.file.reveal",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "2_file@10"
+          "group": "3_file@10"
+        },
+        {
+          "command": "mrvc.compileFile",
+          "when": "view == mrvc.projectExplorer && viewItem == file.src",
+          "group": "z_compile@1"
         },
         {
           "command": "mrvc.file.copy",
-          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded || viewItem == file.src || viewItem == file.src.excluded)",
           "group": "file@1"
         },
         {
           "command": "mrvc.file.copyPath",
-          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded || viewItem == file.src || viewItem == file.src.excluded)",
           "group": "file@2"
         },
         {
           "command": "mrvc.file.copyRelPath",
-          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded || viewItem == file.src || viewItem == file.src.excluded)",
           "group": "file@3"
         },
         {
           "command": "mrvc.file.copyName",
-          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded || viewItem == file.src || viewItem == file.src.excluded)",
           "group": "file@4"
         },
         {
           "command": "mrvc.file.rename",
-          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded || viewItem == file.src || viewItem == file.src.excluded)",
           "group": "file@5"
         },
         {
           "command": "mrvc.file.delete",
-          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded || viewItem == file.src || viewItem == file.src.excluded)",
           "group": "file@6"
         },
         {
           "command": "mrvc.file.reveal",
-          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded || viewItem == file.src || viewItem == file.src.excluded)",
           "group": "file@7"
         },
         {
           "command": "mrvc.flagFile",
-          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded || viewItem == file.src || viewItem == file.src.excluded)",
           "group": "file@8"
         },
         {
           "command": "mrvc.clearFlag",
-          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded)",
+          "when": "view == mrvc.projectExplorer && (viewItem == file || viewItem == file.excluded || viewItem == file.src || viewItem == file.src.excluded)",
           "group": "file@9"
         },
         {
@@ -1147,44 +1167,54 @@
           "group": "1_project@3"
         },
         {
-          "command": "mrvc.clean",
+          "command": "mrvc.rebuildAllConfigs",
           "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@4"
         },
         {
-          "command": "mrvc.flash",
+          "command": "mrvc.clean",
           "when": "view == mrvc.projectExplorer && viewItem == project",
           "group": "1_project@5"
         },
         {
+          "command": "mrvc.cleanAllConfigs",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
+          "group": "1_project@6"
+        },
+        {
+          "command": "mrvc.flash",
+          "when": "view == mrvc.projectExplorer && viewItem == project",
+          "group": "1_project@7"
+        },
+        {
           "command": "mrvc.configure",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "9_props@1"
+          "group": "6_props@1"
         },
         {
           "command": "mrvc.renameProject",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_project@6"
+          "group": "5_project@6"
         },
         {
           "command": "mrvc.syncProjectName",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_project@7"
+          "group": "5_project@7"
         },
         {
           "command": "mrvc.switchProjectType",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_project@8"
+          "group": "5_project@8"
         },
         {
           "command": "mrvc.searchInProject",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_link@0"
+          "group": "2_link@0"
         },
         {
           "command": "mrvc.addLinkedFolder",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_link@1"
+          "group": "2_link@1"
         },
         {
           "command": "mrvc.removeLinkedFolder",
@@ -1219,42 +1249,42 @@
         {
           "command": "mrvc.generateCMakeList",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_project@9"
+          "group": "5_project@9"
         },
         {
           "command": "mrvc.exportAsCMake",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_project@10"
+          "group": "5_project@10"
         },
         {
           "command": "mrvc.restoreRemoved",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_project@11"
+          "group": "5_project@11"
         },
         {
           "command": "mrvc.showStackUsage",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_project@12"
+          "group": "5_project@12"
         },
         {
           "command": "mrvc.showCallAnalysis",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_project@13"
+          "group": "5_project@13"
         },
         {
           "command": "mrvc.checkPreprocessor",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_project@14"
+          "group": "5_project@14"
         },
         {
           "submenu": "mrvc.mrsOperations",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_mrs@1"
+          "group": "4_mrs@1"
         },
         {
           "command": "mrvc.auditProject",
           "when": "view == mrvc.projectExplorer && viewItem == project",
-          "group": "3_project@20"
+          "group": "5_project@20"
         },
         {
           "command": "mrvc.changeLinkedFolder",

@@ -34,7 +34,12 @@ const gkey = (g) => {
   return m ? [m[1], Number(m[2])] : [g, 0];
 };
 
-const NODES = ['project', 'file', 'file.excluded', 'folder', 'folder.excluded', 'linkedFolder', 'products', 'outputFile', 'solution'];
+// submenu entry labels (a menu item may be { submenu } instead of { command })
+const subLabels = Object.fromEntries((pkg.contributes.submenus || []).map((s) => [s.id, resolveTitle(s.label)]));
+const labelOf = (i) => (i.command ? cmds[i.command] : '『' + (subLabels[i.submenu] ?? i.submenu) + '』');
+const refOf = (i) => (i.command ? i.command : 'submenu ' + i.submenu);
+
+const NODES = ['project', 'file.src', 'file.src.excluded', 'file', 'file.excluded', 'folder', 'folder.excluded', 'linkedFolder', 'products', 'outputFile', 'solution'];
 for (const node of NODES) {
   const list = items
     .filter((i) => appliesTo(i.when, node) && !i.group.startsWith('inline'))
@@ -46,7 +51,23 @@ for (const node of NODES) {
   const inline = items.filter((i) => appliesTo(i.when, node) && i.group.startsWith('inline'));
   if (!list.length && !inline.length) continue;
   console.log(`===== ${node} =====`);
-  inline.forEach((i) => console.log('  [行内按钮] ' + cmds[i.command]));
-  list.forEach((i) => console.log('  ' + i.group.padEnd(12) + ' ' + cmds[i.command] + '  (' + i.command + ')'));
+  inline.forEach((i) => console.log('  [行内按钮] ' + labelOf(i)));
+  list.forEach((i) => console.log('  ' + i.group.padEnd(12) + ' ' + labelOf(i) + '  (' + refOf(i) + ')'));
+  console.log();
+}
+
+// the submenus referenced by the tree menu, in contribution order
+for (const sub of pkg.contributes.submenus || []) {
+  const entries = pkg.contributes.menus[sub.id] || [];
+  if (!entries.length) continue;
+  console.log(`===== submenu: ${subLabels[sub.id] ?? sub.id} =====`);
+  entries
+    .slice()
+    .sort((a, b) => {
+      const [ga, na] = gkey(a.group);
+      const [gb, nb] = gkey(b.group);
+      return ga.localeCompare(gb) || na - nb;
+    })
+    .forEach((i) => console.log('  ' + i.group.padEnd(12) + ' ' + labelOf(i) + '  (' + refOf(i) + ')'));
   console.log();
 }

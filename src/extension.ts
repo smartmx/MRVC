@@ -285,7 +285,10 @@ function startExtension(context: vscode.ExtensionContext): void {
       treeDecorations.setLinks(
         store.all.flatMap((p) => p.projectFile.linkedResources.filter((l) => l.type === 2).map((l) => l.location))
       );
-      treeDecorations.setOutputs(store.all.map((p) => p.buildDir));
+      // every configuration's output directory — not just the active one:
+      // a dual-config project builds obj1/ AND obj/, and both must read as
+      // build output dirs in the tree (user report 2026-11-20)
+      treeDecorations.setOutputs(store.all.flatMap((p) => p.outputDirs));
       treeDecorations.setExcludedByProject(new Map(store.all.map((p) => [ProjectStore.key(p.root), excludedResourcePaths(p)] as const)));
       // file flags (MRS2-compatible .mrs/preferredColor.json)
       const flagMap = new Map<string, string>();
@@ -309,7 +312,7 @@ function startExtension(context: vscode.ExtensionContext): void {
   context.subscriptions.push(flagWatcher);
 
   const build = new BuildManager(store);
-  const configView = new ConfigView(store, context);
+  const configView = new ConfigView(store, context, build);
 
   // ---- global UI context keys (menu/keybinding gating) ----
   // no status bar items: the tree stays the single MRVC surface
@@ -414,6 +417,9 @@ function startExtension(context: vscode.ExtensionContext): void {
   // reach the decoration provider instance directly)
   reg('mrvc.refreshTreeDecorations', () => updateTreeDecorations());
   reg('mrvc.build', (item?: { project?: unknown }) => build.run('build', (item as { project?: MrsProject })?.project));
+  // compile ONE source file (0.3.4, the MRS 编译单个文件 counterpart): the
+  // file tree node carries both the project and the file path
+  reg('mrvc.compileFile', (item?: unknown) => build.compileFile(item as { project?: MrsProject; fsPath?: string } | undefined));
   reg('mrvc.buildAndDownload', (item?: { project?: unknown }) =>
     build.buildAndDownload((item as { project?: MrsProject })?.project)
   );
@@ -461,6 +467,12 @@ function startExtension(context: vscode.ExtensionContext): void {
     vscode.commands.executeCommand('workbench.actions.treeView.mrvc.projectExplorer.collapseAll')
   );
   reg('mrvc.rebuild', (item?: { project?: unknown }) => build.run('rebuild', (item as { project?: MrsProject })?.project));
+  reg('mrvc.rebuildAllConfigs', (item?: { project?: unknown }) =>
+    void build.rebuildAllConfigs(item as { project?: MrsProject } | undefined)
+  );
+  reg('mrvc.cleanAllConfigs', (item?: { project?: unknown }) =>
+    void build.cleanAllConfigs(item as { project?: MrsProject } | undefined)
+  );
   reg('mrvc.clean', (item?: { project?: unknown }) => build.run('clean', (item as { project?: MrsProject })?.project));
   reg('mrvc.flashUtility', () => openLinkUtility());
   reg('mrvc.flash', (item?: { project?: unknown }) => flashProject(store, (item as { project?: MrsProject })?.project));
@@ -746,7 +758,7 @@ function startExtension(context: vscode.ExtensionContext): void {
   let buildTasksActive = 0;
   const dirtyRoots = new Set<string>();
   const isTreeHeavyTask = (type: string): boolean =>
-    type === 'mrvc-build' || type === 'mrvc-build-all' || type === 'mrvc-clean' || type === 'mrvc-clean-all' || type === 'mrvc-flash';
+    type === 'mrvc-build' || type === 'mrvc-build-all' || type === 'mrvc-clean' || type === 'mrvc-clean-all' || type === 'mrvc-flash' || type === 'mrvc-compile-file';
   context.subscriptions.push(
     vscode.tasks.onDidStartTaskProcess((e) => {
       if (isTreeHeavyTask(e.execution.task.definition.type) && ++buildTasksActive === 1) {

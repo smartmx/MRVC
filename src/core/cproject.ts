@@ -36,6 +36,75 @@ export interface SourceEntry {
   element: XElement;
 }
 
+/**
+ * WHY a configuration name needs this gate: the name becomes a DIRECTORY
+ * under the project root AND rides into watcher brace-globs, so everything
+ * that could escape or break that contract is refused:
+ *   - path separators and everything Windows forbids in a path segment
+ *     (`< > : " | ? *`), NUL / control characters;
+ *   - glob metacharacters `[ ] { } , !` — the output-dir watcher pattern
+ *     embeds every configuration name in one brace glob;
+ *   - a trailing dot or space (Windows folds both away);
+ *   - Windows RESERVED DEVICE NAMES (`CON PRN AUX NUL COM1-9 LPT1-9`,
+ *     case-insensitive, also with an extension: `CON.txt` is `CON`) —
+ *     the build wrapper's `cd /d` and `fs.mkdirSync` both fail on them
+ *     (round6 P2: the name was accepted, the build then died in the shell);
+ *     SUPERSCRIPT digits (`COM¹ LPT¹`, U+00B9/B2/B3, U+2070-2079) are
+ *     deliberately NOT in this list — round7 P3-1 probed them three ways
+ *     (NT GetFileAttributes resolves real dirs named COM¹ fine; a
+ *     CP936-encoded wrapper `cd /d` into an encodable non-ASCII digit
+ *     lookalike `COM１` lands; the failure seen in review was a probe
+ *     artifact: a UTF-8 .cmd read back through the ANSI code page).
+ *     On ACP-936 machines these chars simply have no GBK bytes at all, so
+ *     the build fails loudly at wrapper WRITE time via encodeArtifact —
+ *     the same locale bound MRS2 itself is under.
+ *   - names longer than 255 UTF-16 units or 255 UTF-8 bytes — one is the
+ *     Windows segment limit, the other ext4's; beyond either, mkdir fails
+ *     with EINVAL/ENAMETOOLONG instead of an actionable message.
+ * A LEADING `-` is allowed on purpose (round5 P2): MRS's own dialog accepts
+ * it, and the configuration directory never becomes a make ARGUMENT — it is
+ * the wrapper's `cd` target, so no `-foo/...` option parsing can happen.
+ * Everything MRS's own dialog can produce — letters, digits, CJK, `_`, `-` —
+ * passes, so the write side (configSwitch's CONFIG_NAME_RE) and this read
+ * side agree on every name the UI can write. Real EVT corpus (1445
+ * .cproject): only obj / dbg / obj1 occur.
+ */
+export function configNameProblem(raw: string): string | undefined {
+  if (!raw || raw === '.' || raw === '..') return 'must not be empty, "." or ".."';
+  if (/[/\\]/.test(raw)) return 'must not contain path separators';
+  if (/[<>:"|?*[\]{}!,]/.test(raw)) return 'must not contain path or glob characters';
+  if (/[\x00-\x1f\x7f]/.test(raw)) return 'must not contain control characters';
+  if (/[. ]$/.test(raw)) return 'must not end with a dot or space (Windows folds them away)';
+  const dot = raw.indexOf('.');
+  const stem = (dot === -1 ? raw : raw.slice(0, dot)).toUpperCase();
+  if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(stem)) return 'is a reserved Windows device name';
+  if (raw.length > 255 || Buffer.byteLength(raw, 'utf8') > 255) return 'is too long for a directory name (max 255 bytes)';
+  return undefined;
+}
+
+export function isValidConfigName(raw: string): boolean {
+  return configNameProblem(raw) === undefined;
+}
+
+/**
+ * A configuration's name — CDT keeps it on the inner <configuration
+ * name="obj">, the outer <cconfiguration> wrapper only carries the id.
+ * The name becomes a directory under the project root, so it must pass
+ * {@link isValidConfigName}; an UNSAFE name is a parse error (loudly
+ * unloadable project instead of a silent build-directory escape). Only a
+ * nameless inner <configuration> (synthetic fixtures) falls back to CDT's
+ * default 'obj'.
+ */
+export function configurationName(cfg: XElement): string {
+  const raw = cfg.find((e) => e.name === 'configuration')?.attr('name') ?? cfg.attr('name');
+  if (raw === undefined) return 'obj';
+  const problem = configNameProblem(raw);
+  if (problem) {
+    throw new Error(`.cproject: unsafe configuration name "${raw}" — ${problem}`);
+  }
+  return raw;
+}
+
 export interface ListOption {
   values: string[];
   elements: XElement[];
@@ -57,8 +126,13 @@ export class Cproject {
   /** .project display name — MRS2's ${ProjName} (may differ from the dir) */
   private projectDisplayName = '';
   private suffixIndex: Map<string, XElement[]> = new Map();
+  /** the configuration element SOURCE ENTRIES are read from. MRS2's
+   * rebuild-all builds every configuration with the ACTIVE configuration's
+   * exclusion table (preBuild.ts isExluded() hardcodes configurations[0]),
+   * so a non-first-configuration model still reads entries from index 0. */
+  private entriesConfig: XElement;
 
-  constructor(file: string) {
+  constructor(file: string, configIndex = 0) {
     this.file = file;
     this.projectRoot = path.dirname(file);
     try {
@@ -79,22 +153,23 @@ export class Cproject {
     const raw = fs.readFileSync(file, 'utf-8');
     this.root = parseXml(raw);
     const cconfigs = this.root.findAll((e) => e.name === 'cconfiguration');
-    const cfg = cconfigs[0] ?? this.root.find((e) => e.name === 'configuration');
+    const cfg = cconfigs[configIndex] ?? cconfigs[0] ?? this.root.find((e) => e.name === 'configuration');
     if (!cfg) {
       throw new Error('.cproject: no <cconfiguration> found');
     }
     this.config = cfg;
     // the name lives on the inner <configuration> in real files (the
     // cconfiguration wrapper carries no name)
-    // sanitize: the name becomes a directory under the project root, so
-    // path separators / .. are refused (falls back to the CDT default 'obj')
-    const rawName = cfg.find((e) => e.name === 'configuration')?.attr('name') ?? cfg.attr('name') ?? 'obj';
-    this.configName = /^[\w .-]+$/.test(rawName) ? rawName : 'obj';
+    this.configName = configurationName(cfg);
     const tc = cfg.find((e) => e.name === 'toolChain');
     if (!tc) {
       throw new Error('.cproject: no <toolChain> found');
     }
     this.toolChain = tc;
+    // exclusion table always comes from the FIRST configuration (MRS parity,
+    // see the field comment) — for the active configuration this is the same
+    // element as this.config
+    this.entriesConfig = cconfigs[0] ?? cfg;
     // index every option element by superClass suffix
     for (const opt of cfg.findAll((e) => e.name === 'option' && !!e.attr('superClass'))) {
       const sc = opt.attr('superClass')!;
@@ -146,8 +221,28 @@ export class Cproject {
     return new Cproject(path.join(projectRoot, '.cproject'));
   }
 
+  /** a configuration-scoped model: index 0 is the ACTIVE configuration (the
+   * default); 1..n are the remaining ones, used only for read-only builds
+   * ("ReBuild Project All Configurations"). Options/target name/build dir
+   * follow the chosen configuration; the exclusion table still comes from
+   * index 0 (MRS parity — see entriesConfig). */
+  static loadConfigAt(projectRoot: string, index: number): Cproject {
+    return new Cproject(path.join(projectRoot, '.cproject'), index);
+  }
+
   get isCpp(): boolean {
     return this.cppProject;
+  }
+
+  /** every <cconfiguration> in file order — index 0 is the ACTIVE one
+   * (MRS2 stores "active" as array position, never as a flag) */
+  get configurationElements(): XElement[] {
+    return this.root.findAll((e) => e.name === 'cconfiguration');
+  }
+
+  /** configuration names in file order (same strings as MRS2's list) */
+  get configurationNames(): string[] {
+    return this.configurationElements.map((el) => configurationName(el));
   }
 
   get artifactName(): string {
@@ -381,7 +476,10 @@ export class Cproject {
   }
 
   get sourceEntries(): SourceEntry[] {
-    const entries = this.config.findAll((e) => e.name === 'entry' && e.attr('kind') === 'sourcePath');
+    // entriesConfig, NOT this.config: even a later configuration's model
+    // reads the ACTIVE configuration's exclusion table (MRS rebuild-all
+    // parity — preBuild.ts isExluced() hardcodes configurations[0])
+    const entries = this.entriesConfig.findAll((e) => e.name === 'entry' && e.attr('kind') === 'sourcePath');
     return entries.map((element) => ({
       name: element.attr('name') ?? '',
       excluding: (element.attr('excluding') ?? '')

@@ -201,6 +201,38 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   buildFinished: { en: 'Build finished: {0}', 'zh-cn': '编译完成：{0}' },
   neverBuilt: { en: 'MRVC: "{0}" has never been built — nothing to clean.', 'zh-cn': 'MRVC：" {0} " 尚未编译过——没有可清理的内容。' },
   rebuildCleanFailed: { en: 'MRVC: rebuild aborted — clean failed (exit {0}).', 'zh-cn': 'MRVC：重建中止——清理失败（退出码 {0}）。' },
+  // "ReBuild Project All Configurations" (MRS menu label verbatim)
+  progressRebuildAllConfigs: {
+    en: 'MRVC: Rebuilding all configurations of "{0}"',
+    'zh-cn': 'MRVC：正在重建“{0}”的全部编译配置',
+  },
+  rebuildAllCleanFailed: {
+    en: 'MRVC: clean of configuration "{0}" failed (exit {1}) — continuing with the build phase.',
+    'zh-cn': 'MRVC：配置“{0}”清理失败（退出码 {1}）——继续执行编译阶段。',
+  },
+  rebuildAllBuildFailed: {
+    en: 'MRVC: build of configuration "{0}" failed (exit {1}) — the remaining configurations were skipped.',
+    'zh-cn': 'MRVC：配置“{0}”编译失败（退出码 {1}）——其余配置不再编译。',
+  },
+  rebuildAllConfigsDone: {
+    en: 'MRVC: rebuilt {1} configuration(s) of "{0}".',
+    'zh-cn': 'MRVC：已完成“{0}”全部 {1} 个编译配置的重建。',
+  },
+  // MRVC-specific standalone "clean every configuration's output"
+  cleanAllConfigsDone: {
+    en: 'MRVC: cleaned the output of {1} configuration(s) of "{0}".',
+    'zh-cn': 'MRVC：已清理“{0}”{1} 个编译配置的输出。',
+  },
+  cleanAllConfigsFailed: {
+    en: 'MRVC: clean failed for configuration(s) {0} of "{1}".',
+    'zh-cn': 'MRVC：“{1}”的编译配置 {0} 清理失败。',
+  },
+  // externally edited .cproject whose configuration name cannot be a safe
+  // output directory — the stale model stays until the file is fixed
+  projectConfigRejected: {
+    en: 'MRVC: "{0}" was changed to an invalid .cproject ({1}) — the previous configuration stays until the file is fixed.',
+    'zh-cn': 'MRVC：“{0}”的 .cproject 已非法（{1}）——文件修复前继续使用旧配置。',
+  },
   nothingToClean: { en: 'nothing to clean', 'zh-cn': '无可清理内容' },
   noOutputDir: { en: 'no output directory', 'zh-cn': '无输出目录' },
   outputDirRemoved: { en: 'output directory removed', 'zh-cn': '输出目录已删除' },
@@ -783,6 +815,24 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     'zh-cn': '已在 {1} 中统一 {0} 个宏的值，详情见 MRVC Preprocessor 输出。',
   },
   ppNoChange: { en: 'Nothing was changed.', 'zh-cn': '未做任何修改。' },
+  // compile single file (0.3.4, the MRS 编译单个文件 counterpart)
+  compileFileTaskTitle: { en: 'MRVC: Compile Single File', 'zh-cn': 'MRVC：编译单个文件' },
+  compileFileNotSource: {
+    en: '{0}: not a compilable source file (.c/.cpp/.cc/.cxx/.s/.S).',
+    'zh-cn': '{0}：不是可编译的源文件（.c/.cpp/.cc/.cxx/.s/.S）。',
+  },
+  compileFileOutside: { en: '{0} is outside any project scope.', 'zh-cn': '{0} 不在任何工程范围内。' },
+  compileFileExcluded: {
+    en: '{0} is excluded from the build — restore it first (Include From Build).',
+    'zh-cn': '{0} 已被排除出编译，请先恢复（Include From Build）。',
+  },
+  compileFileBadName: {
+    en: '{0}: the file name contains a quote character and cannot be passed to make safely.',
+    'zh-cn': '{0}：文件名含引号字符，无法安全传给 make。',
+  },
+  progressCompileFile: { en: 'MRVC: compiling {0} ({1})', 'zh-cn': 'MRVC：正在编译 {0}（{1}）' },
+  compileFileDone: { en: '{0} compiled.', 'zh-cn': '{0} 编译完成。' },
+  compileFileFailed: { en: 'Compiling {0} failed (make exit {1}).', 'zh-cn': '编译 {0} 失败（make 退出码 {1}）。' },
   // first-run disclaimer (shown once per installation, on first activation)
   disclaimerTitle: {
     en: 'Unofficial, independent project — not developed or supported by WCH or MounRiver.',
@@ -795,6 +845,11 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   disclaimerAck: { en: 'I understand', 'zh-cn': '我已知晓' },
   propertiesSaved: { en: 'MRVC: project properties saved ({0})', 'zh-cn': 'MRVC：工程属性已保存（{0}）' },
   propertiesSaveFailed: { en: 'MRVC: failed to save configuration ({0})', 'zh-cn': 'MRVC：保存配置失败（{0}）' },
+  configSwitched: { en: 'MRVC: active configuration switched to {0}', 'zh-cn': 'MRVC：活动配置已切换为 {0}' },
+  configSwitchFailed: { en: 'MRVC: failed to switch configuration ({0})', 'zh-cn': 'MRVC：切换配置失败（{0}）' },
+  configAdded: { en: 'MRVC: configuration {0} added', 'zh-cn': 'MRVC：已添加配置 {0}' },
+  configRenamed: { en: 'MRVC: configuration renamed to {0}', 'zh-cn': 'MRVC：配置已重命名为 {0}' },
+  configDeleted: { en: 'MRVC: configuration {0} deleted', 'zh-cn': 'MRVC：已删除配置 {0}' },
   propertiesXmlInvalid: {
     en: 'MRVC: the .cproject XML is damaged ({0}) — nothing was written. Run "Audit And Repair Project Configuration" first.',
     'zh-cn': 'MRVC：.cproject XML 结构已损坏（{0}），未写入任何内容。请先运行「检测并修复工程配置」。',

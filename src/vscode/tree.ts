@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ProjectStore, MrsProject, MrsSolution } from './projects';
-import { isLogicExcluded } from '../core/scan';
+import { classifySourceExt, isLogicExcluded } from '../core/scan';
 import { RemovedResource, listRemovedResources } from '../core/projectFile';
 import { toPosix } from '../core/macros';
 import { themeColorFor } from '../core/colorMarks';
@@ -52,8 +52,9 @@ export class TreeNode extends vscode.TreeItem {
  * Exclusions are tracked PER PROJECT: EVT trees link the same physical
  * folder (LIB, StdPeriphDriver, ...) into many projects whose exclusion
  * lists differ, so a path alone is ambiguous. Tree items carry their
- * project key in the resourceUri query; views without that context (VSCode
- * Explorer) fall back to the union of all projects.
+ * project key in the resourceUri query; a URI without one (Explorer, search
+ * results, open editors) is left UNDECORATED — VSCode offers no per-view
+ * provider, so that is the only way to keep the decorations tree-only.
  */
 export class TreeDecorations implements vscode.FileDecorationProvider {
   private readonly _onDidChange = new vscode.EventEmitter<vscode.Uri[] | undefined>();
@@ -160,6 +161,14 @@ export class TreeDecorations implements vscode.FileDecorationProvider {
   }
 
   provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
+    // Decorations are a TREE affordance. VSCode asks every registered
+    // provider for EVERY view showing the same file; Explorer / search /
+    // open-editors rows carry no project key in the URI query and used to
+    // inherit the link/output colours and the UNION of all projects'
+    // exclusions (user report 2026-11-19). MRVC's own file/folder rows always
+    // set the project key as the query (see getTreeItem), project and
+    // solution rows are not decorated, so the tree is unaffected.
+    if (!uri.query) return undefined;
     const key = ProjectStore.key(uri.fsPath);
     if (this.links.has(key)) {
       return new vscode.FileDecoration(undefined, 'Linked folder (external directory)', new vscode.ThemeColor('charts.blue'));
@@ -433,12 +442,22 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         el.tooltip = lines.join('\n');
       }
     }
+    // single-file compile menu (0.3.4): compilable source files carry a
+    // `file.src` context value so the right-click menu only offers the
+    // command on compilable kinds — case-variant C++ suffixes (.Cxx/.Cc/.CC
+    // ...) count too (round: user request); headers keep plain `file`
+    if (el.nodeType === 'file' && el.fsPath) {
+      if (classifySourceExt(el.fsPath)) el.contextValue = 'file.src';
+    }
     // exclude/include menu visibility rides on contextValue
     if (
       (el.nodeType === 'file' || el.nodeType === 'folder') &&
       el.project &&
       el.fsPath &&
-      !el.fsPath.startsWith(el.project.buildDir + path.sep)
+      // EVERY configuration's output directory, not just the active one —
+      // with two configs the inactive dir's contents must not offer
+      // "Exclude From Build" (it would write nonsense tokens into .cproject)
+      !el.project.outputDirs.some((d) => el.fsPath!.startsWith(d + path.sep))
     ) {
       const logic = el.project.logicPathOf(el.fsPath);
       if (logic && isLogicExcluded(el.project.cproject, logic)) {
@@ -523,7 +542,18 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         return !!logic && isLogicExcluded(proj.cproject, logic);
       };
       const realFolders = entries
-        .filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'obj' && !linkedNames.has(e.name) && !removedRoot.has(e.name))
+        // the ACTIVE configuration's output dir is represented by the
+        // products node below — hide it here (by config name: the dir IS the
+        // config name). A second configuration's dir stays a regular folder
+        // row; the decorations feed colors it as an output dir too.
+        .filter(
+          (e) =>
+            e.isDirectory() &&
+            !e.name.startsWith('.') &&
+            e.name !== proj.cproject.configName &&
+            !linkedNames.has(e.name) &&
+            !removedRoot.has(e.name)
+        )
         .map((e) => ({ e, full: path.join(proj.root, e.name) }))
         .sort((a, b) => {
           const ex = (isNodeExcluded(a.full) ? 1 : 0) - (isNodeExcluded(b.full) ? 1 : 0);
