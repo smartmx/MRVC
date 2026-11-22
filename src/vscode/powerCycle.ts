@@ -14,6 +14,7 @@ import { PowerVoltage } from '../core/flash';
 import { MrsInstall } from '../core/toolchain';
 import { checkWCHLinkFirmware, linkSupportsPowerOutput, WlinkFirmwareCheck } from '../core/wlink';
 import { powerOutputRail } from '../core/powerState';
+import { writePowerAck, fingerprintPowerPlan } from '../core/flashAck';
 import { t } from '../core/i18n';
 import { waitTaskProcess } from './taskRunner';
 
@@ -259,9 +260,14 @@ async function powerOffResetInner(
     return;
   }
   const voltage: PowerVoltage = powerOutputRail();
+  const delayMs = clampPowerOffDelay(cfg.get<number>('flash.powerOffDelayMs', 100));
   store.setActive(project);
   if (!(await runPowerPass({ project, openocd, boardCfg, voltage, state: 'off' }))) return;
-  await sleep(clampPowerOffDelay(cfg.get<number>('flash.powerOffDelayMs', 100)));
+  await sleep(delayMs);
   if (!(await runPowerPass({ project, openocd, boardCfg, voltage, state: 'on' }))) return;
+  // the MCP power tool's gate: a marker-verified MANUAL reset records the
+  // receipt with the sequence fingerprint (voltage/delay/board cfg/openocd) —
+  // never blocks or fails the reset itself
+  writePowerAck(project.root, fingerprintPowerPlan({ voltage, delayMs, boardCfg, openocdExe: openocd }));
   vscode.window.showInformationMessage(t('powerResetDone', project.projectName));
 }

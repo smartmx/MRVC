@@ -106,6 +106,8 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   progressRebuildAll: { en: 'MRVC: Rebuild All', 'zh-cn': 'MRVC：重新构建全部工程' },
   progressDeleteKeep: { en: 'MRVC: Delete Output Files (Keep hex/bin)', 'zh-cn': 'MRVC：删除输出文件（保留 hex/bin）' },
   progressDeleteDirs: { en: 'MRVC: Delete Output Directories', 'zh-cn': 'MRVC：删除输出目录' },
+  progressDeleteAllKeep: { en: "MRVC: Delete All Configurations' Output Files (Keep hex/bin)", 'zh-cn': 'MRVC：删除所有配置输出目录（保留 hex/bin）' },
+  progressDeleteAllDirs: { en: "MRVC: Delete All Configurations' Output Directories", 'zh-cn': 'MRVC：删除所有配置输出目录' },
   progressCleanAll: { en: 'MRVC: Clean All', 'zh-cn': 'MRVC：清理全部工程' },
   progressCleanSolution: { en: 'MRVC: Clean Solution - {0}', 'zh-cn': 'MRVC：清理解决方案 - {0}' },
   // one-project progress (project list inline Build / Rebuild / Download)
@@ -173,6 +175,17 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   },
   installOpenSettings: { en: 'Open settings', 'zh-cn': '打开设置' },
   installUseDetected: { en: 'Use detected {0}', 'zh-cn': '使用检测到的 {0}' },
+  installAutoFilled: {
+    en: 'MRVC auto-detected and saved the MounRiver install path(s): {0} (the next launch skips the probe).',
+    'zh-cn': 'MRVC 已自动检测并写入 MounRiver 安装路径：{0}（下次启动不再探测）。',
+  },
+  installChooseGeneration: {
+    en: 'Both MRS2 and MRS3 installations are available — which generation should MRVC use by default?',
+    'zh-cn': '同时检测到 MRS2 与 MRS3 安装——默认使用哪一代？',
+  },
+  installUseMRS3: { en: 'Use MRS3', 'zh-cn': '使用 MRS3' },
+  installUseMRS2: { en: 'Use MRS2', 'zh-cn': '使用 MRS2' },
+  installKeepAuto: { en: 'Keep auto', 'zh-cn': '保持自动' },
   installGateStarted: {
     en: 'Installation paths are valid now — MRVC started.',
     'zh-cn': '安装路径已修正，MRVC 已启动。',
@@ -236,6 +249,7 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   nothingToClean: { en: 'nothing to clean', 'zh-cn': '无可清理内容' },
   noOutputDir: { en: 'no output directory', 'zh-cn': '无输出目录' },
   outputDirRemoved: { en: 'output directory removed', 'zh-cn': '输出目录已删除' },
+  outputDirsRemoved: { en: '{0} output directories removed', 'zh-cn': '已删除 {0} 个输出目录' },
   entriesRemoved: { en: '{0} entries removed', 'zh-cn': '已删除 {0} 项' },
 
   // tree

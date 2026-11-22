@@ -13,6 +13,8 @@
 //   4. vsix changelog.md byte-equals CHANGELOG.md
 //   5. out/extension.js is the esbuild bundle, not an 18KB tsc emit
 //   6. vsix out/extension.js byte-equals the freshly rebuilt bundle
+//   6b. same for the second entry: vsix mcp/mcp-server.js byte-equals the
+//       freshly rebuilt MCP bundle (and never references the vscode module)
 //   7. extension.vsixmanifest Identity Version/Publisher/Id match package.json
 //   8. no source/docs/tools/node_modules entries leaked into the package
 //
@@ -100,9 +102,18 @@ for (const nls of ['package.nls.json', 'package.nls.zh-cn.json']) {
 }
 
 // 4. changelog byte-equality
+// EOL-insensitive ON PURPOSE: vsce packages the file bytes as they were at
+// packaging time, but a CRLF-autocrlf CHECKOUT of the release repo hands
+// back CRLF — a byte compare then fails on every fresh clone even though
+// the content never drifted. The drift this check exists for (CHANGELOG
+// edited after packaging — the 0.3.5 round3 incident) is a content change,
+// which a normalized compare still catches.
 const chlog = file('extension/changelog.md');
-check(!!chlog && chlog.equals(fs.readFileSync(path.join(root, 'CHANGELOG.md'))),
-  'vsix changelog.md byte-equals repo CHANGELOG.md');
+const repoChlog = fs.readFileSync(path.join(root, 'CHANGELOG.md'));
+const norm = (b) => b.toString('utf8').replace(/\r\n/g, '\n');
+const chlogEolOnly = !!chlog && !chlog.equals(repoChlog) && norm(chlog) === norm(repoChlog);
+check(!!chlog && (chlog.equals(repoChlog) || chlogEolOnly),
+  'vsix changelog.md byte-equals repo CHANGELOG.md', chlogEolOnly ? 'content equal (EOL-only difference — CRLF worktree)' : '');
 
 // The README is the ONE artifact that can not be byte-compared on purpose:
 // vsce rewrites its relative links when packaging (verified on 0.2.3 — the
@@ -144,6 +155,21 @@ check(rawEqual,
       ? ' — differs only in embedded module-path form: node_modules looks like a junction/symlink, package on a real install'
       : ''));
 
+// 6b. the stdio MCP server (0.3.6) — same rebuild, own byte-equality gate.
+// Ships from its OWN top-level folder (<ext>/mcp/mcp-server.js, 0.3.6: the
+// AI-facing artifact got a dedicated dir instead of out/).
+const mcpPath = path.join(root, 'mcp', 'mcp-server.js');
+const mcpInZip = file('extension/mcp/mcp-server.js');
+const mcpBundle = fs.existsSync(mcpPath) ? fs.readFileSync(mcpPath) : Buffer.alloc(0);
+check(mcpBundle.length > 1024, 'mcp/mcp-server.js is the esbuild MCP bundle', `${mcpBundle.length} B`);
+check(!!mcpInZip && mcpInZip.equals(mcpBundle),
+  'vsix mcp-server.js byte-equals freshly rebuilt mcp/mcp-server.js',
+  !mcpInZip ? 'no mcp bundle in vsix' : `${mcpInZip.length} B vs rebuilt ${mcpBundle.length} B`);
+// the server must be free of the vscode module — that is its whole point
+// (headless: the client spawns it without any VSCode involvement)
+check(mcpBundle.includes('mrvc_discover_projects') && !/require\(["']vscode["']\)/.test(mcpBundle.toString('utf8')),
+  'mcp bundle carries the tools and never references the vscode module');
+
 // 6. vsixmanifest identity (attribute order varies — parse, don't regex-order)
 const manifest = file('extension.vsixmanifest')?.toString('utf8') ?? '';
 const identity = manifest.match(/<Identity\b[^>]*>/i)?.[0] ?? '';
@@ -172,6 +198,7 @@ const WHITELIST = [
   /^extension\/changelog\.md$/, // vsce generates it from CHANGELOG.md
   /^extension\/out\/extension\.js$/,
   /^extension\/out\/extension\.js\.map$/,
+  /^extension\/mcp\/mcp-server\.js$/, // stdio MCP server (0.3.6, own folder) — no map on purpose
   /^extension\/resources\/icon\.png$/,
   /^extension\/media\/[a-z_]+\.svg$/,
   // the koffi runtime: JS entry + its subtree, POSIX prebuilds included

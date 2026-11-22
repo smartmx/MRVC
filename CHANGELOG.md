@@ -1,5 +1,84 @@
 # MRVC 更新日志
 
+## V0.3.6（2026-11-22）
+
+### 变更
+
+- **安装路径自动探测 → 自动写入设置（0.3.6，用户点名）**：设置留空时的惯例位置探测（C:/D 盘 MRS2/MRS3）
+  **命中后把检测到的根路径自动写入用户级设置**（`mrvc.mrs2InstallPath` / `mrvc.mrs3InstallPath`）——下次
+  启动直接读设置、不再探测；写入以**非模态提示**告知（`已自动检测并写入 MounRiver 安装路径：MRS2: …
+  MRS3: …`）。**两代并存时提示代次选择**：填充后若 MRS2 与 MRS3 都有效且 `mrvc.mrsVersion` 仍为
+  `auto`，弹**非模态选择**（使用 MRS3 / 使用 MRS2 / 保持自动），选择写入 `mrsVersion`；整个提示每次
+  安装**至多一次**（globalState 标记，选择"保持自动"也不再重弹），显式设置过版本偏好的永不弹。用户
+  显式设置的路径永远不被探测覆盖（探测只填空槽位）。纯决策层在 `src/core/installFill.ts`
+  （planInstallFill，7 项断言钉住），探测/写入/提示接线在 `src/vscode/installAutoFill.ts`，于启动门禁
+  **之前**运行——首次激活即通过门禁，不再先报"未配置安装"再经设置变更重启。
+- **新增 AI / MCP Server（随插件附带，独立 stdio 进程）**：vsix 现在附带 `<扩展安装目录>/mcp/mcp-server.js`
+  ——一个**手工实现的 MCP stdio JSON-RPC 服务器**（零新依赖、零 vscode 导入），任何 MCP 客户端
+  （ZCode / Claude / OpenCode / Cursor 等）以 `node <扩展安装目录>/mcp/mcp-server.js` 配置后即可驱动
+  MRVC 的工程能力，**完全不需要打开 VSCode**。十个工具：**工程发现**（目录扫描）、**安装信息**
+  （显式路径 > `MRVC_MRS_INSTALL_PATH` > C:/D: 惯例位置，显式路径无效时报错不静默回退）、
+  **配置摘要**（配置清单/工具链/真实 -I/-D 示例命令行）、**配置体检**（只报告不修复）、
+  **构建/清理**（现生成 makefile + MRS make，返回退出码+输出尾部+产物大小）、**构建记录读取**、
+  **CMakeLists 生成**（已存在文件拒绝覆盖，需显式 overwrite）、**compile_commands.json 生成**
+  （含被排除文件）。**硬件操作加入：`mrvc_flash`（OpenOCD 下载，跟随 .template 参数与双核 cfg）与
+  `mrvc_power_off_reset`（掉电复位，仅 WCH-LinkE/DAPLink/LinkW）**，两类操作各挂**独立硬门禁**：
+  ① `mrvc_flash`：扩展在每次**手动下载成功后**写入凭据 `.vscode/mrvc/flash-verified.json`：.template
+  内容 SHA-256（改参数未重新手动下载即失效）+ **实际执行的 FlashPlan 指纹**（脚本 SHA + 固件路径 +
+  地址 + verify/reset/eraseAll/banks + board cfg 路径与内容哈希 + openocd 路径 + powerOn 轨）——MCP
+  侧计划指纹**逐字段一致才放行**；不一致时拒绝消息**原文回列已验证参数**，AI 按回列传参即可对齐
+  （power-off 轨流程 MCP 不复刻，单独提示）。② `mrvc_power_off_reset`：凭据改由**手动 Power-Off Reset
+  成功后写入的 `power-verified.json`**（电压/延时/board cfg 路径与哈希/openocd 指纹）授权——烧录凭据
+  不为电源轨操作背书；请求计划与凭据指纹不一致同样**回列已验证序列**拒绝。两工具均接受
+  `openocdPath` 显式参数（对齐扩展的 `mrvc.openocd.path` 自定义安装）。**其余边界（有意为之）**：
+  不写工程配置；无头下载不含芯片不匹配对话/SDI printf/固件升级提示（由手动验证下载覆盖）；
+  生成类写入仅限工程树内的 makefiles / CMakeLists / .vscode/compile_commands.json，与扩展自身
+  行为一致。**round4/5 并发与生命周期修正**：build 与两个硬件操作共用**进程内互斥**（流水线客户端
+  不会同时开两个 link 会话），server 退出/断开时统一终止存活子进程（POSIX 杀整组进程树；
+  Windows 杀直接子进程——taskkill /T 的动态 pid 形态被本机安全策略拦截，树级清理记为
+  Windows 已知限制）；`MRVC_MCP_DEFAULT_ROOT` 落地为 discover 的默认扫描根。固件**内容**哈希
+  只记录不比对——重编译后同路径重烧是本门禁要放行的核心 AI 工作流，参数才是用户确认的对象。
+  协议层与工具层共 46 项 stdio 端到端断言（握手/工具清单/各工具/hermetic 假安装/坏 JSON/
+  未知工具/env 转向/烧录门禁四态：缺失/legacy 无指纹/参数过期/指纹不匹配+匹配放行/电源凭据独立）。
+  **round7 补强**：`activate` 改为 **async 并 await 安装自动填充**（激活完成即命令/视图/门禁已就绪，
+  消除启动竞态）；自动填充的代次选择对**已有非空设置路径也做有效性校验**（无效路径不计入"两代并存"，
+  不再把无效一代作为选项）；凭据 `.gitignore` 维护改为**读取-追加缺失项**（用户已有条目保留、
+  不重复）；`mrvc_build` 超时改为**终止整组进程（POSIX 组信号）并短宽限后强制返回** `timedOut:true`，
+  不再无限等待 close（Windows 直接子进程终止为已知限制）。
+  **round6 补强**：凭据**绑定本机**（hostname+user 哈希，工程被复制到别的机器即读作未验证）且
+  `.vscode/mrvc/` 下**自动维护 .gitignore** 防凭据入库；损坏/旧格式凭据（plan 字段形状不对）报
+  **corrupt** 并引导重新手动执行，不再以内部错误泛化；`mrvc_build` 增加 **timeoutSec** 硬超时
+  （默认 600s / `MRVC_MCP_BUILD_TIMEOUT_SEC`，卡死的 make 不再永久占用互斥队列），并在描述中明确
+  **MCP 构建日志只在返回值中、不写扩展构建记录**（记录承担下载目标解析与完整指令清单职责）。
+- **Windows 默认探测路径增加 D 盘惯例位置**：设置留空时的自动探测在 `C:\MounRiver\MounRiver_Studio2|3`
+  之外新增 **`D:\MounRiver\MounRiver_Studio2`** 与 **`D:\MounRiver\MounRiver_Studio3`**（各含其
+  `resources\app\resources\win32` 工具链层）。C 盘在前：两处都存在安装时**先命中 C 盘**（0.2.4 以来的
+  惯例保持不变）；显式设置（`mrvc.mrs2InstallPath` / `mrvc.mrs3InstallPath`）依旧最高优先。
+- **内置快捷键门控定案（有活动工程即全局生效）**：`F7`（构建）/ `Shift+F7`（重新构建）/ `F8`（下载）/
+  `Ctrl+H`（在工程中搜索，0.3.6 新增）的 when 为 **`mrvc.hasActiveProject`**——插件激活后、当前窗口存在
+  活动工程时，四个键**窗口内全局生效**（编辑器/终端/任意面板均可），无活动工程的窗口按键回到 VSCode
+  原生行为。活动工程持久化于 workspaceState，重开窗口立即恢复。注意 `Ctrl+H` 在有活动工程期间会
+  **接管编辑器内的原生查找替换**（原生替换仍可从查找控件切换/命令面板使用）。曾尝试把键位收窄到
+  「MRVC 视图聚焦」：`<viewId>.focus` 并非上下文键（是"聚焦视图"的命令 id），workbench 自有的
+  `focusedView` 门控真机亦未生效，**按用户裁定放弃聚焦方案**，回归工程级门控；用户自定义键位
+  （keybindings.json）依旧最高优先，可在键盘快捷方式 UI 改键。
+- **`…` 菜单新增两项：删除所有配置输出目录 / 删除所有配置输出目录（保留hex/bin）**：原有
+  **删除输出目录 / 删除输出文件（保留 hex/bin）**（仅活动配置）原样保留、位置不变，两项新命令排在
+  其下——遍历每个工程的**全部配置**输出目录（MRS 约定：配置名即输出目录名），前者整目录删除、
+  后者清空目录内容但按**各配置自己的目标名**保留各自的 `*.hex`/`*.bin`（多配置目标名可以不同）；
+  从未编译过的配置目录（不存在）静默跳过，编译进行中的工程照旧跳过。
+- **`…` 菜单新增「在所有工程中搜索」（Search in All Projects）**：打开 VSCode 搜索面板并预填
+  **全部已加载工程**的范围——每个工程覆盖工程根 + 全部链接文件夹（与 0.3.3 的工程/文件夹搜索同一
+  管线与转义规则），跨工程**展平去重**（嵌套工程根、指向同一目录的链接只保留外层条目）。仍不预填
+  查询词：用户在聚焦的搜索框里自己输入。
+
+### 修复
+
+- **修复：ReBuild Project All Configurations 中文界面仍显示英文**：0.3.4 引入该命令时按 MRS 原文
+  保留英文标签（查证 MRS2 自带扩展只有英文资源，其界面同样恒为英文）；现按 MRVC 自己的本地化风格
+  译出——中文界面显示 **重新构建全部编译配置**（与「清理全部编译配置」对仗），英文界面保持
+  MRS 原文不变。
+
 ## V0.3.5（2026-11-20）
 
 ### 变更

@@ -49,3 +49,35 @@ export function removeOutputDir(projectRoot: string, dir: string): void {
   const d = contained(projectRoot, dir);
   fs.rmSync(d, { recursive: true, force: true });
 }
+
+export interface OutputSpec {
+  /** one configuration's output directory (MRS convention: the
+   *  configuration's name IS its output directory name) */
+  dir: string;
+  /** file names to keep when CLEARING (the flash images); undefined =
+   *  remove the whole directory */
+  keep?: string[];
+}
+
+/**
+ * Delete every configuration's output directory in one pass — the batch
+ * "delete output" commands (0.3.6: ALL configurations, not just the active
+ * one). Missing directories (never built) are skipped silently; per-
+ * configuration keep lists are the caller's job (each configuration names
+ * its own flash images). Returns how many directories were removed and how
+ * many entries the clearing variant deleted.
+ */
+export function deleteConfigOutputs(projectRoot: string, specs: OutputSpec[]): { dirs: number; files: number } {
+  let dirs = 0;
+  let files = 0;
+  for (const spec of specs) {
+    if (!fs.existsSync(path.resolve(projectRoot, spec.dir))) continue; // never built
+    if (spec.keep) {
+      files += clearOutputDir(projectRoot, spec.dir, spec.keep);
+    } else {
+      removeOutputDir(projectRoot, spec.dir);
+      dirs++;
+    }
+  }
+  return { dirs, files };
+}

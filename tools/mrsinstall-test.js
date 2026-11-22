@@ -628,9 +628,87 @@ try {
       'defaults: the Windows conventional lists are unchanged',
       MRS2_DEFAULT_PATHS[0].includes('MounRiver_Studio2') && MRS3_DEFAULT_PATHS[0].includes('MounRiver_Studio3')
     );
+    // 0.3.6: D-drive conventional locations appended AFTER the C: entries
+    // (C: keeps precedence when both exist)
+    check(
+      'defaults: D-drive conventional locations appended (root + win32 layer)',
+      MRS2_DEFAULT_PATHS[2] === 'D:\\MounRiver\\MounRiver_Studio2' &&
+        MRS2_DEFAULT_PATHS[3].endsWith('resources\\app\\resources\\win32') &&
+        MRS3_DEFAULT_PATHS[2] === 'D:\\MounRiver\\MounRiver_Studio3' &&
+        MRS3_DEFAULT_PATHS[3].endsWith('resources\\app\\resources\\win32')
+    );
   }
 } finally {
   setHostPlatformForTests(REAL_HOST);
+}
+
+// ---- 0.3.6 install auto-fill planner (pure decision layer, core/installFill) ----
+{
+  const { planInstallFill } = require('../out/core/installFill.js');
+  const both = planInstallFill(
+    { mrs2Path: '', mrs3Path: '', version: 'auto' },
+    { mrs2: 'D:/a/Studio2', mrs3: 'D:/a/Studio3' }
+  );
+  check(
+    'fill: both empty + both found -> write both, prompt generation choice',
+    JSON.stringify(both.writes) === JSON.stringify({ mrs2Path: 'D:/a/Studio2', mrs3Path: 'D:/a/Studio3' }) &&
+      both.promptGeneration === true,
+    JSON.stringify(both)
+  );
+  const one = planInstallFill(
+    { mrs2Path: 'C:/keep/Studio2', mrs3Path: '', version: 'auto' },
+    { mrs3: 'D:/a/Studio3' }
+  );
+  check(
+    'fill: set mrs2 untouched, empty mrs3 filled, prompt still fires (both valid)',
+    JSON.stringify(one.writes) === JSON.stringify({ mrs3Path: 'D:/a/Studio3' }) && one.promptGeneration === true,
+    JSON.stringify(one)
+  );
+  const explicit = planInstallFill(
+    { mrs2Path: '', mrs3Path: '', version: 'mrs3' },
+    { mrs2: 'D:/a/Studio2', mrs3: 'D:/a/Studio3' }
+  );
+  check(
+    'fill: an explicit version preference suppresses the prompt',
+    explicit.promptGeneration === false && Object.keys(explicit.writes).length === 2,
+    JSON.stringify(explicit)
+  );
+  const none = planInstallFill({ mrs2Path: '', mrs3Path: '', version: 'auto' }, {});
+  check('fill: nothing found -> no writes, no prompt', Object.keys(none.writes).length === 0 && none.promptGeneration === false, JSON.stringify(none));
+  const only2 = planInstallFill({ mrs2Path: '', mrs3Path: '', version: 'auto' }, { mrs2: 'D:/a/Studio2' });
+  check(
+    'fill: only MRS2 found -> write MRS2, no prompt (nothing to choose)',
+    only2.writes.mrs2Path === 'D:/a/Studio2' && only2.writes.mrs3Path === undefined && only2.promptGeneration === false,
+    JSON.stringify(only2)
+  );
+  const userKept = planInstallFill({ mrs2Path: 'C:/x', mrs3Path: 'D:/y', version: 'auto' }, {});
+  check(
+    'fill: both settings already set -> no writes, the choice prompt still fires once',
+    Object.keys(userKept.writes).length === 0 && userKept.promptGeneration === true,
+    JSON.stringify(userKept)
+  );
+  // round7 P3.1: an existing path counts for the prompt only if the caller
+  // validated it — an invalid MRS2 must not be offered as a choice
+  const invalid2 = planInstallFill(
+    { mrs2Path: 'C:/invalid', mrs3Path: '', version: 'auto' },
+    { mrs3: 'D:/a/Studio3' },
+    { mrs2: false }
+  );
+  check(
+    'fill: an INVALID existing MRS2 does not count for the choice prompt',
+    invalid2.promptGeneration === false && invalid2.writes.mrs3Path === 'D:/a/Studio3',
+    JSON.stringify(invalid2)
+  );
+  const valid2 = planInstallFill(
+    { mrs2Path: 'C:/valid', mrs3Path: '', version: 'auto' },
+    { mrs3: 'D:/a/Studio3' },
+    { mrs2: true }
+  );
+  check(
+    'fill: a VALID existing MRS2 counts (prompt fires with mrs3 filled)',
+    valid2.promptGeneration === true && valid2.writes.mrs3Path === 'D:/a/Studio3',
+    JSON.stringify(valid2)
+  );
 }
 
 fs.rmSync(ROOT, { recursive: true, force: true });

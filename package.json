@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "Unofficial, independent project — not developed or supported by WCH or MounRiver. MRVC opens, configures and builds MounRiver (MRS) projects for WCH MCUs directly in VSCode; for development and debugging use.",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "publisher": "smartmx",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -360,6 +360,16 @@
         "category": "MRVC"
       },
       {
+        "command": "mrvc.deleteAllConfigsOutputDirs",
+        "title": "%command.mrvc.deleteAllConfigsOutputDirs.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.deleteAllConfigsOutputKeepImages",
+        "title": "%command.mrvc.deleteAllConfigsOutputKeepImages.title%",
+        "category": "MRVC"
+      },
+      {
         "command": "mrvc.buildSolution",
         "title": "%command.mrvc.buildSolution.title%",
         "category": "MRVC"
@@ -488,6 +498,11 @@
       {
         "command": "mrvc.searchInFolder",
         "title": "%command.mrvc.searchInFolder.title%",
+        "category": "MRVC"
+      },
+      {
+        "command": "mrvc.searchInAllProjects",
+        "title": "%command.mrvc.searchInAllProjects.title%",
         "category": "MRVC"
       },
       {
@@ -797,6 +812,21 @@
           "command": "mrvc.deleteOutputDirs",
           "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
           "group": "2_delete@2"
+        },
+        {
+          "command": "mrvc.deleteAllConfigsOutputDirs",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
+          "group": "2_delete@3"
+        },
+        {
+          "command": "mrvc.deleteAllConfigsOutputKeepImages",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
+          "group": "2_delete@4"
+        },
+        {
+          "command": "mrvc.searchInAllProjects",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
+          "group": "3_search@1"
         },
         {
           "command": "mrvc.syncSettings",
@@ -1438,6 +1468,11 @@
       {
         "command": "mrvc.flash",
         "key": "f8",
+        "when": "mrvc.hasActiveProject"
+      },
+      {
+        "command": "mrvc.searchInProject",
+        "key": "ctrl+h",
         "when": "mrvc.hasActiveProject"
       }
     ],

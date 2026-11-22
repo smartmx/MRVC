@@ -21,12 +21,26 @@ const options = {
   logLevel: 'info',
 };
 
+/** second entry: the stdio MCP server (src/mcp, zero vscode imports) —
+ *  shipped at <ext>/mcp/mcp-server.js (0.3.6: own folder instead of out/,
+ *  user request — a dedicated dir for the AI-facing artifact). No sourcemap:
+ *  it is a standalone tool, not a debug target. */
+const mcpOptions = {
+  ...options,
+  entryPoints: [path.join(__dirname, 'src', 'mcp', 'server.ts')],
+  outfile: path.join(__dirname, 'mcp', 'mcp-server.js'),
+  sourcemap: false,
+};
+
 (async () => {
   if (watch) {
     const ctx = await esbuild.context(options);
+    const ctxMcp = await esbuild.context(mcpOptions);
     await ctx.watch();
+    await ctxMcp.watch();
   } else {
     await esbuild.build(options);
+    await esbuild.build(mcpOptions);
   }
 })().catch((e) => {
   console.error(e);

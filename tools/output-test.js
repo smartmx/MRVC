@@ -65,5 +65,71 @@ try {
 check('guard: removing outside the project root is refused', threw);
 check('guard: nothing outside was touched', fs.existsSync(path.join(scratch, 'elsewhere', 'keep.txt')));
 
+// 5. deleteConfigOutputs (0.3.6): every configuration's output dir in one
+//    pass — the batch "delete output" commands. A config dir that does not
+//    exist (never built) is skipped; keep lists are per configuration.
+const { deleteConfigOutputs } = require('../out/core/output.js');
+const root2 = path.join(scratch, 'TWO');
+fs.mkdirSync(path.join(root2, 'obj'), { recursive: true });
+fs.mkdirSync(path.join(root2, 'objDbg'), { recursive: true });
+fs.writeFileSync(path.join(root2, 'obj', 'TWO.elf'), 'x');
+fs.writeFileSync(path.join(root2, 'obj', 'TWO.hex'), 'x');
+fs.writeFileSync(path.join(root2, 'obj', 'TWO.bin'), 'x');
+fs.writeFileSync(path.join(root2, 'obj', 'makefile'), 'x');
+fs.writeFileSync(path.join(root2, 'objDbg', 'TWO_DBG.elf'), 'x');
+fs.writeFileSync(path.join(root2, 'objDbg', 'TWO_DBG.hex'), 'x');
+fs.writeFileSync(path.join(root2, 'objDbg', 'TWO_DBG.bin'), 'x');
+const keepRes = deleteConfigOutputs(root2, [
+  { dir: path.join(root2, 'obj'), keep: ['TWO.hex', 'TWO.bin'] },
+  { dir: path.join(root2, 'objDbg'), keep: ['TWO_DBG.hex', 'TWO_DBG.bin'] },
+]);
+check('allConfigs: two configs cleared (2 + 1 entries)', keepRes.dirs === 0 && keepRes.files === 3);
+check(
+  'allConfigs: each config keeps its OWN hex/bin',
+  fs.readdirSync(path.join(root2, 'obj')).sort().join(',') === 'TWO.bin,TWO.hex' &&
+    fs.readdirSync(path.join(root2, 'objDbg')).sort().join(',') === 'TWO_DBG.bin,TWO_DBG.hex'
+);
+const dirsRes = deleteConfigOutputs(root2, [
+  { dir: path.join(root2, 'obj') },
+  { dir: path.join(root2, 'objDbg') },
+  { dir: path.join(root2, 'objNever') }, // never built — skipped silently
+]);
+check('allConfigs: dirs variant removes both, missing config skipped', dirsRes.dirs === 2 && dirsRes.files === 0);
+check('allConfigs: output dirs gone', !fs.existsSync(path.join(root2, 'obj')) && !fs.existsSync(path.join(root2, 'objDbg')));
+threw = false;
+try {
+  deleteConfigOutputs(root2, [{ dir: root2 }]);
+} catch {
+  threw = true;
+}
+check('allConfigs: a project-root spec is refused (containment guard)', threw);
+
+// 6. wiring (0.3.6): the two ORIGINAL commands keep their labels and menu
+//    places (active-config semantics), the two all-configurations commands
+//    sit BELOW them in the title-bar menu
+{
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const vt = pkg.contributes.menus['view/title'].filter((m) => m.group.startsWith('2_delete'));
+  check('wiring: four delete-output entries in the title-bar menu', vt.length === 4, JSON.stringify(vt.map((m) => m.command)));
+  check(
+    'wiring: order = keepImages, dirs, allConfigs dirs, allConfigs keepImages',
+    JSON.stringify(vt.map((m) => m.command)) ===
+      JSON.stringify(['mrvc.deleteOutputKeepImages', 'mrvc.deleteOutputDirs', 'mrvc.deleteAllConfigsOutputDirs', 'mrvc.deleteAllConfigsOutputKeepImages'])
+  );
+  check('wiring: all four gated on mrvc.hasProjects', vt.every((m) => m.when.includes('mrvc.hasProjects')));
+  const enNls = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.nls.json'), 'utf8'));
+  const zhNls = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.nls.zh-cn.json'), 'utf8'));
+  check(
+    'wiring: new command titles exist in BOTH languages',
+    ['command.mrvc.deleteAllConfigsOutputDirs.title', 'command.mrvc.deleteAllConfigsOutputKeepImages.title'].every(
+      (k) => k in enNls && k in zhNls
+    )
+  );
+  const extSrc = fs.readFileSync(path.join(__dirname, '..', 'out', 'extension.js'), 'utf-8');
+  check('wiring: both new commands registered in the extension', extSrc.includes('mrvc.deleteAllConfigsOutputDirs') && extSrc.includes('mrvc.deleteAllConfigsOutputKeepImages'));
+  check('wiring: original commands keep active-config semantics (p.buildDir)', /deleteOutputOne[\s\S]{0,700}p\.buildDir/.test(extSrc));
+  check('wiring: new commands route through deleteConfigOutputs', /deleteAllConfigsOne[\s\S]{0,700}deleteConfigOutputs/.test(extSrc));
+}
+
 console.log(failures ? `\n${failures} FAILURES` : '\nall output tests passed');
 process.exit(failures ? 1 : 0);

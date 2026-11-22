@@ -167,6 +167,63 @@ try {
     const body = extSrc.slice(i, i + 400);
     check('wiring: searchInFolder errors when nothing can be scoped', body.includes('showErrorMessage'));
   }
+
+  // 9. allProjectsScope (0.3.6, tree title-bar menu): every loaded project's
+  //    scope flattened; entries covered by an EARLIER entry dropped (nested
+  //    project roots, duplicate project roots, the same link in two projects)
+  const { allProjectsScope } = require('../out/vscode/search.js');
+  const all = allProjectsScope([
+    { root: 'C:\\work\\Demo', linkedDirs: ['C:\\work\\LIB\\HAL'] },
+    { root: 'C:\\work\\Demo', linkedDirs: [] }, // duplicate project root
+    { root: 'C:\\work\\Demo\\Sub', linkedDirs: [] }, // nested inside Demo
+    { root: 'E:\\proj\\B', linkedDirs: ['C:\\work\\LIB\\HAL', 'E:\\shared\\STD'] }, // HAL seen already
+  ]);
+  check(
+    'all: Demo root, HAL, B root, STD — covered entries dropped',
+    JSON.stringify(all) === JSON.stringify(['C:\\work\\Demo', 'C:\\work\\LIB\\HAL', 'E:\\proj\\B', 'E:\\shared\\STD']),
+    JSON.stringify(all)
+  );
+  const folded = allProjectsScope([
+    { root: 'C:\\work\\Demo', linkedDirs: [] },
+    { root: 'c:\\WORK\\DEMO', linkedDirs: [] }, // case/slash spelling of the same root
+  ]);
+  const wantFolded = process.platform === 'win32' ? 1 : 2;
+  check(`all: duplicate roots fold on win32 (got ${folded.length})`, folded.length === wantFolded);
+  const empty = allProjectsScope([]);
+  check('all: no projects -> empty list (caller reports)', empty.length === 0);
+
+  // 10. wiring: the title-bar command exists, is gated on hasProjects and
+  //     goes through the shared flattener
+  const cmdAll = pkg.contributes.commands.find((c) => c.command === 'mrvc.searchInAllProjects');
+  check('wiring: searchInAllProjects command registered', !!cmdAll);
+  const menuAll = pkg.contributes.menus['view/title'].find((m) => m.command === 'mrvc.searchInAllProjects');
+  check(
+    'wiring: title-bar entry gated on mrvc.hasProjects in its own group',
+    !!menuAll && menuAll.when.includes('mrvc.hasProjects') && menuAll.group.startsWith('3_search'),
+    JSON.stringify(menuAll)
+  );
+  check('wiring: the bundle flattens through allProjectsScope', extSrc.includes('allProjectsScope('));
+  check('wiring: empty store errors instead of searching nothing', /searchInAllProjects[\s\S]{0,600}showErrorMessage\(t\(["']noProjectsLoaded["']\)\)/.test(extSrc));
+
+  // 11. built-in keybindings (0.3.6): F7/Shift+F7/F8 + Ctrl+H are gated on
+  //     `mrvc.hasActiveProject` ONLY — global once the extension is
+  //     activated with an active project (user ruling 2026-11-21 after the
+  //     view-focus experiments: a `<viewId>.focus` context key does NOT
+  //     exist — it is a command id — and the workbench-own `focusedView`
+  //     gate did not fire on the real machine either, so the whole
+  //     focus-scoping idea was dropped; Ctrl+H intentionally SHADOWS the
+  //     editor's native find/replace while a project is active).
+  const kbs = pkg.contributes.keybindings ?? [];
+  check('keybindings: four built-in keys', kbs.length === 4, JSON.stringify(kbs));
+  const kbByKey = Object.fromEntries(kbs.map((k) => [k.key, k]));
+  check('keybindings: ctrl+h opens Search in Project', kbByKey['ctrl+h']?.command === 'mrvc.searchInProject');
+  for (const kb of kbs) {
+    check(
+      `keybindings: ${kb.key} -> ${kb.command} gated on mrvc.hasActiveProject only`,
+      kb.when === 'mrvc.hasActiveProject',
+      kb.when
+    );
+  }
 } finally {
   Module._load = originalLoad;
 }

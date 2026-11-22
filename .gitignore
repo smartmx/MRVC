@@ -1,5 +1,8 @@
 out/
 node_modules/
+# the BUILT MCP bundle IS tracked (self-contained, AI clients run it straight
+# from a clone — see tools/sync-to-mrvc.mjs FILES); unlike out/ it is NOT
+# ignored, and deterministic rebuilds never dirty it
 # the FFI runtime must be tracked: re-include vendor-ffi/node_modules BEFORE
 # the koffi subtree (git needs the un-ignored DIRECTORY to descend into it)
 !vendor-ffi/node_modules/

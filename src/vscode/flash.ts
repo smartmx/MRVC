@@ -13,6 +13,7 @@ import { checkWCHLinkFirmware, formatLinkVersion, runWlinkOp, wchlinkFirmwareCfg
 import { MrsInstall } from '../core/toolchain';
 import { chipDbRoot, scanChipDb, chipForTemplate, guardLinkedChip } from '../core/chipdb';
 import { executeFlashTask, powerLinkUnsupportedNotice, powerOffBeforeDownload, runLinkOperation, selectBoardCfg } from './powerCycle';
+import { writeFlashAck, fingerprintFlashPlan } from '../core/flashAck';
 import { noteSdiPrintfEnabled, noteSdiPrintfFailed, noteSdiPrintfNotRequested } from '../core/sdiState';
 import { powerOutputRail } from '../core/powerState';
 import { t } from '../core/i18n';
@@ -217,18 +218,24 @@ async function downloadProjectInner(
   // where a thrown error would vanish into an unhandled rejection and the
   // download would silently not happen.
   let plan: FlashPlan;
+  // the flash parameters — captured once so the receipt fingerprint (written
+  // after a successful download) describes exactly the plan that ran
+  const verify = cfg.get<boolean>('flash.verify', true);
+  const reset = cfg.get<boolean>('flash.reset', true);
+  const eraseAll = String(project.template.values['Erase All'] ?? '').trim().toLowerCase() === 'true';
+  const banks = project.kernel ? 2 : 1;
   try {
     plan = prepareFlash({
       buildDir: project.buildDir,
       address,
-      verify: cfg.get<boolean>('flash.verify', true),
-      reset: cfg.get<boolean>('flash.reset', true),
+      verify,
+      reset,
       boardCfg,
       firmware: hex,
       // .template "Erase All" checkbox (MRS2's Chip properties page): scrub
       // the whole flash before writing; dual-core cfgs expose two banks
-      eraseAll: String(project.template.values['Erase All'] ?? '').trim().toLowerCase() === 'true',
-      banks: project.kernel ? 2 : 1,
+      eraseAll,
+      banks,
       powerOn,
     });
   } catch (e) {
@@ -348,6 +355,25 @@ async function downloadProjectInner(
     vscode.window.showErrorMessage(t('downloadFailed', project.projectName, code ?? 'unknown'));
     return false;
   }
+  // the MCP flash/power tools' gate: a successful manual download records the
+  // receipt WITH the fingerprint of the plan that ran (script sha binds
+  // address/verify/reset/eraseAll/banks; plus firmware/board cfg paths, cfg
+  // content and the openocd binary) — never blocks or fails the download
+  writeFlashAck(
+    project.root,
+    fingerprintFlashPlan({
+      scriptPath: plan.scriptPath,
+      firmware: hex,
+      boardCfg,
+      openocdExe: openocd,
+      address,
+      verify,
+      reset,
+      eraseAll,
+      banks,
+      powerOn: powerOn ?? null,
+    })
+  );
   // SDI Printf: MRS's native reset+enable pass (see core/wlink `sdiPrint`).
   // The VSCode SDI PRINT monitor is deliberately NOT opened here — the user
   // may keep their own serial tool (e.g. SSCOM) on the WCH-Link CDC port, and

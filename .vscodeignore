@@ -3,6 +3,7 @@ node_modules/**
 out/**
 !out/extension.js
 !out/extension.js.map
+# the MCP server ships from its own top-level folder (esbuild second entry)
 .gitignore
 .vscode/**
 esbuild.js

@@ -82,19 +82,25 @@ export const STANDALONE_LABEL = 'MRS Toolchain (standalone)';
 /** conventional Windows install locations, per generation (root and the win32
  *  dir). The schema defaults are EMPTY — a package.json default cannot vary by
  *  platform, so the per-OS lists come from conventionalInstalls() at runtime;
- *  these constants stay the Windows lists (the platform every 0.2.x user has). */
+ *  these constants stay the Windows lists (the platform every 0.2.x user has).
+ *  C: first (the 0.2.4-era convention), D: appended (0.3.6 — installs on a
+ *  second drive; when both exist the FIRST hit wins, i.e. C: keeps precedence). */
 export const MRS2_DEFAULT_PATHS = [
   'C:\\MounRiver\\MounRiver_Studio2',
   'C:\\MounRiver\\MounRiver_Studio2\\resources\\app\\resources\\win32',
+  'D:\\MounRiver\\MounRiver_Studio2',
+  'D:\\MounRiver\\MounRiver_Studio2\\resources\\app\\resources\\win32',
 ];
 export const MRS3_DEFAULT_PATHS = [
   'C:\\MounRiver\\MounRiver_Studio3',
   'C:\\MounRiver\\MounRiver_Studio3\\resources\\app\\resources\\win32',
+  'D:\\MounRiver\\MounRiver_Studio3',
+  'D:\\MounRiver\\MounRiver_Studio3\\resources\\app\\resources\\win32',
 ];
 
 /**
  * Per-platform conventional IDE locations, probed when the settings are empty:
- *   Windows — the C:\MounRiver\... roots (unchanged since 0.2.4)
+ *   Windows — the C:\ and D:\MounRiver\... roots (C: since 0.2.4, D: since 0.3.6)
  *   Linux   — the .deb's real prefix (/usr/share/MRS3/MRS-linux-x64); the
  *             tar.xz has no fixed location and the V2.x line ships no Linux IDE
  *   macOS   — /Applications (the arm64 .app)

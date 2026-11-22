@@ -21,9 +21,9 @@
 | Solution（工程组） | 支持 MRS 新增的 `.wvsln` 解决方案：**仅当显式打开 `.wvsln` 文件时启用**——Open MRS Project / Solution 选中该文件后，生成同名 `.code-workspace` 并在**新 VSCode 窗口**打开，打开 MRVC 视图时自动加载 solution；树中显示为 solution 节点，成员工程按 MRS2 的 `BuildOrder=` 行（缺省按文件行序）排列、每个成员都是完整工程节点。解析兼容 MRS2 的宽松语法；生成的 solution 与 MRS2 完全兼容 |
 | 生成 Solution | 树标题栏 `…` 菜单 → **Generate Solution From All Projects**：把当前已发现的全部工程生成一个 solution 并立即出现在树顶，MRS2 可直接打开 |
 | 工程树 | 活动栏 MRVC 容器内的 "Project Explorer"：标题栏 4 个按钮（**Open Mrs Project**（文件对话框）/ **Open Mrs Folder**（只选目录）/ 折叠全部 / **刷新**——外部改名/新增/删除的工程会被自动识别与清理）。工程 → 链接文件夹（蓝色名称）/ 实体目录 / **根级源文件** / 编译输出目录（红色）。树只显示扫描到的工程本身，不列工程目录之外的散落文件。**源文件自动刷新**：工作区与每个工程内的源文件新建/删除即时反映到树（400ms 防抖），**外部链接文件夹同样受监视（0.3.3）**——工程根之外的链接目录里增删源文件也会即时刷新（链接目录增删/改目标后自动重对齐监视），配置文件有专属监听。**作用域刷新（0.3.0）**：文件新增/删除只重读所在目录的节点、编译结束后只刷新输出目录节点（编译期间树冻结）——不再整树重绘导致链接文件夹蓝↔白闪烁；配置文件变更仍触发工程重解析与全树刷新。**单击工程行即激活（0.3.0）**：选择即设为活动工程，Info/编译/下载随动 |
-| 文件管理 | 树节点右键（每类节点独立菜单）：New File / New Folder / **Copy→Paste**（插件内剪贴板，同名自动 `- copy` 递增，文件夹递归复制）/ Copy Absolute Path / **Copy Project Relative Path**（`${workspace_loc:/${ProjName}/…}` 形式的 CDT 逻辑路径）/ Copy File Name / Rename / Delete（均带确认）/ Open Containing Folder。链接文件夹禁用 Rename/Delete（防误删真实目录），其内部文件操作不受限 |
+| 文件管理 | 树节点右键（每类节点独立菜单）：New File / New Folder / **Copy→Paste**（插件内剪贴板，同名自动 `- copy` 递增，文件夹递归复制）/ Copy Absolute Path / **Copy Project Relative Path**（`${workspace_loc:/${ProjName}/…}` 形式的 CDT 逻辑路径）/ Copy File Name / Rename / Delete（均带确认）/ Open Containing Folder。链接文件夹禁用 Rename/Delete（防误删真实目录），其内部文件操作不受限。**树右键搜索（0.3.3）**：工程/文件夹/链接文件夹右键 **Search in Project / Search in Folder**——VSCode 搜索面板预填 filesToInclude（工程范围 = 工程根 + 全部链接文件夹，路径逗号/通配符按 VSCode 管线实证转义），不预填查询词；**`…` 菜单 Search in All Projects（在所有工程中搜索，0.3.6）**把全部已加载工程展平成一个范围列表（嵌套工程根与重复链接跨工程去重） |
 | 排除 / 恢复编译 | 文件、文件夹与**蓝色链接文件夹行（0.3.5）**右键 **Exclude From Build / Include From Build**（与 MRS 的 Resource Configurations → Exclude from Build 等价；**整条链接的排除/纳入按 MRS 同款存储：移除该链接的命名 sourceEntry（如存在）并在根 entry 写入链接名 token，扫描器随构建跳过/恢复整条链接，恢复时重建 entry**）：写回 `.cproject` 活动配置（首个 `cconfiguration`）`sourceEntries` 的 `excluding` 列表（`|` 分隔；目录带命名 sourceEntry 时写目录内相对路径，否则写工程根相对全路径并在缺失时自动创建根 entry——与 MRS2 两种工程风格完全一致；**排除带命名 entry 的顶层文件夹 = 移除该 entry 并在根 entry 写入 token**，恢复时重建 entry）。被排除的资源在树中显示为**灰色**（行尾 `×`）并排在最后；下次编译生效；编译输出目录不可排除 |
-| 编译 / 重建 / 清理 | 每次构建前从 `.cproject` 重新生成 CDT 风格 makefile（**默认按当前 MounRiver 2.3+/2.5 风格**——含强制 `-lm`、WCH 助手库走链接 recipe；1.9.2/2.1.0 布局保留为显式复现模式，golden 29/29 逐字节一致），再调 MRS 自带 `make`；错误进问题面板（`$mrvcgcc` problemMatcher）。行内 Build / Rebuild / Download 按钮 + 右键菜单；Build All / Clean All / Solution 构建批处理（单工程失败不中断、可取消带汇总）；多配置工程右键另有 **ReBuild Project All Configurations**（0.3.4，与 MRS 同名菜单——先把全部配置逐一 `make clean`，再逐配置现生成 makefile 并 `make all`，各配置用自己的编译选项/工具链/目标名，排除表恒取活动配置（MRS 同款），首个编译失败中止其余配置，全程不切换活动配置、完整构建记录只写活动配置）与 **Clean Project All Configurations**（0.3.4，MRVC 独有——全部配置的输出目录逐一 `make clean`，未编译过的自动跳过，单个失败不中止其余，静默无弹窗）；**Pre-build / Post-build steps** 参与生成的 makefile |
+| 编译 / 重建 / 清理 | 每次构建前从 `.cproject` 重新生成 CDT 风格 makefile（**默认按当前 MounRiver 2.3+/2.5 风格**——含强制 `-lm`、WCH 助手库走链接 recipe；1.9.2/2.1.0 布局保留为显式复现模式，golden 29/29 逐字节一致），再调 MRS 自带 `make`；错误进问题面板（`$mrvcgcc` problemMatcher）。行内 Build / Rebuild / Download 按钮 + 右键菜单；Build All / Clean All / Solution 构建批处理（单工程失败不中断、可取消带汇总）；多配置工程右键另有 **ReBuild Project All Configurations**（0.3.4，与 MRS 同名菜单——先把全部配置逐一 `make clean`，再逐配置现生成 makefile 并 `make all`，各配置用自己的编译选项/工具链/目标名，排除表恒取活动配置（MRS 同款），首个编译失败中止其余配置，全程不切换活动配置、完整构建记录只写活动配置）与 **Clean Project All Configurations**（0.3.4，MRVC 独有——全部配置的输出目录逐一 `make clean`，未编译过的自动跳过，单个失败不中止其余，静默无弹窗）；`…` 菜单四项批量清理（0.3.6）：**删除输出目录 / 删除输出文件（保留 hex/bin）**（仅各工程活动配置）+ 其下的 **删除所有配置输出目录 / 删除所有配置输出目录（保留hex/bin）**（0.3.6 新增，遍历每个工程的全部配置输出目录：前者整目录删除，后者清空目录内容但按**各配置自己的目标名**保留 `*.hex`/`*.bin`；从未编译的配置跳过、编译进行中的工程自动跳过）；**Pre-build / Post-build steps** 参与生成的 makefile |
 | **编译单个文件（0.3.4）** | `.c/.cpp/.cc/.cxx/.s/.S` 源文件（**含多字符 C++ 后缀的任意大小写变体，如 `.Cxx`/`.Cc`/`.CC`/`.CPP`**）右键 **Compile Single File（编译单个文件）**（与 MRS 同名功能对应）：按当前工程配置**重新生成 makefile** 后，在 obj/ 里对**该文件的目标**（`<逻辑目录>/<文件名>.o`，工程根文件无目录部分）跑一次 `make`——编译选项与整工程构建**逐字节一致**（工程根外链接目录文件同样支持，走显式规则）。被 Exclude From Build 的文件菜单不出现；产物与依赖文件落在 obj/ 常规位置，**不写构建记录**（不覆盖上次整构建的记录，下载目标解析不受影响）；成功后在任务终端打印完成行并弹提示，失败带 make 退出码。与工程构建共用"同一工程一次一个 make"互斥；命令面板无文件上下文时回落活动工程（无则报错） |
 | **C++ 后缀大小写变体识别（0.3.4）** | `.cxx/.cc/.cpp/.cp/.c++` 的**任意大小写组合**（`.Cxx`/`.Cc`/`.CC`/`.CPP` 等）全平台识别为 C++ 源文件：进整工程构建（makefile 按实际后缀拼写生成专属模式规则，g++ 对任何后缀按 C++ 编译）、单文件编译、IntelliSense、源文件监视器；同目录混用拼写时 make 变量名自动去重（两组对象都进链接）。单字母 `.c`/`.C`、`.s`/`.S` 保持大小写敏感——大小写本身就是语言判定（C↔C++、汇编↔带预处理汇编，GCC 规则） |
 | **Build Project And Download** | 工程右键 / 命令面板 **构建工程并下载**：编译 + 下载一条龙，编译成功才下载（与 MRS2 同名命令语义一致） |
@@ -54,7 +54,7 @@
 | **掉电复位 + 电源输出（0.3.0）** | **Info 视图 Power-Off Reset 行（点击即执行）/ 命令面板 **Power-Off Reset（掉电复位）****：经 WCH-Link 电源轨 **断电→延时→上电**（`pow3v3/pow5v off\|on`）；电源轨电压为**会话级状态**（0.3.2：每个窗口打开默认 3.3 V，Info 视图电源输出行/命令面板 **Flash Power Output** 手动切换才到 5 V，关闭窗口恢复 3.3 V——不持久化；`mrvc.flash.powerOffDelayMs`（0–10000）控制断电时长）；`mrvc.flash.resetMode=powerOff` 后**下载自动走断电流程**（断电一次，上电+烧写同一 OpenOCD 会话）。适用于 NRST 被调试接口复用的 1/2-wire 芯片（模式切换用属性页 FFI dbgMode，掉电复位使其生效）。掉电段识别 WCH-Link 重新枚举类瞬态失败并自动退避重试（主下载保持终端实时进度、不重试）；**仅 WCH-LinkE / DAPLink / LinkW 支持电源输出**（官方手册口径）——普通版 WCH-Link 在命令/下载前被模态拦截；**SDIPrintf 工程下载成功后只做原生复位+使能，不自动打开 SDI PRINT 监视器**（需在下载前手动打开以抓启动输出） |
 | **检测并修复工程配置（0.3.0）** | 工程右键/命令面板 **Audit And Repair Project Configuration（检测并修复工程配置）**：体检 enumerated 选项缺 value（**可修复**=移除选项继承默认，正是"MRS 打不开工程"事故的通用化）、`.template` Address 非 0x 格式（**可修复**=清空回退推断）、rvGcc 值形态异常、XML 结构损坏、`.project` name 与文件夹不一致（后三项仅报告）；修复前逐文件备份到 `.vscode/mrvc/repair-backup/<时间戳>/`，模态列出全部问题、显式确认才写入 |
 
-快捷键：`F7` 编译，`Shift+F7` 重建，`F8` 下载（与 MRS 一致）。
+快捷键：`F7` 编译，`Shift+F7` 重建，`F8` 下载，`Ctrl+H` 在工程中搜索。**窗口内全局生效，条件=插件已激活且有活动工程**（`mrvc.hasActiveProject` 门控；无活动工程的窗口按键回到原生行为）。注意 `Ctrl+H` 会**接管编辑器内的原生查找替换**（有活动工程期间）——原生替换仍可从编辑器查找控件的切换按钮/命令面板使用；在键盘快捷方式 UI 里可自行改键。
 
 **推荐配套扩展**（随 MRVC 自动安装，也可在扩展市场单独安装）：
 - **C/C++ Extension Pack**（`ms-vscode.cpptools-extension-pack`）——MRVC 的 IntelliSense（代码提示/跳转）由它消费；
@@ -65,6 +65,8 @@
 
 **界面语言**：命令菜单跟随 VSCode 显示语言自动中英文切换（内置双语资源）；提示/报错等
 运行时消息由 `mrvc.language` 设置驱动（`auto`/`en`/`zh-cn`，默认 auto）。
+
+| **AI / MCP Server（0.3.6）** | 插件**随包附带一个独立的 stdio MCP 服务器**（`<扩展安装目录>/mcp/mcp-server.js`，零 vscode 依赖、零额外发布物）——任何 MCP 客户端（ZCode / Claude / OpenCode / Cursor 等）都能驱动 MRVC 的工程能力，**不需要打开 VSCode**。客户端配置：`{"command": "node", "args": ["<扩展安装目录>/mcp/mcp-server.js"]}`；可选环境变量 `MRVC_MRS_INSTALL_PATH`（显式 MRS 安装根，无效路径报错不静默回退）与 `MRVC_MCP_DEFAULT_ROOT`（工程扫描默认根，缺省为 server 工作目录）。**十个工具**：`mrvc_discover_projects`（目录扫描发现工程）/ `mrvc_get_install_info` / `mrvc_get_project_config`（配置摘要 + 真实 -I/-D 示例命令行）/ `mrvc_audit_project`（体检，不修复）/ `mrvc_build`（现生成 makefile + MRS make，build/clean，`timeoutSec` 硬超时默认 600s / `MRVC_MCP_BUILD_TIMEOUT_SEC`，返回退出码+输出尾部+elf/hex/bin 产物大小；**MCP 构建日志只在返回值中、不写扩展构建记录**——记录承担下载目标解析与完整指令清单职责）/ `mrvc_get_build_log` / `mrvc_export_cmake`（已存在的 CMakeLists.txt 拒绝覆盖，需显式 overwrite）/ `mrvc_generate_intellisense_db`（生成 `.vscode/compile_commands.json`，含被排除文件的精确编译参数）/ **`mrvc_flash`**（OpenOCD 下载，跟随 .template Target Path/Address/Erase All，双核自动 wch-dual-core.cfg）与 **`mrvc_power_off_reset`**（掉电复位 pow 段 off→延时→on，仅 LinkE/DAPLink/LinkW，普通 WCH-Link 拒绝）。**硬件硬门禁（两类操作各挂独立凭据）**：① 扩展在每次**手动下载成功后**写入 `.vscode/mrvc/flash-verified.json`，内含 ① .template 内容 SHA-256（改参数未重新手动下载即失效）② **实际执行的 FlashPlan 指纹**（脚本 SHA + 固件路径 + 地址 + verify/reset/eraseAll/banks + board cfg 路径与内容哈希 + openocd 路径 + powerOn 轨）——`mrvc_flash` 的**计划指纹必须与凭据逐字段一致**（来自扩展设置、MCP 读不到的地址/verify/cfg 由拒绝消息原文回列，AI 按回列参数精确传参即可对齐；power-off 轨流程 MCP 不复刻，单独提示）② **`mrvc_power_off_reset` 用独立电源凭据**：扩展里**手动 Power-Off Reset 成功**（Info 视图行/命令面板）后写入 `power-verified.json`（电压/延时/board cfg 路径与哈希/openocd 指纹），请求计划不一致同样**回列已验证序列**拒绝——烧录凭据不为电源轨操作背书。两工具均接受 `openocdPath` 显式参数（对齐扩展的 `mrvc.openocd.path` 自定义安装）。**凭据本机绑定**（hostname+user 哈希；工程被复制到别的机器即读作未验证，须在本机重新手动验证）且 `.vscode/mrvc/` 下**自动维护 .gitignore** 防凭据入库；损坏/旧格式凭据报 **corrupt** 并引导重新手动执行，不以内部错误泛化。③ 硬件工具与构建走**进程内互斥**（流水线客户端不会同时开两个 link 会话），server 退出时终止存活子进程并**等待真实 close**（POSIX 杀整组进程树；Windows 杀直接子进程为已知限制）。固件**内容**哈希只记录不比对（重编译→同路径重烧是本门禁要放行的核心 AI 工作流；参数才是用户确认的对象）。**其余边界（有意为之）**：不写工程配置；无头下载不含芯片不匹配对话/SDI printf/固件升级提示（由手动验证下载覆盖）；协议为手工实现的 MCP stdio JSON-RPC（无新依赖） |
 
 ## 打包与安装（.vsix）
 
@@ -78,7 +80,9 @@ npm run package      # 生成 mrvc-<version>.vsix（@vscode/vsce，--no-dependen
 - 命令行：`code --install-extension mrvc-X.Y.Z.vsix`（X.Y.Z 换成实际版本号；不要写 `<version>`，尖括号在 cmd 里是重定向符）
 - 直接把 `.vsix` 拖进扩展视图
 
-> `.vscodeignore` 打包清单（以 `tools/verify-vsix.mjs` 的白名单为权威校验）：`out/extension.js`(+map)、
+**安装路径自动探测（0.3.6）**：设置留空时激活即探测惯例位置（Windows `C:\` / `D:\MounRiver\MounRiver_Studio2|3`；Linux/macOS 各自惯例根），**命中的根路径自动写入用户级设置**（`mrvc.mrs2InstallPath` / `mrvc.mrs3InstallPath`，下次启动不再探测；以提示告知）；**两代并存且 `mrvc.mrsVersion` 仍为 auto 时弹一次代次选择**（使用 MRS3 / 使用 MRS2 / 保持自动，globalState 只弹一次）；用户显式设置的路径永不被探测覆盖，探测不到时走原启动门禁引导。
+
+> `.vscodeignore` 打包清单（以 `tools/verify-vsix.mjs` 的白名单为权威校验）：`out/extension.js`(+map) + `mcp/mcp-server.js`、
 > `package.json` + `package.nls.json` + `package.nls.zh-cn.json`、README、`media/*.svg`、`resources/icon.png`、
 > **vendor 运行时两棵树**——`vendor-ffi/node_modules/koffi`（wlink 桥 FFI：JS + 各平台 prebuild + 许可证）与
 > `vendor-serial/node_modules`（SDI 串口监视器 serialport 运行时 + N-API prebuild）。
@@ -207,6 +211,9 @@ src/
     ├── exclude.ts     # Exclude/Include From Build 命令与装饰数据
     ├── renameProject.ts # Rename Project / Sync Project Name from Folder
     └── linkedFolders.ts
+└── mcp/               # 独立 stdio MCP 服务器（0.3.6，零 vscode 依赖，esbuild 第二入口）
+    ├── server.ts      # MCP stdio JSON-RPC 协议层（手工实现，无新依赖）
+    └── tools.ts       # 八工具包装 core（发现/安装/配置/体检/构建/记录/CMake/IntelliSense）
 ```
 
 工具组件全部来自 MounRiver 安装目录（`resources/app/resources/win32/`，MRS2 与 MRS3 布局相同）：

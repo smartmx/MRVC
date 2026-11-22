@@ -6,12 +6,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { foldPathOnPlatform } from './core/cproject';
 import { ProjectStore, MrsProject, MrsSolution, msg, installGate, getInstall, selectMrsInstall } from './vscode/projects';
+import { autoFillInstalls } from './vscode/installAutoFill';
 import { ProjectTreeProvider, TreeDecorations } from './vscode/tree';
 import { InfoTreeProvider } from './vscode/infoTree';
 import { BuildManager } from './vscode/tasks';
 import { flashProject, openLinkUtility, openMrsTerminal } from './vscode/flash';
 import { linkOpActive, powerOffResetCmd } from './vscode/powerCycle';
-import { projectSearchScope, searchInScope, searchRootFrom, SearchItem } from './vscode/search';
+import { allProjectsScope, projectSearchScope, searchInScope, searchRootFrom, SearchItem } from './vscode/search';
 import { ppCheckCommand } from './vscode/ppCheck';
 import { auditRepairCmd } from './vscode/auditCmd';
 import { ConfigView } from './vscode/configView';
@@ -98,7 +99,7 @@ function showDisclaimerOnce(context: vscode.ExtensionContext): void {
     .then(() => void context.globalState.update('mrvc.disclaimerShown', true));
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   migrateLegacyState(context);
   // UI language: mrvc.language ('auto' follows VSCode's display language)
   const langCfg = vscode.workspace.getConfiguration('mrvc').get<string>('language', 'auto');
@@ -107,6 +108,24 @@ export function activate(context: vscode.ExtensionContext): void {
   // ACTIVATION is the earliest reliable point; globalState marks it seen —
   // once per installation, never re-nags on window reloads
   showDisclaimerOnce(context);
+  // install auto-fill (0.3.6, user request): probe the conventional
+  // locations once; detected roots are WRITTEN into the user settings so
+  // the next launch skips the probe, and a both-generations setup prompts
+  // which generation to prefer. Runs BEFORE the gate and is AWAITED (round7
+  // P2): VSCode considers the extension activated only after activate()
+  // resolves, so commands/views/the gate are registered before the client
+  // can invoke anything.
+  try {
+    await autoFillInstalls(context);
+  } catch (e) {
+    console.error('[mrvc] install auto-fill failed:', e);
+  }
+  continueActivate(context);
+}
+
+/** the gate and everything after it — split out so the auto-fill can run
+ *  first without blocking the synchronous activate() contract */
+function continueActivate(context: vscode.ExtensionContext): void {
   // the strings are captured at activation — a language change needs a
   // window reload; offer the restart instead of leaving a stale UI silently
   context.subscriptions.push(
@@ -427,6 +446,8 @@ function startExtension(context: vscode.ExtensionContext): void {
   reg('mrvc.rebuildAll', () => build.rebuildAll());
   reg('mrvc.deleteOutputKeepImages', () => build.deleteOutputFiles());
   reg('mrvc.deleteOutputDirs', () => build.deleteOutputDirs());
+  reg('mrvc.deleteAllConfigsOutputKeepImages', () => build.deleteAllConfigOutputFiles());
+  reg('mrvc.deleteAllConfigsOutputDirs', () => build.deleteAllConfigOutputDirs());
   reg('mrvc.buildSolution', (item?: { solution?: unknown }) => {
     const sol = (item as { solution?: MrsSolution })?.solution;
     if (sol) void build.buildSolution(sol);
@@ -637,6 +658,18 @@ function startExtension(context: vscode.ExtensionContext): void {
       return;
     }
     searchInScope([root]);
+  });
+  reg('mrvc.searchInAllProjects', () => {
+    // tree title-bar menu (0.3.6): one search pre-scoped to EVERY loaded
+    // project — each spans its root plus its linked folders; the flattened
+    // list drops entries already covered by an earlier one (nested project
+    // roots, two links to the same directory)
+    const all = store.all;
+    if (!all.length) {
+      vscode.window.showErrorMessage(t('noProjectsLoaded'));
+      return;
+    }
+    searchInScope(allProjectsScope(all.map((p) => ({ root: p.root, linkedDirs: p.cproject.linkedFolders.values() }))));
   });
   // preprocessor consistency (0.3.3): manual check from the project tree —
   // the same detection the properties page runs after Apply, but an

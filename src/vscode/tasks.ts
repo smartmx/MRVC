@@ -10,7 +10,7 @@ import { nodeLogicPath } from './logicPath';
 import { Cproject, foldPathOnPlatform } from '../core/cproject';
 import { generateMakefiles, objectTargetFor, singleFileMakeArg } from '../core/makefile';
 import { classifySourceExt, isLogicExcluded } from '../core/scan';
-import { clearOutputDir, removeOutputDir } from '../core/output';
+import { clearOutputDir, deleteConfigOutputs, removeOutputDir } from '../core/output';
 import { t } from '../core/i18n';
 import { buildRecordFile } from '../core/buildLog';
 import { writeBuildTaskWrapper, writeCleanTaskWrapper } from '../core/taskWrapper';
@@ -456,9 +456,9 @@ export class BuildManager {
   }
 
   /**
-   * Delete every project's output directory contents, keeping the flash
-   * images (工程名.hex / 工程名.bin). Makefiles and objects go — the next
-   * build regenerates them.
+   * Delete the ACTIVE configuration's output directory contents of every
+   * project, keeping the flash images (工程名.hex / 工程名.bin). Makefiles
+   * and objects go — the next build regenerates them.
    */
   async deleteOutputFiles(): Promise<void> {
     await this.runBatch(this.store.all, {
@@ -470,13 +470,40 @@ export class BuildManager {
     this.refreshTree();
   }
 
-  /** Delete every project's whole output directory. */
+  /** Delete the ACTIVE configuration's whole output directory per project. */
   async deleteOutputDirs(): Promise<void> {
     await this.runBatch(this.store.all, {
       progressTitle: t('progressDeleteDirs'),
       label: 'Delete Output Directories',
       emptyMessage: t('noProjectsLoaded'),
       worker: (p) => this.deleteOutputOne(p, false),
+    });
+    this.refreshTree();
+  }
+
+  /**
+   * Delete EVERY configuration's output directory contents of every project
+   * (0.3.6), keeping each configuration's own flash images — a multi-
+   * configuration project keeps ALL configs' hex/bin, named after each
+   * config's own target name.
+   */
+  async deleteAllConfigOutputFiles(): Promise<void> {
+    await this.runBatch(this.store.all, {
+      progressTitle: t('progressDeleteAllKeep'),
+      label: "Delete All Configurations' Output Files (Keep hex/bin)",
+      emptyMessage: t('noProjectsLoaded'),
+      worker: (p) => this.deleteAllConfigsOne(p, true),
+    });
+    this.refreshTree();
+  }
+
+  /** Delete EVERY configuration's whole output directory per project. */
+  async deleteAllConfigOutputDirs(): Promise<void> {
+    await this.runBatch(this.store.all, {
+      progressTitle: t('progressDeleteAllDirs'),
+      label: "Delete All Configurations' Output Directories",
+      emptyMessage: t('noProjectsLoaded'),
+      worker: (p) => this.deleteAllConfigsOne(p, false),
     });
     this.refreshTree();
   }
@@ -620,6 +647,32 @@ export class BuildManager {
       }
       removeOutputDir(p.root, p.buildDir);
       return ok(t('outputDirRemoved'));
+    } catch (e) {
+      return { project: p.projectName, ok: false, detail: msg(e) };
+    }
+  }
+
+  /** deleteOutputOne for EVERY configuration (0.3.6): a configuration's name
+   *  IS its output directory name, so the specs come straight from the
+   *  configuration list; missing dirs (never built) are skipped silently by
+   *  the core helper. */
+  private async deleteAllConfigsOne(p: MrsProject, keepImages: boolean): Promise<BuildAllResult> {
+    const ok = (detail: string): BuildAllResult => ({ project: p.projectName, ok: true, detail });
+    if (this.building.has(foldPathOnPlatform(path.resolve(p.root)))) {
+      return ok(t('buildBusySkip'));
+    }
+    try {
+      p.reload();
+      // the flash images are named after each configuration's own target
+      // name — multi-config projects keep ALL configs' hex/bin
+      const specs = p.cproject.configurationNames.map((name, i) => {
+        if (!keepImages) return { dir: path.join(p.root, name) };
+        const target = Cproject.loadConfigAt(p.root, i).targetName;
+        return { dir: path.join(p.root, name), keep: [`${target}.hex`, `${target}.bin`] };
+      });
+      const { dirs, files } = deleteConfigOutputs(p.root, specs);
+      if (keepImages) return ok(files ? t('entriesRemoved', files) : t('noOutputDir'));
+      return ok(dirs ? t('outputDirsRemoved', dirs) : t('noOutputDir'));
     } catch (e) {
       return { project: p.projectName, ok: false, detail: msg(e) };
     }
