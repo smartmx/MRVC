@@ -129,6 +129,13 @@ export function buildTeeScript(spec: BuildWrapperSpec, buildCmd: string, dryCmd:
     // wrapper generation and launch would otherwise kill the build with
     // "could not find a part of the path" before make even starts
     `New-Item -ItemType Directory -Force -Path (Split-Path -Parent ${psQuote(spec.recordFile)}) | Out-Null\n` +
+    // the PROJECT root (the build dir's parent): the terminal copy of the make
+    // output gets the diagnostic file paths made ABSOLUTE with it — GCC prints
+    // them relative to the build directory (`../<folder>/<file>.c`, make runs
+    // there), and the $mrvcgcc matcher (fileLocation: "absolute") takes the
+    // path as-is, so it MUST already be absolute or Problems entries point at
+    // files outside the project (user report 2026-11-24)
+    `$srcRoot = Split-Path -Parent ${psQuote(spec.buildDir)}\n` +
     // which installation this build uses (mrvc.mrs2InstallPath /
     // mrvc.mrs3InstallPath are either-or — show the active one)
     (label ? `Write-Host ${psQuote('MRS: ' + label)}\n` : '') +
@@ -161,7 +168,15 @@ export function buildTeeScript(spec: BuildWrapperSpec, buildCmd: string, dryCmd:
     `  $reader = $proc.StandardOutput\n` +
     `  while ($null -ne ($line = $reader.ReadLine())) {\n` +
     `    $writer.WriteLine($line)\n` +
-    `    if ($echo) { [Console]::Out.WriteLine($line) }\n` +
+    `    if ($echo) {\n` +
+    // terminal copy: absolute-ize the diagnostic prefix (see $srcRoot above) —
+    // '../<file>:…' → '<projectRoot>/<file>:…'; the RECORD keeps the raw line
+    `      if ($line.StartsWith('../') -or $line.StartsWith('..\\')) {\n` +
+    `        [Console]::Out.WriteLine($srcRoot + $line.Substring(2))\n` +
+    `      } else {\n` +
+    `        [Console]::Out.WriteLine($line)\n` +
+    `      }\n` +
+    `    }\n` +
     `  }\n` +
     `  $writer.Flush()\n` +
     `  $proc.WaitForExit()\n` +
@@ -210,12 +225,24 @@ export function buildPosixBuildScript(spec: BuildWrapperSpec): string {
     `# run goes into the record only. Exit code = make's (PIPESTATUS).\n` +
     `record=${shQuote(spec.recordFile)}\n` +
     `cd ${shQuote(spec.buildDir)} || exit 1\n` +
+    // the PROJECT root (this build dir's parent): the terminal copy of the
+    // make output gets the diagnostic file paths made ABSOLUTE with it — GCC
+    // prints them relative to the build directory, and the $mrvcgcc matcher
+    // (fileLocation: "absolute") takes the path as-is, so it MUST already be
+    // absolute or Problems entries point outside the project (user report
+    // 2026-11-24). sed prefixes the source root on the leading `../` for the
+    // TERMINAL only: `tee` first writes the raw output into the record.
+    // `&` (sed replacement-special) and `|` (the delimiter) in the root are
+    // escaped.
+    `srcRoot=\${PWD%/*}\n` +
+    `srcRoot=\${srcRoot//&/\\\\&}\n` +
+    `srcRoot=\${srcRoot//|/\\\\|}\n` +
     // (re-)create the record directory — a temp cleanup landing between
     // wrapper generation and launch must not kill the build
     `mkdir -p "$(dirname "$record")"\n` +
     (label ? `echo ${shQuote('MRS: ' + label)}\n` : '') +
     `rm -f "$record"\n` +
-    `${make} ${spec.makeArgs.join(' ')} 2>&1 | tee "$record"\n` +
+    `${make} ${spec.makeArgs.join(' ')} 2>&1 | tee "$record" | sed "s|^\\.\\./|\${srcRoot}/|"\n` +
     `code=\${PIPESTATUS[0]}\n` +
     // success line (static libraries: terminal-only — see BuildWrapperSpec)
     (spec.doneLine ? `if [ "$code" -eq 0 ]; then echo ${shQuote(spec.doneLine)}; fi\n` : '') +

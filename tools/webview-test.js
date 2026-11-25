@@ -204,6 +204,81 @@ await view.show(store.active);
     );
     // P3-3: empty Add/Rename input is reported, not silently dropped
     check('webview: empty configuration name shows an error', html.includes("'Name is required.'"));
+    // 0.3.7: Manage rows are addressed BY INDEX (duplicate names would make a
+    // name-keyed selection act on the wrong row) and the Copy-from dropdown
+    // reports the row, not the name
+    check(
+      'webview: Manage rows carry data-index and the Copy-from list is index-valued',
+      html.includes('data-index=') &&
+        html.includes('copyFromIndex: Number(cfgSource.value)') &&
+        html.includes('Number(r.dataset.index)')
+    );
+  }
+  // 0.3.7 duplicate configuration names: only imported projects have them —
+  // the dialog must SAY the two rows share one output directory. Rendered
+  // from a scratch copy of the real project whose .cproject has the one
+  // configuration block duplicated under the same name.
+  {
+    const fsx = fs;
+    const dupRoot = path.join(__dirname, '..', '.scratch', 'webview-dup');
+    fsx.rmSync(dupRoot, { recursive: true, force: true });
+    fsx.mkdirSync(dupRoot, { recursive: true });
+    for (const f of ['.project', '.template']) {
+      const s = path.join(PROJ, f);
+      if (fsx.existsSync(s)) fsx.copyFileSync(s, path.join(dupRoot, f));
+    }
+    {
+      const cpRaw = fsx.readFileSync(path.join(PROJ, '.cproject'), 'utf-8');
+      const m = cpRaw.match(/<cconfiguration\b[\s\S]*?<\/cconfiguration>/);
+      if (m) {
+        const block = m[0];
+        const dupBlock = block.replace(/(id="[^"]*?)(\d*)"/g, (all, head, num) => `${head}${num}9"`);
+        const at = cpRaw.indexOf(block) + block.length;
+        fsx.writeFileSync(path.join(dupRoot, '.cproject'), cpRaw.slice(0, at) + '\n\t' + dupBlock + cpRaw.slice(at), 'utf-8');
+      }
+    }
+    let dupCp = null;
+    try {
+      dupCp = Cproject.load(dupRoot);
+    } catch {
+      dupCp = null;
+    }
+    check(
+      'dup: scratch copy loads with a repeated configuration name',
+      !!dupCp && dupCp.configurationNames.length === 2 && dupCp.duplicateConfigurationNames.length === 1,
+      dupCp ? JSON.stringify(dupCp.configurationNames) : 'load failed'
+    );
+    if (dupCp && dupCp.duplicateConfigurationNames.length === 1) {
+      const dupStore = {
+        active: {
+          root: dupRoot,
+          projectName: 'Dup',
+          projectDisplayName: 'Dup',
+          buildDir: path.join(dupRoot, dupCp.configName),
+          hexPath: path.join(dupRoot, dupCp.configName, 'Dup.hex'),
+          kernel: undefined,
+          template: readTemplate(dupRoot),
+          cproject: dupCp,
+          projectFile: realPf,
+          toolchain: () => null,
+          logicPathOf: () => undefined,
+          reload() {},
+        },
+        all: [],
+      };
+      const dupView = new ConfigView(dupStore, ctx);
+      await dupView.show(dupStore.active);
+      const dupHtml = stubPanel.webview.html;
+      check('dup: the dialog carries the duplicate-name note', /id="cfgmodal"[\s\S]*?class="cfgnote"/.test(dupHtml));
+      check(
+        'dup: the note names the duplicated configuration and says the folders are shared',
+        dupHtml.includes('Duplicate configuration name(s)') && dupHtml.includes(dupCp.duplicateConfigurationNames[0])
+      );
+      check(
+        'dup: both rows render (same name, distinct indices)',
+        (dupHtml.match(new RegExp(`class="cfgrow[^"]*" data-name="${dupCp.configurationNames[0]}" data-index="`, 'g')) || []).length === 2
+      );
+    }
   }
   // round-2 P3-1: Apply sends saveDl and save back to back. Only the property
   // save may re-baseline the dirty snapshot — a saveDl 'saved' would hide the

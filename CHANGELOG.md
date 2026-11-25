@@ -1,5 +1,342 @@
 # MRVC 更新日志
 
+## V0.3.7（2026-11-25）
+
+### 变更
+
+- **全量代码审查报告 P0 有效子集修复（2026-11-25，`code_review_report.md` 六项高危中五件实锤子集；其余两项经核实降级/不采纳，见文末说明）**：
+  ① **JSONC 尾随逗号损坏 workspace 设置文件（H5，数据损坏）**——`objectProps` 未接收
+  `stripJsonc` 的尾逗号记录，最后属性带尾逗号时其值 span 延伸到容器收尾符：改值拼接会静默
+  抹掉用户的尾逗号与行尾注释，「同趟改值+加新键」则产出缺分隔逗号的非法 JSONC。修复=纯
+  JSONC 手术编辑原语（strip/objectProps/arrayElements 等）抽到 `src/core/jsonc.ts` 并让
+  `objectProps`/`arrayElements` 在尾逗号处截断 span（抽离同时使这组保护用户手写文件的规则
+  可在纯 Node 下直测）。② **OpenOCD Jim Tcl 注入（H2）**——固件路径此前仅反斜杠转斜杠即拼入
+  双引号脚本参数，Jim Tcl 在双引号内仍求值 `[...]`/`$var`：含方括号的路径（如 `CH32[v2]`）会
+  中断下载、构造路径可注入 Tcl 命令；现拒绝换行并转义 `"$\[]` 元字符——常规路径逐字节不变
+  （下载凭据的计划指纹不受影响），仅携带这些字符的路径产生不同脚本（修复前该类路径本就
+  无法下载）。③ **PowerShell 桥参数校验（H1）**——PS 5.1 词法器把弯引号（U+2018/2019/201A/
+  201B）也当字符串定界符而 `''` 转义不覆盖之：wlink 桥的库目录/wcfg/固件路径与新建工程的
+  zip/目标路径现拒绝携带弯引号（明确报错，不改写路径），chipId/clkSpeed/dbgMode/eraseMode/
+  memVal 等裸插值参数强制安全整数断言；op 注入本就被 switch 拦截（未知 op 在写盘/执行前抛出），
+  属纵深收口。④ **输出目录清理边界（H3①）**——`contained` 定义了大小写折叠却未使用（Windows
+  盘符/目录大小写差异被误判为工程外而拒绝），且输出目录若为 junction/symlink，逐项删除会
+  跟随链接清空目标内容：现折叠比较 + 链接目录直接拒绝（缺失目录仍按未构建处理）。⑤ **CMake
+  导出转义（H3②）**——`PROJECT_NAME`/`TARGET_ARTIFACT`/`userLibs` 此前未过 `esc()`（.project
+  显示名是自由文本，引号可闭合 CMake 字符串注入命令），现与 flags 块同规则转义（常规名逐字节
+  不变）。**未采纳/降级**：makefile `$$(shell …)` 注入系 MRS 字节保真的既定取舍（MRS 本身同样
+  暴露，改转义即破金标与 MRS 一致性）；MCP 下载「先写脚本后校验指纹」降级 P3（执行被凭据
+  门禁挡死，残留为生成产物）；掉电复位 on 段标记提前降级 P3（标记锚定 rail 切换本身，round-11
+  教训的既定设计）。测试：新增 tools/p0-hardening-test.js 26 断言（尾逗号损坏复现与修复、
+  嵌套尾逗号语义、Tcl 转义/换行拒绝/常规路径字节稳定、PS 整型与弯引号拒绝、输出目录折叠/
+  junction 拒绝、CMake 注入与常规名不变）；同步清单新增 src/core/jsonc.ts 与
+  tools/p0-hardening-test.js（156→158 files）。**复审补齐（同日，四处残留缺口）**：
+  固件检查脚本 `buildPsFirmwareCheckScript` 补同款弯引号断言，`runWlinkOp`/
+  `checkWCHLinkFirmware` 的脚本生成+临时写入包 try/catch（拒绝以结构化结果返回而非同步
+  抛出），下载页调用点补 `.catch()` 将失败回显到日志（新增 `dlOpFailed` 文案）；输出目录
+  `contained` 相对路径改按工程根解析（此前按进程 cwd 必然越界误报）、盘符根前缀不再双分隔
+  符、`realpathSync.native` 复验已存在目录的真实落点——**中间祖先目录为 junction/symlink**
+  的场景不再穿透；`esc()` 换行扁平化 + `objCopyOptions`/`listingOptions` 过 esc（带引号/
+  换行的选项文本不再破坏生成的 add_custom_command）；writePropsFile 内重复的尾逗号判断
+  收敛到 core 导入。测试：p0-hardening-test 26→33 断言。**注**：同步侧仓库无 `out/`
+  构建产物属预期（`npm run compile` 现生成）。**再复审修正**：realpath 复验的条件首版写反
+  （`!==`/`&&`），解析后**恰好等于工程根自身**的链接路径（祖先链接 `sub → ..` 时传入
+  `sub/<工程名>`）会被放行——clearOutputDir 将清空整个工程；现与逻辑路径检查同形（等于根
+  或不在根下一律拒绝）。测试：p0-hardening-test 33→35 断言。**第十六轮复审（P2 证伪 +
+  P3 修复）**：P2「构建/导出在陈旧链接上静默漏源」经 MCP 工具层端到端探针证伪——
+  build/rebuild/build-all/export_cmake/intellisense_db 五个调用全部被 round15 的
+  陈旧链接门禁结构化拒绝、零产物落盘，链接修复后放行（复审探针停在 core scanSources 层，
+  未经过 MCP 工具层）；P3 属实已修——CMake 导出的 **sources/includes 逐项过 `esc()`**（POSIX
+  文件名可含引号/换行，此前直接拼接双引号参数可被闭合注入；esc 定义上移至函数前部消 TDZ；
+  Windows 禁止文件名含引号，该用例为 POSIX-only fixture，win32 下 esc 契约由 objcopy 用例
+  覆盖）。**第十七轮复审（P2 三度误报 + P3 修复）**：P2 再次引用 core 层探针称构建/导出
+  静默漏源——**维持证伪**：`requireLinkedTargets` 门禁就在三个扫描类工具（build/rebuild
+  tools.ts:1095、export_cmake:1501、intellisense_db:1519）入口处，其判定谓词
+  `!fs.existsSync(link.location)` 与 `scanSources` 的跳过谓词（scan.ts:180）**逐字相同**，
+  「扫描会跳过」必然「门禁已拒绝」；MCP 层端到端探针五调用全拒、零产物落盘（round16 记录），
+  且报告自己引用的 mcpserver-test 102 PASS 就包含这些拒绝断言。P3 属实已修——`esc()` 增
+  **`$` → `\$` 转义**（CMake 双引号参数内 `${X}` 会变量展开，合法 Windows 文件名
+  `a${X}.c` 会被折叠成 a.c；`\$` 为 CMake 身份转义序列，转义后值不变；仅转义插值 VALUE，
+  模板自身的 `${TARGET_ARTIFACT}` 等引用不经 esc）。测试：p0-hardening-test 35→36 断言
+  （真实 `a${X}.c` fixture）。**第十八轮复审（P2×4 + P3×2）**：**P2-1 陈旧链接门禁补到扩展侧**
+  （此前仅 MCP 工具入口有门禁，F7/Build All/Rebuild All/扩展 IntelliSense/Export As CMake
+  Project 仍会在链接目录缺失时静默生成缺源 makefile/编译数据库）——新增
+  `assertScannableLinkedFolders`（core/scan.ts）接进 `generateMakefiles`/`buildCMakeContent`/
+  `buildCompileEntries` 三个共同入口，clean 不门禁（从不扫描）不变；**P2-2 `startsWith('..')`
+  路径段判断**——项目内 `..foo.c` 这类以两点开头的合法名字被误判为工程外而静默丢出 CMake
+  导出（macros.ts 的 PARENT 爬升与 flash 的展示路径同病）：新增 `isOutsideRelPath`（'..' 须
+  独立成段）统一替换四处；**P2-3 `;` 转义**——文件名中的分号会把 `${SRC_FILES}` 列表拆成
+  幻影条目（真实 CMake 4.4.3 探针实证），esc 增 `\;`；**P2-4 链接名安全提升到 core**——
+  `isSafeLinkName` 从 CMake 导出层上移 projectFile.ts，`addLinkedFolder`（扩展/MCP 共同写
+  入口）强制断言，forExport 遇不安全链接名抛可行动错误（in-place 不抛，既有 EVT 树不受
+  影响），扩展输入框改用同一校验；**P3-1 链接目标是普通文件**——`existsSync` 检查升级为
+  `unscannableLinkedTarget` 目录检查（staleLinkedFolders 与 scanSources 谓词一致）；**P3-2
+  esc 反斜杠**——不再无条件转 `/`（POSIX 文件名 `a\b.c` 会被改写），改为 CMake `\\` 字面
+  编码，路径类值在各自站点先 toPosix 规范化；MCP `get_project_config` 读工具遇陈旧链接把
+  扫描拒绝降级为 scanNote（摘要仍可用，AI 先诊断后修复）。**既有测试 fixture 同步**：五套
+  拷贝真实 EVT 树的测试（roundtrip/cmake-test/compilefile/exclude/makefile-dollar）物化其
+  PARENT 链接目标（exclude 侧改为重写进 scratch，避免爬升落到仓库根）。测试：
+  p0-hardening-test 36→42 断言，mcpserver-test 102→103 断言。**第十九轮复审（P2×2 + P3×3）**：
+  **P2-1 跨盘符链接**——`path.relative` 在 Windows 跨盘符时返回绝对路径，`isOutsideRelPath`
+  只认 `..` 段会把绝对 rel 误判为项目内：导出的 SRC_FILES 写成原机 C 盘绝对路径而
+  copyLinkedFolders 实际把目标复制进导出目录的 `Shared/`——isOutsideRelPath 增绝对 rel 判定
+  （跨盘符链接经 linkOf 映射走 `Shared/...`，in-place 保持绝对引用语义）；**P2-2 隐式
+  sourceEntry 静默漏源**——无 `<linkedResources>` 但 sourceEntries 带名字、且解析不到任何
+  目录的旧 EVT/手写 .cproject 会整棵隐式共享树静默丢失：assertScannableLinkedFolders 扩展为
+  同时检查「未解析的命名 sourceEntry」；**P3-1 排除构建语义**——根 entry 已排除的链接（无
+  配对命名 entry 重新包含）不再阻塞构建门禁，`unscannableLinkedTarget` 从 statSync 升级为
+  readdir 探测（权限锁死目录 stat 通过但仍被扫描静默跳过）；**P3-2 残留 `startsWith('..')`**
+  ——projects.ts logicPathOf / logicPath.ts 链接子项 / templateFile.ts staleTargetPath 三处
+  统一换 isOutsideRelPath（并归一化正反斜杠拼写——`../x` 形式的相对串此前不被识别）；**P3-3
+  isSafeLinkName 补全**——拒绝空名、控制字符与带扩展名的 DOS 设备名（CON.txt / NUL.foo）。
+  测试：p0-hardening-test 36→48 断言（跨盘符导出 Shared 映射[双盘符环境]、隐式 entry 拒绝、
+  排除不阻塞、safe-name 补全、谓词单元），mcpserver-test 103 断言不变。**第二十轮复审
+  （P2×2 + P3×3）**：**P2-1 门禁链接名匹配大小写敏感**——.cproject sourceEntry 与 .project
+  链接名在 Windows 上可能仅大小写不同（代码其他位置均折叠匹配），精确 `Map.has` 会把合法
+  工程误判「source entry 无目录」；门禁与 `resolveImplicitLinkedFolders` 均改折叠匹配。
+  **P2-2 root 排除 token + 命名 entry 的 re-include 语义**——CDT union 语义里 root token
+  配命名 entry 是「勿双扫」标记而非排除，该目录缺失仍须拒绝；修正门禁对命名 entry 不再因
+  root token 跳过（token-且无-entry 才是真排除，仅链接循环使用）。**P3-1 p0 排除用例
+  fixture 污染**——用例中 `Shared` 名字经 Windows 大小写不敏感解析命中了前序 fixture 的
+  `shared` 目录（假绿），改为独立命名 + 显式断言无隐式解析 + 增加「去掉排除 token 后同
+  一陈旧链接被拒绝」的对照断言（证明是排除在起作用而非污染）。**P3-2 mcpserver 清理
+  EPERM 抖动**——Windows 子进程退出后 scratch 目录短暂占用，rmSync 加退避重试。**P3-3
+  POSIX 字面反斜杠**——`toPosix`/`isOutsideRelPath` 的反斜杠归一化限定 Windows（POSIX
+  文件名可合法含反斜杠，POSIX 侧不归一）。测试：p0-hardening-test 48→52 断言（re-include
+  标记拒绝、排除对照、无隐式解析隔离断言）。**顺带发现**：隐式 SRC-sibling 解析在
+  Windows 大小写不敏感下可能把用例名解析到插件自身源码目录（`Core`→`src/core`）——
+  门禁测试用例改用唯一名规避；该解析为既有 MRS 对等行为，不在本轮范围。
+  **第二十一轮复审（P2×2 + P3×2）**：**P2-1 大小写变体重复链接名**——NTFS 上 `Foo`/`foo`
+  是同一物理目录，两个链接会以两个逻辑名扫描同一批对象（`Foo/same.o` 与 `foo/same.o` 在
+  make -j 下竞写同一目标文件）；`addLinkedFolder` 重复检查改折叠比较、MCP 前置检查同规则、
+  `assertScannableLinkedFolders` 对既有工程中的折叠重复链接名拒绝。**P2-2 self/祖先链接**——
+  链接目标指向工程根或包含工程根的祖先目录会让整棵树以链接名再扫一遍（全部源码重复编译、
+  对象竞写；junction/symlink 间接指向同样命中）：新增 `assertSafeLinkTarget`（逻辑折叠 +
+  `realpathSync.native` 物理身份双层判定），`addLinkedFolder` 与 `changeLinkedFolderTarget`
+  统一强制，MCP handler 在进入备份事务前前置检查（不留无意义备份）。**P3-1 walk 嵌套不可读
+  目录静默漏扫**——`walk()` 此前吞掉任意层级的 readdir 失败（网络共享/安全软件锁目录/
+  ACL 异常时整棵子目录静默消失）：错误收集后在 `scanSources` 末尾抛结构化 `ScanError`
+  （列出全部不可读目录），构建/导出/编译数据库/固件推断路径全部以失败呈现；工程树不消费
+  scanSources，无 UI 回归。**P3-2 MCP schema/handler 对齐核心 safe-name 规则**——handler
+  直接调用 `isSafeLinkName`（旧字符集子集 regex 删除），schema 增 `minLength`/`pattern`
+  并在 description 写明完整规则；mcpserver 补 CON.txt / 大小写变体重复 / self-root 用例。
+  测试：p0-hardening-test 48→57 断言，mcpserver-test 103→106 断言。**第二十二轮复审
+  （2 项顺手修）**：强制 `-include` 路径双重 `esc()`（采集时内层 + flags 块外层各一次，
+  `$`/`;`/`\` 被二次转义导致 CMake 解析出字面反斜杠、头文件找不到）——内层 esc 移除，
+  统一由 flags 块单次转义；`assertSafeLinkTarget` 对**盘符根/POSIX 根**目标的前缀比较
+  少一个分隔符（`D:\`+`\`=`D:\\`）导致包含整个工程的根目录被放行——前缀写法与
+  output.ts 对齐（以分隔符结尾不再重复拼接）。测试：p0-hardening-test 57→59 断言
+  （盘符根拒绝、强制包含单次转义）。**第二十三轮复审（P2×1 + P3×3）**：**P2-1 同一物理
+  target 的多个链接名重复编译**——两个链接指向同一目录（或父子重叠）时，同一物理文件以两个
+  逻辑名出现、make -j 竞写同一对象文件：scanSources 增**链接 walk 间物理身份去重**
+  （realpathSync.native + 平台折叠；仅限定于链接 walk 之间——root-内部链接 + root 排除
+  标记的 re-include 语义不受影响，文件仍以链接逻辑名出现一次），作为逻辑名去重之外的第二
+  道防线；**P3-1 递归 walk 未传错误数组（round21 疏漏）**——嵌套 readdir 失败仍被静默吞掉，
+  递归调用现传递错误收集器，任意层级不可读目录都以 `ScanError` 失败呈现；**P3-2 原始
+  .project 的既有 self-link/精确重名链接绕过门禁**——linkedFolder Map 会折叠合并（后者覆盖
+  前者），门禁现读原始 linkedResources：精确重名不同目标（其一被静默丢弃）、物理同目标别名
+  （两逻辑名竞写）、self/祖先目标（早于写入守卫的既有链接）全部报告；**P3-3 MCP `name.trim()`
+  静默归一化**——`"Trail "` 被静默接受为 `Trail`：改为 raw 值直接过 isSafeLinkName + 前后
+  空格显式拒绝，schema pattern 增结尾 `[. ]` 禁止。测试：p0-hardening-test 52→63 断言
+  （嵌套 EACCES ScanError[monkeypatch readdir]、精确重名不同目标、raw self-link、
+  大小写别名物理去重），mcpserver-test 106→107 断言（尾随空格拒绝且不写链接）。
+  **第二十四轮复审（P2×1 + P3×1）**：**P2-1 项目内链接
+  不同名重复编译**——链接指向工程内子目录且链接名与物理目录名不同（`Lib` → `proj/src`）时，
+  同一物理文件以 `src/a.c` 与 `Lib/a.c` 两个逻辑名进入 makefile（链接阶段重复符号）：物理
+  身份去重集合扩展到 **root walk**——链接 walk 命中已见物理文件时，**替换**早前的 root
+  条目为链接逻辑名（与 MRS2 标记语义一致：链接目录以链接名扫描、物理路径让位；round1-P2
+  的 re-include 用例保持通过）；**P3-1 排除语义贯通到 raw duplicate-target 检查**——根
+  entry 排除且无配对命名 entry 的链接、以及 filteredResources 已移除的链接目录，不再触发
+  「同一目录两个逻辑名」误报。测试：p0-hardening-test 59→66 断言（项目内链接单次编译、
+  排除别名不误报 + 无排除对照拒绝）。**第二十五轮复审（High×1 + Medium×2 + Low×1）**：
+  门禁的 raw `.project` 检查补 **try/catch**——仅含 `.cproject` 的工程（无 `.project`）
+  此前会以原始 ENOENT 崩溃；**排除语义贯通 raw 循环**——root 排除且无配对命名 entry、
+  filteredResources 已移除的链接跳过全部门禁报告（此前仅 stale 循环跳过，raw 循环仍会以
+  「同一目录两个逻辑名」误拒合法的排除配置）；重复目标**报错方向修正**（linkedFolder Map
+  后者覆盖前者——被静默丢弃的是前者而非后者，原文案写反）且比较前 path.resolve 归一化
+  （仅末尾斜杠不同的两条不再误报）；case-variant 同目标对的注释与行为对齐（物理去重放行
+  一个逻辑路径）；p0 的 case-variant 用例**假绿重构**——别名目标目录在门禁前物化，门禁
+  断言改为正向「无异常」判定（此前门禁因目录缺失抛 stale 错误、catch 只认旧文案而假绿）。
+  测试：p0-hardening-test 66→67 断言（门禁正向判定）。**第二十六轮复审（Medium×1 +
+  Low×2，收尾）**：**Medium 无 `.project` 工程容错被提前击穿**——round25 只给门禁自身的
+  raw `.project` 读取补了 try/catch，但两个入口函数开头的 `listRemovedResources`（读
+  `filteredListElement`）会先一步以 ENOENT 抛出：`filteredListElement` 读路径（`!create`）
+  现捕获读取异常返回 undefined（写路径照旧报错），并顺带容忍缺失的 `projectDescription`
+  （写路径补建元素）；**Low-1 removed 语义贯通 stale 检查与 walk 递归**——树里已 Remove
+  的链接（filteredResources）目标随后被删时，stale 循环仍会阻断构建（raw 循环已跳过，
+  stale/命名 entry 循环漏了），现同样跳过；walk 递归对已移除子树整棵跳过（其文件本就会
+  丢弃，但递归仍会把其下不可读目录误报成 `ScanError`），链接 walk 同样跳过已移除链接；
+  **Low-2 p0 排除别名用例的 catch 假绿**——`ok = /文案/.test(msg)` 写在 catch 里恰好在
+  该门禁回归重新抛错时置 true：改消息记录式（抛错即失败）。测试：p0-hardening-test
+  67→72 断言（无 `.project` 三入口贯通、已移除死链不报 stale + 无移除对照拒绝、已移除
+  子树 EACCES 不误抛 + 无移除对照 ScanError）。复核收尾两处对称微调：实目录命名 entry 的
+  重扫（步骤 1.5）对「顶层目录自身已被逻辑移除」整棵跳过（与链接 walk 的移除跳过对称，
+  其下不可读目录不再误抛）；`removedFolders` 构造对 `parentLogic` 过 `toPosix`（与扫描侧
+  前缀集构造一致）。
+- **悬空的命名源码条目降级为提示（0.3.7，用户实测 MRS 可编译后裁决）**：官方 EVT V1_2 的
+  BLE 工程内 `.cproject` 里带着悬空的命名 `Profile` entry（目录不存在，旧版布局遗留），
+  round19 起的门禁会以「source entry 无可解析目录」**拒绝构建**；用户实测 MRS 打开同样工程
+  编译通过（MRS 对解析不到的命名 entry 静默跳过）——按 MRS 对等放宽：构建/CMake 导出/
+  编译数据库不再因此拒绝，悬空条目改为**提示**呈现（`mrvc_get_project_config` 回
+  `danglingSourceEntries` 说明、工程审计加 report-only 的 `dangling-entry` 发现项）；
+  链接目录（linked folder）目标缺失仍照旧拒绝（那才是真的会漏源）。
+- **修正：问题面板的编译警告指向不存在的文件（0.3.7，用户报告；两轮修正）**：构建任务的
+  GCC 诊断按 make 的运行目录（构建目录）打印相对路径（`../<文件夹>/<文件>.c`），而
+  `$mrvcgcc` 问题匹配器没有配置路径基准——VSCode 默认拿**工作区根目录**解析，路径里的
+  `..` 恰好把工程文件夹名抵消掉，条目指向工程外一个不存在的位置（点击警告报「由于找不
+  到该文件」）。**终版修法：在构建 wrapper 的终端输出流里把诊断行开头的 `../` 替换为工程
+  根绝对路径**（构建/重编/单文件编译/Build All 四条链路全覆盖；构建记录保持 make 原文，
+  「Show Full Build Output」不受影响），匹配器 `fileLocation` 定为合法的 `"absolute"`。
+  第一版曾写成任务 cwd + `fileLocation: ["autodetect"]`——对本机 VSCode 实物 bundle 的
+  解析器取证证实其无效：schema 枚举大小写敏感且**单元素数组只接受 absolute**，该形态
+  无法注册；且 autoDetect 的解析基准是 filePrefix（默认工作区根），**任务 cwd 不参与**
+  匹配器路径解析。任务 cwd 仍设为构建目录（与 make 运行目录一致，双保险）。诊断绝对化
+  与工作区打开方式（工程目录/父目录/多根）无关，条目现在准确指向源文件。测试：
+  wrapper-test 两种平台的功能回归（终端绝对化/记录原文）+ 形态断言，rebuildconfigs-test /
+  buildmanager-test 加任务 cwd 与匹配器 wiring 断言。
+- **新增「导出 AI MCP 服务器」（0.3.7，用户要求；菜单名与位置同期按用户要求定名/移位）**：VS Code 把每个版本的扩展安装在各自目录，
+  MCP 客户端配置若直接指向 `<扩展安装目录>/mcp/mcp-server.js`，插件升级后路径即失效。工程
+  树标题栏 `…` 菜单新增 **Export AI MCP Server**（位于 Clear C/C++ IntelliSense Cache 之上）：把随包的 stdio 服务器复制到用户选择的
+  位置，客户端配置改指 `<导出位置>/mrvc-mcp/mcp-server.js`，跨升级保持有效。目标规则：选择位置后**在该位置创建 `mrvc-mcp`
+  文件夹**并在其中导出（mcp-server.js、README 配置说明、标记 package.json；重复导出到
+  同一位置 = 原地更新该文件夹；该文件夹已存在且非 MRVC 导出的需模态确认；选到扩展安装目录
+  内部被拒绝（按真实路径判定：经 junction/symlink 指向安装目录的位置同样拒绝）。写入为**就地增量 + 临时文件原子改名**（内容相同的文件不碰、从不删除；副本正被客户端
+  运行时重新导出也不会观察到半写文件——POSIX 上尤其避免原地覆盖已被映射的 koffi.node）；
+  副本**不依赖插件安装目录**——插件更新乃至卸载都不影响已导出的副本；Windows 只导出 `mcp-server.js` + 标记 `package.json` + README 配置说明，Linux/macOS 另带
+  硬件桥的 koffi 运行时（Windows 桥走 P/Invoke）。导出后消息可一键**复制客户端配置**
+  （command/args JSON）或打开所在文件夹；对话框默认回到上次位置——**插件升级后重新导出
+  一次**即可更新副本。**每次导出携带版本**（标记 package.json 记录导出时的扩展版本，副本
+  启动时也从它读版本号）：升级后重新导出，消息显示**「从 A 更新到 B」**与重写的文件数，
+  相同版本且无变化时提示「已是该版本」；导出位置的副本比当前扩展**更新**（如回退了扩展）
+  时先模态确认再覆盖。标记同时记录**来源扩展目录**与导出时的 **MRS 安装路径设置与代次
+  偏好**（`mrvc.mrsVersion`——无头副本读不到 VS Code 设置，不携带时双安装机器上副本会
+  按默认顺序静默选错代次）：副本在惯例位置探测不到安装时回退到记录的路径与代次
+  （显式参数与 `MRVC_MRS_INSTALL_PATH` 仍最优先、严格校验不变；改了设置重新导出一次即可）。
+  服务器版本号读取改为双布局（扩展内读上一级的 package.json；导出
+  副本读同目录、名为 `mrvc-mcp-server` 的 package.json，别人的 package.json 不会被误读；
+  上一级读取同样按包名核验，bundle 被手工拷进第三方 npm 包的子目录也不会误报其版本）。
+  导出写入改为 **payload 先落盘、标记最后写**（标记即提交标记：写入中途失败不会留下
+  「版本是新的、内容是旧的」的假状态）。
+  新增 `mcpexport-test`（导出计划/目标判定/就地增量写入/失败注入/命令层/接线断言，含
+  扩展内与导出后两种布局的真实启动冒烟、junction 守卫、版本比较矩阵与代次回退）。
+- **工程树：编译输出目录按磁盘原样展开（0.3.7，用户要求）**：输出目录节点此前只列顶层
+  文件（生成的 makefile 与 elf/hex/lst/map），各源码目录的镜像子目录（内含 `.o` / `.d` /
+  `subdir.mk`）一律不显示——与 VS Code 自带资源管理器看到的内容不一致。现在该节点**不再
+  过滤**：文件与子目录全部列出、递归展开（目录在前、文件按名排序）；镜像子目录是独立的
+  `outputFolder` 行，沿用输出目录行的通用文件操作菜单（新建/复制/粘贴/路径/删除/打开
+  所在文件夹），不出现任何编译配置类命令（排除/纳入构建等）；输出文件即使带可编译后缀
+  也保持「产物」身份，不会变成单文件编译目标。节点缓存 / 作用域刷新 / 删除剪枝对子目录
+  同样生效（删除镜像目录：该节点与输出目录行一起刷新，子树缓存回收）。**非活动配置的
+  输出目录同样按输出目录渲染**（复审 P2.1：此前它是普通文件夹行，内部每一行都提供「从
+  构建中排除」，带可编译后缀的产物还会变成单文件编译目标——任何输出目录里都没有可排除
+  或可编译的东西）。测试：treescope-test 补子目录递归/身份/剪除断言，并新增**按 VS Code
+  真实 when 条件求值**的菜单级断言（旧的断言只看 contextValue，所以没发现菜单外露）。
+- **同名编译配置：构建保持 MRS 语义，配置管理按行识别 + 同名提示（0.3.7，真实工程实测）**：
+  从 EVT/MRS 导入的工程存在两个配置同名（如 `["dbg","dbg"]`）时，此前编译/清理全部成功属于
+  **与 MRS 一致的预期行为**（MRS 按配置**下标**逐配置构建、配置名即输出目录名，同名配置天然
+  共享一个输出目录；排除表恒取首位配置——两层实现已逐行核对一致，不改构建语义）。本次修的是
+  **配置管理对话框的错位**：对话框行此前按名字寻址，同名时 Set as Active 实际无变化、Delete
+  拒绝"活动配置"、重命名改到的却是第一行——现在每行带**下标身份**（`data-index`，Copy from 的
+  源配置亦然），core `switch/add/rename/delete` 四个操作按**下标精确定位**（外来的同名工程，
+  名字有歧义且未带下标时明确报错拒绝执行、不写任何字节；MRVC 自己的 Add/Rename 仍拒绝重名，
+  不会制造新的同名配置）。同时按用户要求补两处可见提示，不改任何构建/清理行为：
+  ① **Manage… 对话框顶部**同名警示条（点出重复的名字，说明这些配置共享同一输出目录）；
+  ② **ReBuild / Clean All Configurations** 执行前发警告（同名配置共享输出目录，逐配置依次
+  构建/清理）。MCP `mrvc_get_project_config` 摘要新增 `duplicateConfigurations` 字段。
+  复审 P3.2/P3.3：Copy from 的 `.wvproj` 快照行改为与 `.cproject` **同位**取源（此前按名字
+  取到第一行，选第二行时克隆的是错行）；快照与 `.cproject` 脱节且名字有歧义时，四个操作
+  一律跳过快照同步、不再猜第一行；重复名判定在 Windows 上不区分大小写（`obj` 与 `OBJ`
+  共用一个输出目录，与 Add 的拒绝口径一致）。
+  测试：configswitch-test +17 断言（下标重排/按行改名/按行删除/歧义拒绝零写入/Copy from 按行
+  克隆）、webview-test +4 断言（同名工程对话框提示条与双行下标），42 套件 + 金标 29 复验。
+- **MCP Server 扩至十三个工具（0.3.7 第二批，只读分析 + 多配置编排）**：新增
+  `mrvc_check_preprocessor`（C/C++/汇编三预处理宏列表一致性检查——同一宏在不同列表值不同的
+  静默 bug 类，只读报告不修复，复用 `core/ppConsistency`）、`mrvc_stack_usage`（活动配置构建目录
+  的 GCC `.su` 栈用量：函数数/总自用栈/动态帧函数/Top N）与 `mrvc_call_analysis`（`-fdump-rtl-expand`
+  调用图 caller→callee 边表）——后两者需要分析埋点构建产物，为此 `mrvc_build` 新增 `analysis`
+  参数（生成 `-fstack-usage`/`-fdump-rtl-expand` 埋点 makefile）。`mrvc_build` 同时新增
+  `configs=active|all` 与 `target=rebuild`：all 模式逐配置 `Cproject.loadConfigAt`（每配置自己的
+  选项/目标名/工具链，排除表仍取活动配置），语义与扩展 ReBuild/Clean-All 一致——build 逐配置
+  **首败即停**、clean 跳过未构建配置且**失败不停**、rebuild 为 MRS 同款两段式（清阶段首个无
+  makefile 即止/清理失败即止，编译阶段照跑）；产物按各配置自身类型报 .a 或 elf/hex/bin；配置名
+  组合路径全部过根边界守卫。**复审修正（F1–F5）：活动配置 clean 对齐扩展 cleanOne——无 makefile
+  即确定性空跑（不 spawn make、不需要工具链、不再重新生成 makefile）；rebuild 改为扩展 rebuildOne
+  同序——先用旧 makefile clean（失败带输出尾部中止，不再继续编译），再重新生成并编译（此前先生成
+  后 clean，源列表变化时旧 .o 清不掉且与 all 模式互不一致）；clean 失败/跳过状态显式回传（phase/
+  cleanSkipped/cleanExitCode）。测试：mcpserver-test 46→58 断言（pp 一致性/栈用量/调用图 fixture、
+  双配置工程 clean-all 确定性空跑、makefile 在盘时的编排形状、活动 clean 空跑、rebuild 未构建
+  跳清段直达编译），金标 29 identical 复验。**复审修正（P2.2）：调用图 dump 的识别不再限定
+  `.c.` 后缀**——GCC 按源文件自身的后缀拼写命名 dump（`main.cpp.191r.expand` / `.cc` / `.cxx`
+  及大小写变体），此前全部被忽略，C++ 工程即使埋点构建成功也始终得到「no -fdump-rtl-expand
+  dumps」；扩展的 Show Call Analysis 命令有同一个缺陷，两处现共用 `core/analysis` 的
+  `isExpandDump`（mcpserver-test 补 C++ dump fixture，analysis-test 补后缀矩阵与双消费者接线）。
+- **MCP Server 扩至十八个工具（0.3.7 第五批，配置写入 + 链接目录管理）**：新增五个写向工具，AI
+  从此可直接改工程配置而不用回到插件界面。`mrvc_set_config_option`（include 路径/宏定义/优化等级/
+  链接脚本四类字段的**整表替换**写入——先读回再全量写回，空表=清空；工程内绝对路径与裸相对路径
+  自动转 MRS `${workspace_loc:/${ProjName}/rel}` 存储拼写；C/C++ 双列表默认成对写入防两语言分叉
+  （language=both，可单选 c/cpp，include 另可 asm）；优化等级按 MRS 枚举拼写校验（size/none/
+  optimize/more/most/fast/debug/z），非法值拒绝并回列合法表）、`mrvc_manage_configurations`
+  （配置增删改查，包装既有 `core/configSwitch`——add 深拷贝既有配置（默认活动配置，
+  copyFrom/copyFromIndex 指定拷贝源与同名行）、活动配置 rename 同步改写 .template Target Path、
+  活动配置 delete 拒绝且至少保留一个、重名拒绝（Windows 大小写不敏感））与
+  `mrvc_list_linked_folders` / `mrvc_add_linked_folder` / `mrvc_remove_linked_folder`（链接目录
+  清单/新增/按名删除——复用 `core/projectFile` 的 linkedResources 读写，工程外目标存
+  PARENT-N-PROJECT_LOC 宏形态保持工程可移植，location 必须是磁盘存在的目录，重名/未知名拒绝）。
+  **四个写工具共用同一写保护壳**（`withBackup`）：涉及的 `.cproject`/`.project`/`.wvproj` 先备份到
+  `.vscode/mrvc/mcp-backup/<时间戳>/`，经核心层全新加载修改，写后重新解析——解析失败自动还原
+  备份并报错，不留半写状态；返回体带 before/after 与备份目录供 AI 自查。**附带修正**：0.3.7
+  round3 的版本防串名加固（按名字校验副本来源）把 mrvc-ai ZCode 插件包装的版本源一并拦下，
+  其 serverInfo 自此降级 0.0.0——父 package.json 的名字校验现放宽为 MRVC 家族双名
+  （`mrvc` / `mrvc-ai`），防串名语义不变。README 工具目录同步
+  改写，「不写工程配置」的旧边界声明更新为「写工具只碰四类字段与配置/链接目录结构」。测试：
+  mcpserver-test 63→86 断言（18 工具名单/schema 枚举、include 归一化与 c/cpp 双写、单语言写、
+  优化等级写/非法值拒绝、configIndex 越界、配置 add/重名拒绝/rename/delete/活动配置删除拒绝、
+  链接目录宏形态新增/重复拒绝/不存在目录拒绝/清单 exists 标记/未知名拒绝/删除、备份目录与
+  backedUp 清单；docs drift 守卫随计数更新）。
+- **复审修正（0.3.7 round13：P2×2 + P3×3 全清）**：**P2.1 写保护事务补齐**——写保护壳此前按
+  字面量 `.wvproj` 找标记文件，而真实工程标记是 `<工程名>.wvproj`（按 `findWvproj` 同款通配
+  查找），活动配置 rename/setActive 还会改写 `.template`——两者现都进入备份+还原事务，
+  `.template` 写后做可解析检查；**P2.2 链接目录接入构建**——`mrvc_add_linked_folder`/
+  `mrvc_remove_linked_folder` 此前只改 `.project`，与扩展 Add/Remove 命令语义不等价（链接头文件
+  找不到、删除留陈旧引用）；现按 `linkedFolders.ts` 同款逻辑同步 `.cproject`：C/汇编 include
+  项、根扫描排除标记、命名 sourceEntry，add/remove 全在写保护事务内；**P3.1 非法参数显式
+  拒绝**——`configIndex` 非整数/负数/错类型不再静默回退活动配置，未知 `language` 不再静默落
+  both（写工具不得猜测）；**P3.2 setActive 动作**——`mrvc_manage_configurations` 新增
+  setActive（包装 `switchConfiguration`：块移动到下标 0、.template Target Path 跟随、标记快照
+  重排、已是活动配置空跑），配置管理闭环；**P3.3 输入校验与只读语义**——`mrvc_add_linked_folder`
+  拒绝相对路径（避免按 server 工作目录静默解析）与含 `\ / : * ? " < > |` 的链接名（与扩展输入
+  框同校验），`mrvc_list_linked_folders` 改严格只读（`readProjectFile` 新增 repair 开关，清单
+  工具不做首开自动修复、零写入）。测试：mcpserver-test 86→95 断言。
+- **复审修正（0.3.7 round14 P3：只读工具的自动修复副作用）**：round13 的 `readProjectFile`
+  repair 开关只堵了一个口——`Cproject.load` 构造时读取 `.project` 仍走默认修复，而**所有** MCP
+  工具（含全部只读工具）都经 `requireCproject` 加载：带陈旧链接的工程在第一次
+  get_project_config / audit / check_preprocessor / build / 清单调用时就被静默改写
+  `.project`（陈旧绝对路径 → PARENT-N 宏形态），`scanSources`（编译数据库/CMake 导出的扫描
+  路径）与 audit 的只读段各自还有一处默认修复加载。现 `Cproject.load`/`loadConfigAt` 增加
+  `repairProject` 选项（默认 true，扩展首开修复行为不变），MCP 面向的全部事务外加载改为
+  不修复：requireCproject、discover 扫描、buildAllConfigs 逐配置模型、写工具的参数预检、
+  audit 只读段、`filteredListElement` 读取路径（scanSources 所在链）；写事务内的加载有备份/
+  重解析覆盖。新增「陈旧链接 + 只读工具零字节变化」回归测试。测试：mcpserver-test 95→96 断言。
+- **复审修正（0.3.7 round15 P2：陈旧链接的静默少编译）**：round14 关闭 MCP 自动修复后，
+  `scanSources` 对目标不存在的链接目录本就**静默跳过**（`continue`）——拷贝来的 EVT 工程
+  （链接指向打包机器的绝对路径）在 MCP 构建/CMake 导出/编译数据库生成时会**不报错地少编译
+  整个链接目录**（共享 SRC/Startup、StdPeriphDriver 等）。取「显式失败」模式：`mrvc_build`
+  （build/rebuild；clean 不门禁——从不扫描源文件）、`mrvc_export_cmake`、
+  `mrvc_generate_intellisense_db` 在扫描前检查链接目标存在性，发现陈旧链接即结构化拒绝，
+  错误逐项回列链接名、陈旧 URI 与**可修复目标**（按修复落地时的 PARENT-N 宏形态拼写），
+  并指引「在扩展中打开一次工程（首开自动修复）后重试」；MCP 层仍然零写入。核心侧把修复
+  搜索抽成 `searchStaleLinkFix` 供写入修复与只读规划器（`staleLinkedFolders`）共用——一个
+  搜索两个消费者。测试：mcpserver-test 96→102 断言（陈旧链接拒 build/rebuild/cmake/db、
+  错误含可修复目标宏形态、clean 不门禁、链接修复后门禁放行）。
+- **MRS Tools 菜单项按安装实际内容自动显隐（0.3.7）**：`…` 菜单 Tools 组的六个 Windows GUI 工具
+  （WCH-LinkUtility / WchIspStudio / TouchKeyTool / WCHGUIDesigner / HexBin Studio / COMTransmit，
+  WCHToolKit 额外要求 MRS3）此前在 Linux/macOS 安装与纯工具链配置下**照样显示**——点击只会报
+  "找不到"。现按当前生效安装**逐个探测每个 .exe 是否在盘上**，每个菜单项挂各自的上下文键
+  `mrvc.tool.*`（`src/core/mrsTools.ts` 的 `mrsToolAvailability`；复审 P3.1：最初六项共用一个
+  键，缺任意一个会连带隐藏其余可用工具；同时补上 WCH-LinkUtility 的存在性检查——它此前取
+  的只是预期路径、未验证文件存在）：Linux/macOS 安装
+  （发行包清单级实证这些工具 0 命中）与纯工具链根目录下整组自动隐藏，Windows IDE 下照常显示；
+  设置变更随现有监听即时刷新。命令面板调用不受影响（无安装时仍报"找不到"的既有降级）。
+
 ## V0.3.6（2026-11-22）
 
 ### 变更

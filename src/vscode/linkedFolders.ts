@@ -8,7 +8,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ProjectStore, MrsProject } from './projects';
-import { addLinkedFolder, removeLinkedFolder, changeLinkedFolderTarget } from '../core/projectFile';
+import { addLinkedFolder, removeLinkedFolder, changeLinkedFolderTarget, isSafeLinkName } from '../core/projectFile';
 import { Cproject, foldPathOnPlatform } from '../core/cproject';
 import { t } from '../core/i18n';
 import { XElement } from '../core/xml';
@@ -36,7 +36,9 @@ export async function addLinkedFolderCmd(store: ProjectStore, proj?: MrsProject)
   const name = await vscode.window.showInputBox({
     prompt: t('linkFolderName'),
     value: path.basename(target),
-    validateInput: (v) => (v && !/[\\/:*?"<>|]/.test(v) ? undefined : t('invalidName')),
+    // the same validator core addLinkedFolder enforces (round18 P2-4) —
+    // a name that is unsafe as an export path segment is refused at input
+    validateInput: (v) => (v && isSafeLinkName(v) ? undefined : t('invalidName')),
   });
   if (!name) return;
 

@@ -5,7 +5,28 @@
 import * as path from 'path';
 
 export function toPosix(p: string): string {
+  // Windows: backslash is a separator → normalize. POSIX: a backslash is a
+  // LEGAL filename character — rewriting it would corrupt paths
+  // (round20 P3-3); POSIX inputs are already separator-normalized by Node.
+  if (process.platform !== 'win32') return p;
   return p.split('\\').join('/');
+}
+
+/** is `rel` (a path.relative result) OUTSIDE its base? A bare `startsWith('..')`
+ *  misclassifies project-internal names that merely START with two dots
+ *  (`..foo.c` sits INSIDE the base and was silently dropped from exports and
+ *  rewritten by macro resolution) — the '..' must be its own segment
+ *  (round18 P2-2). An ABSOLUTE rel (Windows cross-drive: path.relative
+ *  returns the target as-is) is outside by definition — cross-drive linked
+ *  folders must go through the link mapping in exports, not the raw
+ *  absolute path (round19 P2-1). */
+export function isOutsideRelPath(rel: string): boolean {
+  if (path.isAbsolute(rel)) return true;
+  // separator-normalized on Windows (callers may hand either spelling); on
+  // POSIX a backslash is a literal filename character — only '/' separates
+  // (round20 P3-3)
+  const norm = process.platform === 'win32' ? rel.split('\\').join('/') : rel;
+  return norm === '..' || norm.startsWith('../');
 }
 
 export function toNative(p: string): string {
@@ -78,7 +99,7 @@ export function makeLocationUri(projectRoot: string, target: string): string {
     // PARENT-N cannot express it — use a file URI
     return 'file:/' + toPosix(target).replace(/^\/+/, '');
   }
-  if (!rel.startsWith('..')) {
+  if (!isOutsideRelPath(rel)) {
     return toPosix(rel);
   }
   // count how many levels above
@@ -86,7 +107,7 @@ export function makeLocationUri(projectRoot: string, target: string): string {
   let levels = 0;
   while (levels < 32) {
     const r = path.relative(base, target);
-    if (!r.startsWith('..')) {
+    if (!isOutsideRelPath(r)) {
       break;
     }
     base = path.dirname(base);

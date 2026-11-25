@@ -848,7 +848,11 @@ export class ConfigView {
     op?: string;
     name?: string;
     newName?: string;
+    /** the configuration row's index — disambiguates two same-named rows */
+    index?: number;
     copyFrom?: string;
+    /** the Copy-from dropdown's row index (rows may share a name) */
+    copyFromIndex?: number;
     chipId?: number;
     clkSpeed?: number;
     dbgMode?: number;
@@ -872,7 +876,7 @@ export class ConfigView {
         return;
       }
       try {
-        const res = switchConfiguration(project.root, m.name);
+        const res = switchConfiguration(project.root, m.name, m.index);
         project.reload();
         // every field changes with the configuration — full reload, not the
         // per-field Apply diff
@@ -898,15 +902,22 @@ export class ConfigView {
       try {
         if (m.command === 'addConfig') {
           if (!m.name?.trim()) throw new Error('Name is required.');
-          addConfiguration(project.root, m.name.trim(), m.copyFrom);
+          // the Copy-from dropdown reports a ROW; pass the name AND the index
+          // so two same-named source rows resolve to the clicked one
+          const names = Cproject.load(project.root).configurationNames;
+          const srcIdx =
+            typeof m.copyFromIndex === 'number' && m.copyFromIndex >= 0 && m.copyFromIndex < names.length
+              ? m.copyFromIndex
+              : undefined;
+          addConfiguration(project.root, m.name.trim(), srcIdx !== undefined ? names[srcIdx] : m.copyFrom, srcIdx);
           void vscode.window.showInformationMessage(t('configAdded', m.name.trim()));
         } else if (m.command === 'renameConfig') {
           if (!m.name || !m.newName?.trim()) throw new Error('Name is required.');
-          renameConfiguration(project.root, m.name, m.newName.trim());
+          renameConfiguration(project.root, m.name, m.newName.trim(), m.index);
           void vscode.window.showInformationMessage(t('configRenamed', m.newName.trim()));
         } else if (m.command === 'deleteConfig') {
           if (!m.name) throw new Error('Select a configuration first.');
-          deleteConfiguration(project.root, m.name);
+          deleteConfiguration(project.root, m.name, m.index);
           void vscode.window.showInformationMessage(t('configDeleted', m.name));
         } else {
           return;
@@ -996,6 +1007,11 @@ export class ConfigView {
           if (mcuType) text = `Linked MCU type: ${mcuType} (family id ${r.result})`;
         }
         this.panel?.webview.postMessage({ command: 'dlLog', text, op, result: r.result, mcuType });
+      }, (e) => {
+        // the bridge resolves refusals as structured results; a rejection here
+        // is an unexpected failure — surface it in the log instead of an
+        // unhandled rejection (code-review H1 follow-up)
+        this.panel?.webview.postMessage({ command: 'dlLog', text: t('dlOpFailed', e instanceof Error ? e.message : String(e)) });
       });
       return;
     }
@@ -1376,6 +1392,15 @@ export class ConfigView {
     // core/configSwitch.ts). Single-config projects keep the old read-only
     // field — there is nothing to choose.
     const cfgNames = cp.configurationNames;
+    // duplicate names (imported from an EVT tree / MRS; MRVC's own Add and
+    // Rename refuse them): the configurations share ONE output directory, so
+    // the dialog says so up front and addresses rows by index
+    const dupCfgNames = cp.duplicateConfigurationNames;
+    // the names go into HTML — configNameProblem forbids <>" but & and ' are
+    // legal in a configuration name, so escape before interpolating
+    const dupCfgNote = dupCfgNames.length
+      ? `${esc(t('cfgDuplicateNames', dupCfgNames.join('", "')))} ${esc(t('cfgDuplicateNamesHint'))}`
+      : '';
     const cfgControl =
       cfgNames.length > 1
         ? `<select id="cfgsel" data-cur="${esc(cp.configName)}">${cfgNames
@@ -1395,6 +1420,7 @@ body { font-family: var(--vscode-font-family); font-size: 13px; color: var(--vsc
 #cfgmodal[hidden] { display: none; }
 #cfgmodal .mbox { width: 560px; }
 .cfglist { border: 1px solid var(--vscode-editorWidget-border); max-height: 260px; overflow: auto; margin: 8px 0; }
+.cfgnote { margin: 8px 0 0; padding: 6px 8px; border-left: 3px solid var(--vscode-editorWarning-foreground); background: var(--vscode-inputValidation-warningBackground); color: var(--vscode-foreground); font-size: 12px; line-height: 1.45; }
 .cfgrow { display: flex; align-items: center; gap: 10px; padding: 5px 8px; cursor: default; }
 .cfgrow:hover { background: var(--vscode-list-hoverBackground); }
 .cfgrow.sel { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
@@ -1500,13 +1526,14 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
     <div class="cfglist" id="cfglist">${cfgNames
       .map(
         (n, i) =>
-          `<div class="cfgrow${i === 0 ? ' active' : ''}" data-name="${esc(n)}"><span class="nm">${esc(n)}</span><span class="st">${i === 0 ? 'Active' : ''}</span></div>`
+          `<div class="cfgrow${i === 0 ? ' active' : ''}" data-name="${esc(n)}" data-index="${i}"><span class="nm">${esc(n)}</span><span class="st">${i === 0 ? 'Active' : ''}</span></div>`
       )
       .join('')}</div>
+    ${dupCfgNames.length ? `<div class="cfgnote">${dupCfgNote}</div>` : ''}
     <div class="cfgform">
       <label>Name</label><input type="text" id="cfgname" spellcheck="false">
       <label>Copy from</label><select id="cfgsource">${cfgNames
-        .map((n, i) => `<option value="${esc(n)}"${i === 0 ? ' selected' : ''}>${esc(n)}</option>`)
+        .map((n, i) => `<option value="${i}"${i === 0 ? ' selected' : ''}>${esc(n)}</option>`)
         .join('')}</select>
     </div>
     <div class="cfgform">
@@ -1587,14 +1614,18 @@ const confirmDiscard = (message) => !pageDirty() || confirm(message);
 const cfgSel = document.getElementById('cfgsel');
 if (cfgSel) {
   cfgSel.addEventListener('change', () => {
-    const next = cfgSel.value;
     const cur = cfgSel.dataset.cur;
-    if (!next || next === cur) return;
+    const next = cfgSel.value;
+    // with duplicate names both options carry the same value — the option's
+    // POSITION is the only thing that tells them apart, so it travels with
+    // the message and the core resolves the row by index
+    const nextIndex = cfgSel.selectedIndex;
+    if (!next || (next === cur && nextIndex === 0)) return;
     if (!confirmDiscard('Switch configuration? Unapplied changes on this page will be lost.')) {
       cfgSel.value = cur;
       return;
     }
-    vscode.postMessage({ command: 'switchConfig', name: next });
+    vscode.postMessage({ command: 'switchConfig', name: next, index: nextIndex });
   });
 }
 // ---- "Manage Configurations" dialog (MRS 配置管理): add / rename / delete /
@@ -1609,37 +1640,43 @@ if (cfgModal) {
   const cfgNameInput = document.getElementById('cfgname');
   const cfgSource = document.getElementById('cfgsource');
   const rows = () => [...cfgListEl.querySelectorAll('.cfgrow')];
-  const activeName = () => {
+  // rows are addressed by INDEX, not by name: two configurations may share a
+  // name (imported from an EVT tree / MRS), and a name-keyed selection would
+  // highlight both and act on the first one for every operation
+  const activeIndex = () => {
     const row = cfgListEl.querySelector('.cfgrow.active');
-    return row ? row.dataset.name : null;
+    return row ? Number(row.dataset.index) : -1;
   };
-  let selected = null;
-  const select = (name) => {
-    selected = name;
-    rows().forEach((r) => r.classList.toggle('sel', r.dataset.name === name));
+  const rowAt = (i) => rows().find((r) => Number(r.dataset.index) === i);
+  let selected = null; // row index
+  const selectIndex = (i) => {
+    selected = i;
+    rows().forEach((r) => r.classList.toggle('sel', Number(r.dataset.index) === i));
   };
   const needSelection = () => {
-    if (selected) return true;
+    if (selected !== null && rowAt(selected)) return true;
     cfgErr.textContent = 'Select a configuration first.';
     return false;
   };
+  const selectedName = () => (selected === null ? undefined : rowAt(selected)?.dataset.name);
   const manageDiscardOk = () => confirmDiscard('Unapplied changes on this page will be lost. Continue?');
   document.getElementById('cfgmanage').addEventListener('click', () => {
     cfgErr.textContent = '';
     cfgNameInput.value = '';
-    select(activeName());
-    if (activeName()) cfgSource.value = activeName();
+    selectIndex(activeIndex());
+    if (activeIndex() >= 0) cfgSource.selectedIndex = activeIndex();
     cfgModal.hidden = false;
   });
   document.getElementById('cfgclose').addEventListener('click', () => {
     cfgModal.hidden = true;
   });
   rows().forEach((row) => {
-    row.addEventListener('click', () => select(row.dataset.name));
+    row.addEventListener('click', () => selectIndex(Number(row.dataset.index)));
     row.addEventListener('dblclick', () => {
-      if (row.dataset.name === activeName()) return;
+      const i = Number(row.dataset.index);
+      if (i === activeIndex()) return;
       if (!manageDiscardOk()) return;
-      vscode.postMessage({ command: 'switchConfig', name: row.dataset.name });
+      vscode.postMessage({ command: 'switchConfig', name: row.dataset.name, index: i });
     });
   });
   document.getElementById('cfgadd').addEventListener('click', () => {
@@ -1650,7 +1687,8 @@ if (cfgModal) {
       return;
     }
     if (!manageDiscardOk()) return;
-    vscode.postMessage({ command: 'addConfig', name, copyFrom: cfgSource.value });
+    // the copy source travels as an INDEX (same duplicate-name reason)
+    vscode.postMessage({ command: 'addConfig', name, copyFromIndex: Number(cfgSource.value) });
   });
   document.getElementById('cfgrename').addEventListener('click', () => {
     cfgErr.textContent = '';
@@ -1661,20 +1699,20 @@ if (cfgModal) {
       return;
     }
     if (!manageDiscardOk()) return;
-    vscode.postMessage({ command: 'renameConfig', name: selected, newName });
+    vscode.postMessage({ command: 'renameConfig', name: selectedName(), index: selected, newName });
   });
   document.getElementById('cfgdel').addEventListener('click', () => {
     cfgErr.textContent = '';
     if (!needSelection()) return;
     if (!manageDiscardOk()) return;
-    vscode.postMessage({ command: 'deleteConfig', name: selected });
+    vscode.postMessage({ command: 'deleteConfig', name: selectedName(), index: selected });
   });
   document.getElementById('cfgactive').addEventListener('click', () => {
     cfgErr.textContent = '';
     if (!needSelection()) return;
-    if (selected === activeName()) return;
+    if (selected === activeIndex()) return;
     if (!manageDiscardOk()) return;
-    vscode.postMessage({ command: 'switchConfig', name: selected });
+    vscode.postMessage({ command: 'switchConfig', name: selectedName(), index: selected });
   });
 }
 document.getElementById('cancel').addEventListener('click', () => vscode.postMessage({ command: 'close' }));

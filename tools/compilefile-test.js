@@ -304,6 +304,11 @@ if (LED_PROJ) {
   fs.mkdirSync(path.join(scratch, 'Core'), { recursive: true });
   fs.mkdirSync(path.join(scratch, 'src'), { recursive: true });
   for (const f of ['.project', '.cproject']) fs.copyFileSync(path.join(LED_PROJ, f), path.join(scratch, f));
+  // round18 gate: the copied EVT .project climbs PARENT-N outside the
+  // fixture — materialize the linked targets so the stale-link refusal
+  // (correct for real stale projects) does not fire on the fixture
+  const { readProjectFile: readPfMaterialize } = require('../out/core/projectFile.js');
+  for (const l of readPfMaterialize(scratch).linkedResources) fs.mkdirSync(l.location, { recursive: true });
   fs.writeFileSync(path.join(scratch, 'Core', 'main.c'), 'int main(void){return 0;}\n');
   fs.writeFileSync(path.join(scratch, 'src', 'helper.cpp'), 'int f(void){return 1;}\n');
   const cp = Cproject.load(scratch);

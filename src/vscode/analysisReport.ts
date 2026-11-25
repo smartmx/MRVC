@@ -8,7 +8,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ProjectStore, MrsProject } from './projects';
-import { parseStackUsage, parseDumpCalls, stackReport, callReport } from '../core/analysis';
+import { parseStackUsage, parseDumpCalls, stackReport, callReport, isExpandDump } from '../core/analysis';
 import { t } from '../core/i18n';
 
 function activeOrPick(store: ProjectStore, node?: unknown): MrsProject | undefined {
@@ -89,7 +89,7 @@ export async function showCallAnalysisCmd(store: ProjectStore, node?: unknown): 
     vscode.window.showInformationMessage(t('analysisNoBuildDir'));
     return;
   }
-  const dumps = collectFiles(buildDir, (n) => /\.c\.\d+r\.expand$/i.test(n));
+  const dumps = collectFiles(buildDir, isExpandDump);
   if (!dumps.length) {
     vscode.window.showInformationMessage(t('analysisNoDumps'));
     return;

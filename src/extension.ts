@@ -40,6 +40,7 @@ import { setProjectCpp } from './core/projectType';
 import { SyncPage } from './vscode/syncPage';
 import { MacroBatchPage } from './vscode/macroBatch';
 import { comTransmitCmd, hexBinToolCmd, ispToolCmd, touchkeyToolCmd, uiDesignerCmd, wchToolKitCmd } from './vscode/mrsTools';
+import { MRS_TOOL_CONTEXT_KEYS, mrsToolAvailability } from './core/mrsTools';
 import { openWithMrsCmd } from './vscode/openMrs';
 import { mrsValidateCmd, mrsValidateAllCmd, buildWithMrsCmd } from './vscode/mrsValidate';
 import { initSdiMonitor, sdiPrintMonitorCmd, sdiPrintStopCmd } from './vscode/sdiMonitor';
@@ -48,6 +49,7 @@ import { notePowerOutputRail, onPowerOutputRailChanged, powerOutputRail } from '
 import { ensureIntellisenseConfig, applyCacheOverrides, resolveProjectForFile, switchContext, maybePromptCppTools } from './vscode/intellisense';
 import { addProjectToSolutionCmd, addProjectsByBatchCmd, setBuildOrderCmd, closeSolutionCmd, modifySolutionToolchainCmd, recoverSolutionPath } from './vscode/solutionLife';
 import { generateCMakeListCmd, exportAsCMakeCmd } from './vscode/cmakeExport';
+import { exportMcpServerCmd } from './vscode/mcpExport';
 import { buildRecordFile } from './core/buildLog';
 import { setLanguage, vscodeLanguageIsChinese, t } from './core/i18n';
 import { createProjectCmd, createStaticLibCmd } from './vscode/newProject';
@@ -147,6 +149,16 @@ function continueActivate(context: vscode.ExtensionContext): void {
   const syncActiveFlavor = (): void => {
     void vscode.commands.executeCommand('setContext', 'mrvc.mrs3Active', selectMrsInstall().install?.flavor === 'mrs3');
     void vscode.commands.executeCommand('setContext', 'mrvc.mrsIdeActive', selectMrsInstall().install?.kind === 'ide');
+    // the `…` menu's Windows GUI tool entries (LinkUtility/ISP/TouchKey/UI
+    // Designer/HexBin/COMTransmit) hide unless the ACTIVE install actually
+    // carries them on disk — Linux/macOS IDE layouts and pure-toolchain
+    // roots ship none of them (0.3.7, disk-verified). One context key PER
+    // tool (round1 P3.1): a single missing exe hides only its own entry,
+    // never the working ones
+    const available = mrsToolAvailability(selectMrsInstall().install);
+    for (const key of Object.keys(MRS_TOOL_CONTEXT_KEYS) as Array<keyof typeof MRS_TOOL_CONTEXT_KEYS>) {
+      void vscode.commands.executeCommand('setContext', MRS_TOOL_CONTEXT_KEYS[key], available[key]);
+    }
   };
   syncActiveFlavor();
   context.subscriptions.push(
@@ -401,6 +413,7 @@ function startExtension(context: vscode.ExtensionContext): void {
     'mrvc.sdiPrintMonitor', // pure serial-port surface; no project store touch
     'mrvc.sdiPrintStop',
     'mrvc.openSettings',
+    'mrvc.exportMcp', // copies the bundled server to a folder — no project store touch
     'mrvc.resetInstallGuidance',
     // syncSettings/batchMacros are NOT exempt (round2 §1.1): their pages
     // render from store.all — invoked on an empty store they would show
@@ -533,6 +546,10 @@ function startExtension(context: vscode.ExtensionContext): void {
   // open the Settings UI filtered to this extension's contributions
   // (@ext:<publisher>.<name> — dynamic so a publisher change stays correct)
   reg('mrvc.openSettings', () => vscode.commands.executeCommand('workbench.action.openSettings', `@ext:${context.extension.id}`));
+  // copy the bundled MCP server to a user-chosen folder: VS Code installs
+  // every extension version in its own directory, so a client config that
+  // points into the installation breaks on the next upgrade
+  reg('mrvc.exportMcp', () => exportMcpServerCmd(context));
   reg('mrvc.ispTool', () => ispToolCmd());
   reg('mrvc.touchkeyTool', () => touchkeyToolCmd());
   reg('mrvc.uiDesigner', () => uiDesignerCmd());

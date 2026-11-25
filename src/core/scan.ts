@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Cproject } from './cproject';
 import { toPosix } from './macros';
-import { listRemovedResources } from './projectFile';
+import { listRemovedResources, unscannableLinkedTarget, readProjectFile, assertSafeLinkTarget } from './projectFile';
 
 export const C_SOURCE_EXTS = ['c', 's', 'S'];
 export const CPP_SOURCE_EXTS = ['c', 's', 'S', 'cpp', 'C', 'cc', 'cxx'];
@@ -80,6 +80,158 @@ export function classifySourceExt(name: string): { kind: 'c' | 'cpp' | 'asm'; ex
  * that folder). Linked folders are always scanned, whether or not they have
  * their own sourceEntry.
  */
+/** the linked folders scanSources would silently SKIP (missing target,
+ *  stray file instead of a directory, unreadable) — build/export entries
+ *  call assertScannableLinkedFolders so a missing linked source tree can
+ *  never turn into a "successful" build (round18 P2-1 / P3-1) */
+export function unscannableLinkedFolders(cp: Cproject): Array<{ name: string; location: string }> {
+  const out: Array<{ name: string; location: string }> = [];
+  for (const [name, target] of cp.linkedFolders) {
+    if (unscannableLinkedTarget(target)) out.push({ name, location: target });
+  }
+  return out;
+}
+
+/** the shared build/export entry guard (extension parity with the MCP
+ *  requireLinkedTargets gate): refuse when the scan would silently skip
+ *  source trees — linked folders whose target is missing / not a directory /
+ *  unreadable, EXCEPT links intentionally excluded from the build (root
+ *  entry names the link and no paired named entry re-includes it — round19
+ *  P3-1) or logically removed from the tree (round26).
+ *  NAMED sourceEntries that resolve to nothing are NOT refused: MRS skips
+ *  them silently and still produces a working elf — user-verified 2026-11-25
+ *  on the EVT V1_2 BLE projects, whose shipped .cproject carries a leftover
+ *  dangling `Profile` entry from an older layout. Parity wins (user ruling):
+ *  the build proceeds and the dangling entries surface as HINTS instead
+ *  (danglingSourceEntries → MCP get_project_config note / audit finding).
+ *  Link-vs-entry names still match CASE-FOLDED (round20 P2-1); a root
+ *  exclude token WITHOUT a paired named entry is a real exclusion. */
+export function assertScannableLinkedFolders(cp: Cproject): void {
+  const rootEntry = cp.sourceEntries.find((e) => e.name === '');
+  const excluded = new Set((rootEntry?.excluding ?? []).map((t) => fold(t)));
+  const named = new Set(cp.sourceEntries.filter((e) => e.name !== '').map((e) => fold(e.name)));
+  // links logically REMOVED via filteredResources (project tree Remove) do
+  // not participate in the build — they must not trip the duplicate-target
+  // report either (round24 P3-1)
+  const removedFolders = new Set(
+    listRemovedResources(cp.projectRoot)
+      .filter((r) => r.isFolder)
+      .map((r) => fold((r.parentLogic ? toPosix(r.parentLogic) + '/' : '') + r.name))
+  );
+  const problems: string[] = [];
+  for (const [name, target] of cp.linkedFolders) {
+    // intentionally excluded link AND no paired named entry, or logically
+    // REMOVED from the tree (filteredResources): the build does not need it —
+    // never block on it, not even when its target has since been deleted
+    // (round26 Low: the raw-links loop already skipped removals, the stale
+    // loop above it did not)
+    if ((excluded.has(fold(name)) && !named.has(fold(name))) || removedFolders.has(fold(name))) continue;
+    if (unscannableLinkedTarget(target)) problems.push(`"${name}" -> ${target}`);
+  }
+  // named sourceEntries resolving to nothing: NOT reported here any more —
+  // MRS builds such projects fine (see danglingSourceEntries above / the
+  // gate's doc comment); the hint channels own them now
+  // the linkedFolder Map COLLAPSES exact duplicate names (last wins, first
+  // silently dropped) — check the RAW .project links instead (round23 P3-2,
+  // refined round25):
+  //  1. an exact duplicate name with a DIFFERENT target = one silently lost;
+  //  2. a link intentionally excluded from the build (root token, no paired
+  //     named entry) or logically REMOVED (filteredResources) does not
+  //     participate — it trips neither the stale nor the duplicate report;
+  //  3. DIFFERENT link names over the same physical target keep one scanned
+  //     logic path (the source-set physical dedupe handles the rest);
+  //  4. self/ancestor targets that pre-date the write guards.
+  // A project may legally lack .project (Cproject.load tolerates it) — the
+  // raw check then has nothing to inspect (round25 High).
+  let rawLinks: Array<{ name: string; type: number; location: string }> = [];
+  try {
+    rawLinks = readProjectFile(cp.projectRoot, { repair: false }).linkedResources;
+  } catch {
+    rawLinks = [];
+  }
+  const normLoc = (s: string) => fold(path.resolve(s));
+  const rawSeenNames = new Map<string, { name: string; location: string }>();
+  const seenRealTargets = new Map<string, string>();
+  for (const l of rawLinks) {
+    if (l.type !== 2) continue;
+    const k = fold(l.name);
+    // intentionally excluded / logically removed links skip every report —
+    // they were taken out of the build on purpose (round25 Medium-2a)
+    if ((excluded.has(k) && !named.has(k)) || removedFolders.has(k)) continue;
+    const prev = rawSeenNames.get(k);
+    if (prev && normLoc(prev.location) !== normLoc(l.location)) {
+      // linkedFolderMap keeps the LAST link per name: l.location is scanned,
+      // prev.location is the copy that got dropped (round25 Medium-2b;
+      // resolve both so trailing-slash spellings compare equal)
+      problems.push(
+        `duplicate link name "${l.name}" with a different target — only "${l.location}" is scanned, "${prev.location}" is silently dropped`
+      );
+    }
+    if (!prev) rawSeenNames.set(k, { name: l.name, location: l.location });
+    if (unscannableLinkedTarget(l.location)) continue;
+    try {
+      const real = normLoc(fs.realpathSync.native(l.location));
+      const first = seenRealTargets.get(real);
+      if (first !== undefined && fold(first) !== fold(l.name)) {
+        problems.push(`"${first}" and "${l.name}" point at the same directory (${l.location}) — one physical tree scanned under two logic names`);
+      } else if (first === undefined) {
+        seenRealTargets.set(real, l.name);
+      }
+    } catch {
+      /* unreadable target — the unscannable check above already reported it */
+    }
+    try {
+      assertSafeLinkTarget(cp.projectRoot, l.location);
+    } catch (e) {
+      problems.push(`"${l.name}" -> ${l.location}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (problems.length) {
+    throw new Error(
+      'stale source trees — the scan would silently skip them: ' +
+        problems.join('; ') +
+        '. Repair the linked folders / source entries in the project tree and retry.'
+    );
+  }
+}
+
+/** named sourceEntries whose directory does not resolve (not a link, not on
+ *  disk, not implicitly resolved, not tree-removed) — the gate does NOT
+ *  refuse these (user ruling 2026-11-25: MRS compiles such projects, verified
+ *  on the EVT V1_2 BLE projects whose shipped .cproject carries a leftover
+ *  dangling `Profile` entry from an older layout); callers surface them as
+ *  hints instead. Same shape as the old refusal, minus the block. */
+export function danglingSourceEntries(cp: Cproject): Array<{ name: string; dir: string }> {
+  const linked = new Set([...cp.linkedFolders.keys()].map((n) => fold(n)));
+  const removedFolders = new Set(
+    listRemovedResources(cp.projectRoot)
+      .filter((r) => r.isFolder)
+      .map((r) => fold((r.parentLogic ? toPosix(r.parentLogic) + '/' : '') + r.name))
+  );
+  const out: Array<{ name: string; dir: string }> = [];
+  for (const entry of cp.sourceEntries) {
+    if (entry.name === '') continue; // root entry — not a directory reference
+    if (linked.has(fold(entry.name))) continue; // explicit link — the link loop owns it
+    if (removedFolders.has(fold(entry.name))) continue; // tree-removed (round26)
+    const dir = path.join(cp.projectRoot, entry.name);
+    if (unscannableLinkedTarget(dir)) out.push({ name: entry.name, dir });
+  }
+  return out;
+}
+
+export class ScanError extends Error {
+  /** the directories that could not be read */
+  readonly unreadable: Array<{ dir: string; message: string }>;
+  constructor(unreadable: Array<{ dir: string; message: string }>) {
+    super(
+      'scan could not read directory entries — the build would silently use an incomplete source set: ' +
+        unreadable.map((u) => `"${u.dir}" (${u.message})`).join('; ')
+    );
+    this.name = 'ScanError';
+    this.unreadable = unreadable;
+  }
+}
+
 export function scanSources(cp: Cproject, opts?: { includeExcluded?: boolean }): LogicDirMap {
   // includeExcluded (IntelliSense db only — the BUILD path must never pass
   // it): excluded files stay out of makefiles but still need parse
@@ -96,6 +248,13 @@ export function scanSources(cp: Cproject, opts?: { includeExcluded?: boolean }):
 
   const { rootTokens, dirTokens } = exclusionTokens(cp);
 
+  // unreadable directories are COLLECTED and surface as a ScanError after
+  // the walk — an incomplete source set must never look like a successful
+  // scan (round21 P3-1: walk() used to swallow nested readdir failures, so
+  // a locked subdirectory silently dropped its whole tree from makefiles,
+  // CMake exports and compile databases)
+  const scanErrors: Array<{ dir: string; message: string }> = [];
+
   // logically-removed resources (.project filteredResources — MRS2's Remove
   // command) are invisible to the tree AND to the build: skip matches here.
   // A FOLDER removal also hides everything under it (round1 P1: only the
@@ -111,16 +270,58 @@ export function scanSources(cp: Cproject, opts?: { includeExcluded?: boolean }):
   }
   const isRemoved = (logicName: string): boolean => {
     const f = fold(toPosix(logicName));
-    if (removedExact.has(f)) return true;
+    // the f + '/' self-match lets this serve as a DIRECTORY/link-node test
+    // too (a removed folder's own row is only in the prefix set) — the walk
+    // uses it to skip descending into removed subtrees entirely
+    if (removedExact.has(f) || removedDirPrefixes.has(f + '/')) return true;
     for (const p of removedDirPrefixes) if (f.startsWith(p)) return true;
     return false;
+  };
+
+  // physical-identity dedupe (round23 P2-1, extended round24 P2-1): two
+  // linked folders over the SAME target directory (or nested/overlapping
+  // targets) produce the same physical file under two logic names, and so
+  // does an in-project link whose name differs from the physical directory
+  // (Lib → proj/src with root files). The dedupe spans the ROOT walk and the
+  // LINKED walks: when a linked walk hits an already-seen physical file, the
+  // earlier (root/physical-name) entry is REPLACED by the link logic name —
+  // matching MRS2 marker semantics where the linked folder is scanned under
+  // its link name and the physical path yields to it (round1 P2).
+  const seenPhysical = new Map<string, { dir: string; logicName: string }>();
+  let inLinkedWalk = false;
+  const physicalKey = (fullpath: string): string => {
+    try {
+      return fold(fs.realpathSync.native(fullpath));
+    } catch {
+      return fold(toPosix(fullpath));
+    }
   };
 
   const addFile = (logicName: string, fullpath: string) => {
     const l = toPosix(logicName);
     if (isRemoved(l)) return; // logically removed (filteredResources)
+    const realKey = physicalKey(fullpath);
     const dir = path.posix.dirname(l);
     const key = dir === '.' ? '' : dir;
+    const prev = seenPhysical.get(realKey);
+    if (prev && inLinkedWalk) {
+      // a linked folder re-covers a physical file first seen under another
+      // name: drop the earlier entry and file it under the LINK logic name
+      // (the linked folder is the canonical logic path in MRS2)
+      const oldArr = result.get(prev.dir);
+      if (oldArr) {
+        const idx = oldArr.findIndex((f) => fold(f.logicName) === fold(prev.logicName));
+        if (idx >= 0) oldArr.splice(idx, 1);
+        if (!oldArr.length) result.delete(prev.dir);
+      }
+      seenPhysical.set(realKey, { dir: key, logicName: l });
+    } else if (prev && !inLinkedWalk) {
+      // root walk re-encounter (case-variant spelling of the same dir) —
+      // keep the first spelling, drop the repeat
+      return;
+    } else {
+      seenPhysical.set(realKey, { dir: key, logicName: l });
+    }
     if (!result.has(key)) result.set(key, []);
     const arr = result.get(key)!;
     // dedupe folded (win32): a hand-written .cproject may spell a real
@@ -146,7 +347,7 @@ export function scanSources(cp: Cproject, opts?: { includeExcluded?: boolean }):
   }
 
   // 1. real project tree (root entry tokens apply project-wide)
-  walk(cp.projectRoot, cp.projectRoot, '', rootTokens, configNames, isCpp, addFile, logicBases, includeExcluded);
+  walk(cp.projectRoot, cp.projectRoot, '', rootTokens, configNames, isCpp, addFile, logicBases, includeExcluded, scanErrors, isRemoved);
 
   // 1.5 real-folder named entries re-scan their subtree: a root entry that
   // excludes the folder (CH32V307 RT-Thread excludes 'Core') relies on the
@@ -171,13 +372,24 @@ export function scanSources(cp: Cproject, opts?: { includeExcluded?: boolean }):
     } catch {
       /* unreadable root — keep the entry's own spelling */
     }
-    walk(dir, dir, base, entry.excluding, configNames, isCpp, addFile, [], includeExcluded);
+    // a named entry whose top-level directory is itself logically REMOVED
+    // (filteredResources) is skipped whole — recursion would only surface
+    // unreadable directories under the removed tree (symmetry with the
+    // linked walk's removal skip; round26 follow-up)
+    if (isRemoved(base)) continue;
+    walk(dir, dir, base, entry.excluding, configNames, isCpp, addFile, [], includeExcluded, scanErrors, isRemoved);
   }
 
   // 2. linked folders, always scanned (MRS scans basic.linkedFolders)
   const named = namedEntryNames(cp);
+  inLinkedWalk = true;
   for (const [name, target] of cp.linkedFolders) {
-    if (!fs.existsSync(target)) continue;
+    if (unscannableLinkedTarget(target)) continue;
+    // a link logically REMOVED from the tree (filteredResources) is not part
+    // of the build — walking it would also surface unreadable directories
+    // under its target as scan failures instead of being invisible like the
+    // tree view is (round26 Low)
+    if (isRemoved(name)) continue;
     // tokens may be written relative to the linked folder itself (bare file
     // names) or relative to the project root (StdPeriphDriver/CH58x_x.c) —
     // walk() matches both via the logic path. A root token equal to the
@@ -199,7 +411,15 @@ export function scanSources(cp: Cproject, opts?: { includeExcluded?: boolean }):
       }
     }
     const tokens = [...rootTokens.filter((t) => !(fold(t) === fold(name) && named.has(fold(name)))), ...linkedTokens];
-    walk(target, target, name, tokens, configNames, isCpp, addFile, [], includeExcluded);
+    walk(target, target, name, tokens, configNames, isCpp, addFile, [], includeExcluded, scanErrors, isRemoved);
+  }
+  inLinkedWalk = false;
+
+  // an unreadable directory anywhere in the walk means the scan returned an
+  // INCOMPLETE source set — surface it as a failure instead of letting
+  // makefiles/CMake exports look successful (round21 P3-1)
+  if (scanErrors.length) {
+    throw new ScanError(scanErrors);
   }
 
   // deterministic ordering: files by logicName
@@ -218,12 +438,19 @@ function walk(
   isCpp: boolean,
   add: (logicName: string, fullpath: string) => void,
   logicBases: Array<[string, string[]]> = [],
-  includeExcluded = false
+  includeExcluded = false,
+  errors: Array<{ dir: string; message: string }> = [],
+  /** when the DIRECTORY's logic path is logically removed (filteredResources)
+   *  the recursion is skipped entirely — add() would drop its files anyway,
+   *  but descending would still surface unreadable directories under the
+   *  removed tree as scan failures (round26 Low) */
+  skipSubtree?: (logic: string) => boolean
 ): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
+  } catch (e) {
+    errors.push({ dir, message: e instanceof Error ? e.message : String(e) });
     return;
   }
   for (const ent of entries) {
@@ -247,7 +474,8 @@ function walk(
     if (excludedHere && !includeExcluded) continue;
     if (ent.isDirectory()) {
       if (ent.name.startsWith('.') || SKIP_DIRS.has(ent.name) || configNames.has(fold(ent.name))) continue;
-      walk(fsRoot, full, logic, excluded, configNames, isCpp, add, logicBases, includeExcluded);
+      if (skipSubtree?.(logic)) continue; // logically removed — do not descend
+      walk(fsRoot, full, logic, excluded, configNames, isCpp, add, logicBases, includeExcluded, errors, skipSubtree);
     } else if (ent.isFile()) {
       const cl = classifySourceExt(ent.name);
       if (!cl) continue;

@@ -624,6 +624,204 @@ if (!realSrc) {
   if (wvName) check('real project: .wvproj round-trip byte-identical', rd(wvName) === beforeWv);
 }
 
+// --- duplicate configuration names (0.3.7): only imported projects have
+// them (MRVC's own Add/Rename refuse duplicates). The name IS the output
+// directory, so operations address rows by INDEX — a name lookup always hit
+// the first row (switch became a no-op, delete refused "active", rename
+// renamed the WRONG configuration).
+{
+  const dupDir = path.join(scratch, 'dup');
+  fs.mkdirSync(dupDir, { recursive: true });
+  // generate with a distinct placeholder name so the ids stay unique, then
+  // rename ONLY the second block to "dbg" — the real EVT shape
+  const raw = cpXml(['dbg', 'tmp']);
+  const dupXml = raw.replace('name="tmp"', 'name="dbg"').replace(/name="tmp"/g, 'name="dbg"');
+  fs.writeFileSync(path.join(dupDir, '.cproject'), dupXml, 'utf-8');
+  fs.writeFileSync(path.join(dupDir, '.template'), template('dbg/Foo.hex'), 'utf-8');
+  fs.writeFileSync(
+    path.join(dupDir, `${PROJECT}.wvproj`),
+    JSON.stringify(
+      {
+        version: '1.0',
+        basic: { projectName: PROJECT },
+        buildConfig: { configurations: [{ name: 'dbg', x: 1 }, { name: 'dbg', x: 2 }] },
+        flashConfig: { target_path: 'dbg/Foo.hex' },
+      },
+      null,
+      '\t'
+    ),
+    'utf-8'
+  );
+  const rdD = () => fs.readFileSync(path.join(dupDir, '.cproject'), 'utf-8');
+  const blocksD = () => blocksOf(rdD());
+  const dupCp = Cproject.load(dupDir);
+  check('dup: two configurations share the name', JSON.stringify(dupCp.configurationNames) === JSON.stringify(['dbg', 'dbg']));
+  check('dup: duplicateConfigurationNames reports it once', JSON.stringify(dupCp.duplicateConfigurationNames) === JSON.stringify(['dbg']));
+  // per-row option values really differ — the rows are NOT interchangeable
+  check(
+    'dup: the two rows keep their own option sets',
+    Cproject.loadConfigAt(dupDir, 0).configurationNames.length === 2 &&
+      /level\.none/.test(blocksD()[0].text) &&
+      /level\.size/.test(blocksD()[1].text)
+  );
+
+  const before = rdD();
+  const beforeBlocks = blocksD();
+  // an ambiguous name without an index is an ERROR, never a silent first-row hit
+  let amb = '';
+  try {
+    switchConfiguration(dupDir, 'dbg');
+  } catch (e) {
+    amb = String(e.message);
+  }
+  check('dup: switching by an ambiguous name is refused', /more than one configuration/.test(amb), amb);
+  check('dup: the refused switch wrote nothing', rdD() === before);
+  // index-addressed switch: swaps the rows, active = the former SECOND row
+  const sw = switchConfiguration(dupDir, 'dbg', 1);
+  check('dup: switch by index reorders the rows', sw.changed === true && sw.active === 'dbg');
+  check(
+    'dup: the SECOND block became the first (index-addressed)',
+    blocksD()[0].text === beforeBlocks[1].text && blocksD()[1].text === beforeBlocks[0].text
+  );
+  switchConfiguration(dupDir, 'dbg', 1);
+  check('dup: switching back by index round-trips byte-identically', rdD() === before);
+
+  amb = '';
+  try {
+    renameConfiguration(dupDir, 'dbg', 'dbg2');
+  } catch (e) {
+    amb = String(e.message);
+  }
+  check('dup: renaming by an ambiguous name is refused', /more than one configuration/.test(amb), amb);
+  // renaming row 1 (the second) must touch the SECOND block, not the active one
+  const re = renameConfiguration(dupDir, 'dbg', 'dbg2', 1);
+  check('dup: rename by index names the second row', JSON.stringify(re.names) === JSON.stringify(['dbg', 'dbg2']));
+  check('dup: only the second <configuration> was renamed', blocksD()[0].text.includes('name="dbg"') && blocksD()[1].text.includes('name="dbg2"'));
+  const dupWv = JSON.parse(fs.readFileSync(path.join(dupDir, `${PROJECT}.wvproj`), 'utf-8'));
+  check('dup: the .wvproj snapshot renamed the SAME row', dupWv.buildConfig.configurations[1].name === 'dbg2');
+
+  // delete: a FRESH duplicate fixture (the one above no longer has a
+  // duplicate after the rename)
+  const delDir = path.join(scratch, 'dup-del');
+  fs.mkdirSync(delDir, { recursive: true });
+  fs.writeFileSync(path.join(delDir, '.cproject'), dupXml, 'utf-8');
+  fs.writeFileSync(path.join(delDir, '.template'), template('dbg/Foo.hex'), 'utf-8');
+  fs.writeFileSync(
+    path.join(delDir, `${PROJECT}.wvproj`),
+    JSON.stringify(
+      {
+        version: '1.0',
+        basic: { projectName: PROJECT },
+        buildConfig: { configurations: [{ name: 'dbg', x: 1 }, { name: 'dbg', x: 2 }] },
+        flashConfig: { target_path: 'dbg/Foo.hex' },
+      },
+      null,
+      '\t'
+    ),
+    'utf-8'
+  );
+  const delBlocks = () => blocksOf(fs.readFileSync(path.join(delDir, '.cproject'), 'utf-8'));
+  amb = '';
+  try {
+    deleteConfiguration(delDir, 'dbg');
+  } catch (e) {
+    amb = String(e.message);
+  }
+  check('dup: deleting by an ambiguous name is refused', /more than one configuration/.test(amb), amb);
+  amb = '';
+  try {
+    deleteConfiguration(delDir, 'dbg', 0);
+  } catch (e) {
+    amb = String(e.message);
+  }
+  check('dup: deleting the ACTIVE row is still refused', /cannot delete the active/.test(amb), amb);
+  const del = deleteConfiguration(delDir, 'dbg', 1);
+  check('dup: deleting row 1 removes the second block only', JSON.stringify(del.names) === JSON.stringify(['dbg']) && delBlocks().length === 1);
+  check('dup: the surviving row is the ACTIVE one', delBlocks()[0].text.includes('name="dbg"'));
+
+  // Copy-from by index: the source row's OWN option set must be cloned
+  const add2 = makeProject(path.join(scratch, 'dup-add'), ['dbg', 'tmp']);
+  const raw2 = fs.readFileSync(path.join(add2, '.cproject'), 'utf-8').replace(/name="tmp"/g, 'name="dbg"');
+  fs.writeFileSync(path.join(add2, '.cproject'), raw2, 'utf-8');
+  addConfiguration(add2, 'copy2', 'dbg', 1);
+  const addBlocks = blocksOf(fs.readFileSync(path.join(add2, '.cproject'), 'utf-8'));
+  check('dup: add with copyFromIndex clones the SECOND row', /copy2/.test(addBlocks[2].text) && /level\.size/.test(addBlocks[2].text));
+
+  // Copy-from: the .wvproj snapshot row must be the SAME positional row
+  // (0.3.7 round1 P3.2 — the name lookup copied the FIRST of two same-named
+  // rows even when the SECOND one was picked)
+  const snapDir = path.join(scratch, 'dup-snap');
+  fs.mkdirSync(snapDir, { recursive: true });
+  fs.writeFileSync(path.join(snapDir, '.cproject'), dupXml, 'utf-8');
+  fs.writeFileSync(path.join(snapDir, '.template'), template('dbg/Foo.hex'), 'utf-8');
+  const wvDoc = (rows) => JSON.stringify({ version: '1.0', basic: { projectName: PROJECT }, buildConfig: { configurations: rows }, flashConfig: { target_path: 'dbg/Foo.hex' } }, null, '\t');
+  fs.writeFileSync(path.join(snapDir, `${PROJECT}.wvproj`), wvDoc([{ name: 'dbg', x: 1 }, { name: 'dbg', x: 2 }]), 'utf-8');
+  addConfiguration(snapDir, 'copy3', 'dbg', 1);
+  const snapRows = JSON.parse(fs.readFileSync(path.join(snapDir, `${PROJECT}.wvproj`), 'utf-8')).buildConfig.configurations;
+  check(
+    'dup: Copy from the SECOND row clones the SECOND snapshot row',
+    JSON.stringify(snapRows) === JSON.stringify([{ name: 'dbg', x: 1 }, { name: 'dbg', x: 2 }, { name: 'copy3', x: 2 }]),
+    JSON.stringify(snapRows)
+  );
+  // a snapshot that drifted from .cproject AND carries an ambiguous name:
+  // no row is guessed — the snapshot is left exactly as it was
+  const driftDir = path.join(scratch, 'dup-drift');
+  fs.mkdirSync(driftDir, { recursive: true });
+  fs.writeFileSync(path.join(driftDir, '.cproject'), dupXml, 'utf-8');
+  fs.writeFileSync(path.join(driftDir, '.template'), template('dbg/Foo.hex'), 'utf-8');
+  const drifted = wvDoc([{ name: 'dbg', x: 1 }, { name: 'dbg', x: 2 }, { name: 'stray' }]);
+  fs.writeFileSync(path.join(driftDir, `${PROJECT}.wvproj`), drifted, 'utf-8');
+  addConfiguration(driftDir, 'copy4', 'dbg', 1);
+  check('dup: an ambiguous name in a DRIFTED snapshot is skipped, never guessed', fs.readFileSync(path.join(driftDir, `${PROJECT}.wvproj`), 'utf-8') === drifted);
+  check('dup: ...the .cproject itself was still written', blocksOf(fs.readFileSync(path.join(driftDir, '.cproject'), 'utf-8')).length === 3);
+  // rename / delete / switch share the same snapshot row lookup: on a
+  // drifted ambiguous snapshot they leave the snapshot alone too (the
+  // .cproject operation itself still happens). One fixture per operation,
+  // each with the same drifted three-row snapshot.
+  const driftRename = path.join(scratch, 'dup-drift2');
+  fs.mkdirSync(driftRename, { recursive: true });
+  fs.writeFileSync(path.join(driftRename, '.cproject'), dupXml, 'utf-8');
+  fs.writeFileSync(path.join(driftRename, '.template'), template('dbg/Foo.hex'), 'utf-8');
+  fs.writeFileSync(path.join(driftRename, `${PROJECT}.wvproj`), drifted, 'utf-8');
+  renameConfiguration(driftRename, 'dbg', 'dbg9', 1);
+  check('dup: rename by index leaves a drifted ambiguous snapshot untouched', fs.readFileSync(path.join(driftRename, `${PROJECT}.wvproj`), 'utf-8') === drifted);
+  check('dup: ...and still renamed the .cproject row', /name="dbg9"/.test(fs.readFileSync(path.join(driftRename, '.cproject'), 'utf-8')));
+
+  const driftDelete = path.join(scratch, 'dup-drift3');
+  fs.mkdirSync(driftDelete, { recursive: true });
+  fs.writeFileSync(path.join(driftDelete, '.cproject'), dupXml, 'utf-8');
+  fs.writeFileSync(path.join(driftDelete, '.template'), template('dbg/Foo.hex'), 'utf-8');
+  fs.writeFileSync(path.join(driftDelete, `${PROJECT}.wvproj`), drifted, 'utf-8');
+  const delDrift = deleteConfiguration(driftDelete, 'dbg', 1);
+  check(
+    'dup: delete by index leaves a drifted ambiguous snapshot untouched',
+    fs.readFileSync(path.join(driftDelete, `${PROJECT}.wvproj`), 'utf-8') === drifted && JSON.stringify(delDrift.names) === '["dbg"]'
+  );
+
+  const driftSwitch = path.join(scratch, 'dup-drift4');
+  fs.mkdirSync(driftSwitch, { recursive: true });
+  fs.writeFileSync(path.join(driftSwitch, '.cproject'), dupXml, 'utf-8');
+  fs.writeFileSync(path.join(driftSwitch, '.template'), template('dbg/Foo.hex'), 'utf-8');
+  fs.writeFileSync(path.join(driftSwitch, `${PROJECT}.wvproj`), drifted, 'utf-8');
+  switchConfiguration(driftSwitch, 'dbg', 1);
+  check('dup: switch by index leaves a drifted ambiguous snapshot untouched', fs.readFileSync(path.join(driftSwitch, `${PROJECT}.wvproj`), 'utf-8') === drifted);
+
+  // case-folded duplicates (0.3.7 round1 P3.3): on Windows `obj` and `OBJ`
+  // share ONE output directory — the very pair MRVC's own Add refuses — so
+  // the duplicate notice must fire there; on Linux/macOS they are two dirs
+  const { duplicateConfigNames } = require('../out/core/cproject.js');
+  const lower = (s) => s.toLowerCase();
+  const same = (s) => s;
+  check('dup: obj/OBJ is a duplicate on a case-insensitive host', JSON.stringify(duplicateConfigNames(['obj', 'OBJ'], lower)) === '["obj"]');
+  check('dup: obj/OBJ stays distinct on a case-sensitive host', JSON.stringify(duplicateConfigNames(['obj', 'OBJ'], same)) === '[]');
+  check('dup: the fold reports the first-seen spelling once', JSON.stringify(duplicateConfigNames(['OBJ', 'obj', 'Obj'], lower)) === '["OBJ"]');
+  check('dup: three spellings on a case-sensitive host stay all distinct', JSON.stringify(duplicateConfigNames(['OBJ', 'obj', 'Obj'], same)) === '[]');
+  check(
+    'dup: the default fold follows the host platform',
+    JSON.stringify(duplicateConfigNames(['obj', 'OBJ'])) === (process.platform === 'win32' ? '["obj"]' : '[]')
+  );
+}
+
 if (failures > 0) {
   console.log(`\n${failures} FAILED`);
   process.exit(1);

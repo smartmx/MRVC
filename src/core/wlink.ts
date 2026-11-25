@@ -202,9 +202,45 @@ Add-Type -TypeDefinition $code;
 `;
 }
 
+/**
+ * Characters Windows PowerShell's tokenizer treats as single-quote
+ * delimiters BESIDES the ASCII one (the "smart quotes" it accepts for
+ * authoring convenience). The `'`-doubling escape does not neutralize them,
+ * so a path carrying one could break out of a quoted argument — refuse such
+ * values outright (code-review H1; they do not occur in real paths, and
+ * silently rewriting them would point the DLL at a different file).
+ */
+const PS_CURLY_QUOTES = /[\u2018\u2019\u201A\u201B]/;
+
+function assertPsSafePath(value: string, what: string): void {
+  if (PS_CURLY_QUOTES.test(value)) {
+    throw new Error(`${what} contains a character PowerShell treats as a string delimiter (\u2018/\u2019/\u201A/\u201B): ${value}`);
+  }
+}
+
+function assertPsInt(value: unknown, what: string): void {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    throw new Error(`${what} must be an integer (got ${JSON.stringify(value)})`);
+  }
+}
+
 /** one operation per script; the JSON line on stdout is the result contract */
 export function buildPsScript(commLib: CommLib, op: WlinkOp, args: WlinkArgs): string {
   const { chipId, clkSpeed, dbgMode } = args;
+  // every interpolated argument is asserted BEFORE any script text is built:
+  // numerics must be real integers (the DLL calls are unquoted in the
+  // script), path-like strings must not carry quote-delimiter characters
+  // (code-review H1). The op itself is already constrained — an unknown one
+  // throws at the switch below before anything is written or executed.
+  assertPsInt(chipId, 'chipId');
+  assertPsInt(clkSpeed, 'clkSpeed');
+  assertPsInt(dbgMode, 'dbgMode');
+  if (args.eraseMode !== undefined) assertPsInt(args.eraseMode, 'eraseMode');
+  if (args.memVal !== undefined) assertPsInt(args.memVal, 'memVal');
+  if (args.flashAddress !== undefined) assertPsInt(args.flashAddress, 'flashAddress');
+  assertPsSafePath(commLib.dir, 'communication library directory');
+  if (args.wcfgPath !== undefined) assertPsSafePath(args.wcfgPath, 'firmware-config path');
+  if (args.flashPath !== undefined) assertPsSafePath(args.flashPath, 'firmware path');
   // queryMcuId runs the MRS-parity init sequence first (OpenDevice →
   // CompareVersion → CloseDevice — MRS2's getChipID RPC runs its firmware
   // check before the query; without it the raw GetLinkedMCUID returns the
@@ -525,11 +561,21 @@ export function runWlinkOp(install: MrsInstall, op: WlinkOp, args: WlinkArgs): P
     const wcfgPath = wchlinkFirmwareCfgPath(install);
     psArgs = { ...args, wcfgPath: fs.existsSync(wcfgPath) ? wcfgPath : undefined };
   }
-  const script = buildPsScript(commLib, op, psArgs);
-  const ps1 = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mrvc-wlink-')), 'op.ps1');
-  // BOM: Windows PowerShell 5.1 decodes BOM-less scripts as ANSI, which
-  // mangles non-ASCII install paths (Chinese folder names are common)
-  fs.writeFileSync(ps1, '\uFEFF' + script, 'utf-8');
+  // script generation + temp write are guarded: the argument assertions can
+  // throw synchronously and the webview caller has no .catch on the promise —
+  // a refusal must come back as a structured result, never an exception
+  // (code-review H1 follow-up)
+  let script: string;
+  let ps1: string;
+  try {
+    script = buildPsScript(commLib, op, psArgs);
+    ps1 = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mrvc-wlink-')), 'op.ps1');
+    // BOM: Windows PowerShell 5.1 decodes BOM-less scripts as ANSI, which
+    // mangles non-ASCII install paths (Chinese folder names are common)
+    fs.writeFileSync(ps1, '\uFEFF' + script, 'utf-8');
+  } catch (e) {
+    return Promise.resolve({ op, ok: false, error: e instanceof Error ? e.message : String(e) });
+  }
   const timeout = op === 'clearCodeFlash' ? 120000 : 30000; // chip erase is slow
   return new Promise((resolve) => {
     execFile(
@@ -661,6 +707,10 @@ export function formatLinkVersion(n: number | undefined): string {
  * 0 = up to date, 1 = upgrade needed; out1's low byte is the linkID.
  */
 export function buildPsFirmwareCheckScript(commLib: CommLib, wcfgPath: string): string {
+  // same argument hygiene as buildPsScript (code-review H1): both interpolated
+  // paths must be free of quote-delimiter characters before the ''-escaping
+  assertPsSafePath(commLib.dir, 'communication library directory');
+  assertPsSafePath(wcfgPath, 'firmware-config path');
   const decl = (name: string, entry: string, sig: string): string =>
     `  [DllImport("McuCompilerDll.dll", CallingConvention = CallingConvention.StdCall, EntryPoint = "${entry}")]\n` +
     `  public static extern int ${name}(${sig});\n`;
@@ -814,9 +864,18 @@ export async function checkWCHLinkFirmware(
   if (!fs.existsSync(psExe)) {
     return { state: 'error', error: 'Windows PowerShell not found on this system (' + psExe + ')' };
   }
-  const script = buildPsFirmwareCheckScript(commLib, wcfg);
-  const ps1 = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mrvc-wlink-')), 'fwcheck.ps1');
-  fs.writeFileSync(ps1, '\uFEFF' + script, 'utf-8');
+  // script generation + temp write are guarded: the argument assertions can
+  // throw synchronously and every caller expects a structured {state:'error'}
+  // result, never an exception (code-review H1 follow-up)
+  let script: string;
+  let ps1: string;
+  try {
+    script = buildPsFirmwareCheckScript(commLib, wcfg);
+    ps1 = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mrvc-wlink-')), 'fwcheck.ps1');
+    fs.writeFileSync(ps1, '\uFEFF' + script, 'utf-8');
+  } catch (e) {
+    return { state: 'error', error: e instanceof Error ? e.message : String(e) };
+  }
   return new Promise((resolve) => {
     execFile(
       psExe,

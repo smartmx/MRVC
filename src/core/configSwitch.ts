@@ -179,6 +179,40 @@ function assertUnique(names: string[], name: string): void {
   }
 }
 
+/**
+ * Resolve the configuration a Manage operation acts on (0.3.7).
+ *
+ * MRVC's own Add/Rename can never create two configurations with the same
+ * name (assertUnique) — duplicates only arrive from OUTSIDE: WCH EVT trees,
+ * MRS, or a hand-edited .cproject. For such a project a NAME is ambiguous,
+ * and the old `names.indexOf(name)` silently resolved every operation to the
+ * FIRST match: "Set as Active" on the 2nd became a no-op, "Delete" on the 2nd
+ * refused with "cannot delete the active configuration", and "Rename" on the
+ * 2nd renamed the ACTIVE one instead. The Manage dialog therefore addresses
+ * rows by INDEX; `index` (when supplied) must name a row whose name is the
+ * given one, and an ambiguous name without an index is an error rather than
+ * a guess.
+ */
+function resolveConfigIndex(names: string[], name: string, index?: number): number {
+  const byIndex = Number.isInteger(index) && index! >= 0 && index! < names.length ? index! : -1;
+  if (byIndex >= 0) {
+    if (names[byIndex] !== name) {
+      throw new Error(`configuration #${byIndex} is not named "${name}" — the list changed, reopen Manage`);
+    }
+    return byIndex;
+  }
+  const first = names.indexOf(name);
+  if (first < 0) {
+    throw new Error(`unknown configuration: ${name}`);
+  }
+  if (names.indexOf(name, first + 1) >= 0) {
+    throw new Error(
+      `the name "${name}" is used by more than one configuration — pick the row to act on (rename one of them to make the names unique)`
+    );
+  }
+  return first;
+}
+
 /** write "<name>/<same file name>" into .template (MRS chooseOutType rule) */
 function writeTemplateTarget(projectRoot: string, cp: Cproject, name: string): string | undefined {
   if (!fs.existsSync(path.join(projectRoot, '.template'))) return undefined;
@@ -196,18 +230,39 @@ export function listConfigurations(projectRoot: string): string[] {
 }
 
 /**
- * Make `name` the active configuration.
+ * Row of a configuration in the .wvproj `buildConfig.configurations` snapshot
+ * — the SAME position as the .cproject row while the snapshot mirrors
+ * .cproject (same length, same name at that index); by name otherwise, for a
+ * snapshot whose order drifted.
  *
- * Throws (without writing anything) for an unknown name or a .cproject whose
- * configuration elements cannot be reordered safely. Idempotent when the name
- * is already active.
+ * Returns -1 (leave the snapshot alone) when the name is ambiguous in the
+ * drifted case: a guess would move, rename, delete or clone the WRONG row,
+ * and the snapshot is generated — MRS2 never reads it — so skipping is the
+ * safe outcome (0.3.7 round1 P3.2).
  */
-export function switchConfiguration(projectRoot: string, name: string): SwitchResult {
-  const { cp, els, names } = loadForWrite(projectRoot);
-  const idx = names.indexOf(name);
-  if (idx < 0) {
-    throw new Error(`unknown configuration: ${name}`);
+function snapshotRowIndex(arr: unknown, names: readonly string[], idx: number, name: string): number {
+  if (!Array.isArray(arr)) return -1;
+  const nameAt = (i: number): unknown => (arr[i] as { name?: unknown } | undefined)?.name;
+  if (arr.length === names.length && nameAt(idx) === name) return idx;
+  const first = arr.findIndex((c) => (c as { name?: unknown } | undefined)?.name === name);
+  if (first < 0) return -1;
+  for (let i = first + 1; i < arr.length; i++) {
+    if (nameAt(i) === name) return -1;
   }
+  return first;
+}
+
+/**
+ * Make the configuration at `index` (or the unique one named `name`) the
+ * active configuration.
+ *
+ * Throws (without writing anything) for an unknown name, an ambiguous name
+ * with no index (see resolveConfigIndex), or a .cproject whose configuration
+ * elements cannot be reordered safely. Idempotent when it is already active.
+ */
+export function switchConfiguration(projectRoot: string, name: string, index?: number): SwitchResult {
+  const { cp, els, names } = loadForWrite(projectRoot);
+  const idx = resolveConfigIndex(names, name, index);
   const active = names[0];
   if (idx === 0) {
     return { changed: false, active, names, wvproj: 'skipped' };
@@ -251,7 +306,9 @@ export function switchConfiguration(projectRoot: string, name: string): SwitchRe
     try {
       const doc = readWv(wvFile);
       const arr = doc?.buildConfig?.configurations;
-      const wi = Array.isArray(arr) ? arr.findIndex((c) => c?.name === name) : -1;
+      // address the .wvproj row by the SAME position as the .cproject one — a
+      // name lookup would pick the first of two same-named rows
+      const wi = snapshotRowIndex(arr, names, idx, name);
       if (Array.isArray(arr) && wi >= 0) {
         if (wi > 0) {
           const picked = arr.splice(wi, 1)[0];
@@ -268,10 +325,13 @@ export function switchConfiguration(projectRoot: string, name: string): SwitchRe
     }
   }
 
+  // the returned order is by POSITION, not by name: with two configurations
+  // sharing a name a name-based filter would drop both
+  const ordered = [names[idx], ...names.filter((_, i) => i !== idx)];
   return {
     changed: true,
     active: name,
-    names: [name, ...names.filter((n) => n !== name)],
+    names: ordered,
     targetPath,
     wvproj,
   };
@@ -280,16 +340,32 @@ export function switchConfiguration(projectRoot: string, name: string): SwitchRe
 /**
  * Add a configuration by deep-copying `copyFrom` (default: the active one) and
  * appending it — MRS's 添加 dialog semantics (copy source + unique name).
+ * `copyFromIndex` selects the SOURCE row when the name is shared (two
+ * same-named configurations can carry different option sets).
  */
-export function addConfiguration(projectRoot: string, name: string, copyFrom?: string): ManageResult {
+export function addConfiguration(
+  projectRoot: string,
+  name: string,
+  copyFrom?: string,
+  copyFromIndex?: number
+): ManageResult {
   const { cp, els, names } = loadForWrite(projectRoot);
   assertValidName(name);
   if (names.length >= MAX_CONFIGURATIONS) {
     throw new Error(`at most ${MAX_CONFIGURATIONS} configurations are supported`);
   }
   assertUnique(names, name);
-  const sourceName = copyFrom && names.includes(copyFrom) ? copyFrom : names[0];
-  const source = els[names.indexOf(sourceName)];
+  let sourceIdx = 0;
+  if (typeof copyFromIndex === 'number' && Number.isInteger(copyFromIndex) && copyFromIndex >= 0 && copyFromIndex < names.length) {
+    if (copyFrom !== undefined && names[copyFromIndex] !== copyFrom) {
+      throw new Error(`configuration #${copyFromIndex} is not named "${copyFrom}" — the list changed, reopen Manage`);
+    }
+    sourceIdx = copyFromIndex;
+  } else if (copyFrom && names.includes(copyFrom)) {
+    sourceIdx = resolveConfigIndex(names, copyFrom);
+  }
+  const sourceName = names[sourceIdx];
+  const source = els[sourceIdx];
   const parent = source?.parent;
   if (!source || !parent) {
     throw new Error(`unknown configuration: ${sourceName}`);
@@ -309,7 +385,11 @@ export function addConfiguration(projectRoot: string, name: string, copyFrom?: s
     try {
       const doc = readWv(wvFile);
       const arr = doc?.buildConfig?.configurations;
-      const srcCfg = Array.isArray(arr) ? arr.find((c) => c?.name === sourceName) : undefined;
+      // the SAME positional row as the .cproject source (round1 P3.2: the
+      // name lookup copied the FIRST of two same-named rows even when the
+      // user picked the second)
+      const si = snapshotRowIndex(arr, names, sourceIdx, sourceName);
+      const srcCfg = Array.isArray(arr) && si >= 0 ? arr[si] : undefined;
       if (Array.isArray(arr) && srcCfg) {
         const copy = JSON.parse(JSON.stringify(srcCfg)) as { name?: string };
         copy.name = name;
@@ -323,18 +403,22 @@ export function addConfiguration(projectRoot: string, name: string, copyFrom?: s
   return { names: [...names, name], active: names[0] };
 }
 
-/** Rename a configuration. Renaming the ACTIVE one moves the Target Path. */
-export function renameConfiguration(projectRoot: string, oldName: string, newName: string): ManageResult {
+/**
+ * Rename a configuration. Renaming the ACTIVE one moves the Target Path.
+ * `index` addresses the row when the old name is shared by more than one
+ * configuration (see resolveConfigIndex).
+ */
+export function renameConfiguration(projectRoot: string, oldName: string, newName: string, index?: number): ManageResult {
   const { cp, els, names } = loadForWrite(projectRoot);
-  const idx = names.indexOf(oldName);
-  if (idx < 0) {
-    throw new Error(`unknown configuration: ${oldName}`);
-  }
+  const idx = resolveConfigIndex(names, oldName, index);
   if (newName === oldName) {
     return { names, active: names[0] };
   }
   assertValidName(newName);
-  assertUnique(names, newName);
+  // the row being renamed is not its own competitor (a same-name rename is
+  // the no-op above; every collision with ANOTHER row still refuses)
+  const others = names.filter((_, i) => i !== idx);
+  assertUnique(others, newName);
   renameConfigBlock(els[idx], newName);
   const nextNames = names.map((n, i) => (i === idx ? newName : n));
   const targetPath = idx === 0 ? writeTemplateTarget(projectRoot, cp, newName) : undefined;
@@ -345,7 +429,11 @@ export function renameConfiguration(projectRoot: string, oldName: string, newNam
     try {
       const doc = readWv(wvFile);
       const arr = doc?.buildConfig?.configurations;
-      const cfg = Array.isArray(arr) ? arr.find((c) => c?.name === oldName) : undefined;
+      // positional row first — two same-named rows must not resolve to the
+      // same entry; the name lookup stays as the fallback for a .wvproj whose
+      // order drifted from the .cproject
+      const ri = snapshotRowIndex(arr, names, idx, oldName);
+      const cfg = Array.isArray(arr) && ri >= 0 ? arr[ri] : undefined;
       if (Array.isArray(arr) && cfg) {
         cfg.name = newName;
         if (targetPath && doc.flashConfig && typeof doc.flashConfig === 'object') {
@@ -364,12 +452,9 @@ export function renameConfiguration(projectRoot: string, oldName: string, newNam
  * Delete a configuration. The active one is refused (MRS: "不支持删除当前
  * 激活中的配置"); at least one configuration must remain.
  */
-export function deleteConfiguration(projectRoot: string, name: string): ManageResult {
+export function deleteConfiguration(projectRoot: string, name: string, index?: number): ManageResult {
   const { cp, els, names } = loadForWrite(projectRoot);
-  const idx = names.indexOf(name);
-  if (idx < 0) {
-    throw new Error(`unknown configuration: ${name}`);
-  }
+  const idx = resolveConfigIndex(names, name, index);
   if (idx === 0) {
     throw new Error('cannot delete the active configuration — switch to another one first');
   }
@@ -388,7 +473,9 @@ export function deleteConfiguration(projectRoot: string, name: string): ManageRe
     try {
       const doc = readWv(wvFile);
       const arr = doc?.buildConfig?.configurations;
-      const wi = Array.isArray(arr) ? arr.findIndex((c) => c?.name === name) : -1;
+      // remove the SAME positional row (a name lookup picks the first of two
+      // same-named rows and would leave the wrong one behind)
+      const wi = snapshotRowIndex(arr, names, idx, name);
       if (Array.isArray(arr) && wi >= 0) {
         arr.splice(wi, 1);
         writeWv(wvFile, doc);

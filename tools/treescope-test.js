@@ -376,6 +376,9 @@ check('cache: products node identity is stable across renders', productsNode2 ==
   fs.rmSync(dual, { recursive: true, force: true });
   fs.mkdirSync(path.join(dual, 'obj'), { recursive: true });
   fs.writeFileSync(path.join(dual, 'obj', 'old.hex'), ':00000001FF\n');
+  // a compilable-suffixed artifact in the INACTIVE output dir (generated /
+  // copied source-looking file): it is an output, never a compile target
+  fs.writeFileSync(path.join(dual, 'obj', 'generated.c'), 'int generated;\n');
   fs.mkdirSync(path.join(dual, 'obj1'), { recursive: true });
   fs.writeFileSync(path.join(dual, 'obj1', 'Dual.hex'), ':00000001FF\n');
   fs.writeFileSync(path.join(dual, '.project'), miniProject('Dual'));
@@ -426,7 +429,11 @@ ${cfgBlock('c1', 'obj1')}${cfgBlock('c2', 'obj')}\t</storageModule>
   const dualProjNode = provider2.getChildren().find((n) => n.nodeType === 'project');
   const dualLevel1 = provider2.getChildren(dualProjNode);
   const objNode = dualLevel1.find((n) => n.fsPath === path.join(dual, 'obj'));
-  check('outputs: the inactive config dir renders as a folder', !!objNode && objNode.nodeType === 'folder', JSON.stringify(dualLevel1.map((n) => n.fsPath)));
+  check(
+    'outputs: the inactive config dir renders as an OUTPUT folder row, never a plain source folder (round1 P2.1)',
+    !!objNode && objNode.nodeType === 'outputFolder' && objNode.contextValue === 'outputFolder',
+    JSON.stringify(dualLevel1.map((n) => `${n.nodeType}:${n.fsPath}`))
+  );
   const productsNode2 = dualLevel1.find((n) => n.nodeType === 'products');
   check(
     'outputs: the ACTIVE config dir is the products node, never a duplicate row',
@@ -435,11 +442,58 @@ ${cfgBlock('c1', 'obj1')}${cfgBlock('c2', 'obj')}\t</storageModule>
   );
   const objChildren = provider2.getChildren(objNode);
   const hexNode = objChildren.find((n) => n.fsPath === path.join(dual, 'obj', 'old.hex'));
+  const generatedNode = objChildren.find((n) => n.fsPath === path.join(dual, 'obj', 'generated.c'));
+  provider2.getTreeItem(hexNode);
+  provider2.getTreeItem(generatedNode);
   check(
-    'outputs: a file inside the INACTIVE config dir is NOT marked excluded',
-    !!hexNode && hexNode.contextValue === 'file',
+    'outputs: a file inside the INACTIVE config dir is an output file — not excluded, no Exclude menu',
+    !!hexNode && hexNode.contextValue === 'outputFile',
     String(hexNode && hexNode.contextValue)
   );
+  check(
+    'outputs: a compilable-suffixed file inside the INACTIVE config dir stays an output file (no Compile File)',
+    !!generatedNode && generatedNode.contextValue === 'outputFile',
+    String(generatedNode && generatedNode.contextValue)
+  );
+  // the INACTIVE output dir lists its content like the active one (0.3.7:
+  // subdirectories included, nothing filtered)
+  fs.mkdirSync(path.join(dual, 'obj', 'User'), { recursive: true });
+  fs.writeFileSync(path.join(dual, 'obj', 'User', 'main.o'), 'o');
+  const objChildren2 = provider2.getChildren(objNode);
+  const mirrorNode = objChildren2.find((n) => n.fsPath === path.join(dual, 'obj', 'User'));
+  check(
+    'outputs: the inactive output dir expands its subdirectories the same way',
+    !!mirrorNode && mirrorNode.nodeType === 'outputFolder' && provider2.getChildren(mirrorNode)[0].contextValue === 'outputFile',
+    JSON.stringify(objChildren2.map((n) => `${n.nodeType}:${n.label}`))
+  );
+  // the menus VS Code OFFERS on output rows: no build-config command may
+  // match outputFolder / outputFile. The when-clauses are evaluated the way
+  // VS Code does (a `viewItem == X` list is an OR; the anchored regex form is
+  // the other spelling; a clause without any viewItem term covers EVERY row) —
+  // the old assertion only looked at contextValue === 'file' and so missed
+  // that a plain `folder` row offered "Exclude From Build" (round1 P2.1).
+  {
+    const pkgCtx = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    const ctxItems = pkgCtx.contributes.menus['view/item/context'];
+    const whensOf = (cmd) => ctxItems.filter((i) => i.command === cmd).map((i) => i.when || '');
+    const offered = (when, value) => {
+      const eq = [...when.matchAll(/viewItem == ([\w.]+)/g)].map((m) => m[1]);
+      if (eq.length) return eq.includes(value);
+      const rx = when.match(/viewItem =~ \/\^\((.*?)\)\$\//);
+      return rx ? rx[1].split('|').map((s) => s.replace(/\\(.)/g, '$1')).includes(value) : true;
+    };
+    for (const cmd of ['mrvc.excludeFromBuild', 'mrvc.includeFromBuild', 'mrvc.compileFile', 'mrvc.file.rename', 'mrvc.flagFile', 'mrvc.clearFlag']) {
+      const whens = whensOf(cmd);
+      check(`outputs: ${cmd} has menu items to evaluate`, whens.length > 0);
+      for (const v of ['outputFolder', 'outputFile']) {
+        check(`outputs: ${cmd} is never offered on ${v}`, !whens.some((w) => offered(w, v)), whens.join(' || '));
+      }
+    }
+    // (sanity) the same evaluator DOES see the menus on ordinary rows
+    check('outputs: (sanity) Exclude From Build is offered on a plain folder row', whensOf('mrvc.excludeFromBuild').some((w) => offered(w, 'folder')));
+    check('outputs: (sanity) Compile File is offered on file.src', whensOf('mrvc.compileFile').some((w) => offered(w, 'file.src')));
+    check('outputs: (sanity) Rename is offered on file and folder rows', whensOf('mrvc.file.rename').some((w) => offered(w, 'file')) && whensOf('mrvc.file.rename').some((w) => offered(w, 'folder')));
+  }
   fs.rmSync(dual, { recursive: true, force: true });
 
   // the output-dir WATCHER must cover every configuration too (round4 P3)
@@ -452,6 +506,96 @@ ${cfgBlock('c1', 'obj1')}${cfgBlock('c2', 'obj')}\t</storageModule>
   check('watch glob: dedupes; empty set falls back to obj', outputWatchPattern(['obj', 'obj']) === '{obj,obj/**}' && outputWatchPattern([]) === '{obj,obj/**}');
   // round5 P2: a leading '-' is MRS-legal and glob-safe
   check('watch glob: dash names are glob-safe', outputWatchPattern(['-x']) === '{-x,-x/**}', outputWatchPattern(['-x']));
+}
+
+// 14. the output directory renders AS ON DISK (0.3.7, user request: "don't
+//     filter the output dir — show its subdirectories like the disk does"):
+//     the products row used to be a flat list of the top-level files, hiding
+//     the per-source-folder mirrors (Core/, User/, ... with their .o/.d/
+//     subdir.mk). Now: directories AND files, recursive, nothing filtered.
+{
+  const outProj = path.join(WS, 'OutTree');
+  fs.rmSync(outProj, { recursive: true, force: true });
+  const od = path.join(outProj, 'obj');
+  fs.mkdirSync(path.join(od, 'Core'), { recursive: true });
+  fs.mkdirSync(path.join(od, 'Peripheral', 'src'), { recursive: true });
+  fs.writeFileSync(path.join(od, 'Core', 'core_riscv.d'), 'd');
+  fs.writeFileSync(path.join(od, 'Core', 'core_riscv.o'), 'o');
+  fs.writeFileSync(path.join(od, 'Core', 'subdir.mk'), 'mk');
+  fs.writeFileSync(path.join(od, 'Peripheral', 'src', 'y.o'), 'o');
+  fs.writeFileSync(path.join(od, 'Demo.elf'), 'elf');
+  fs.writeFileSync(path.join(od, 'Demo.hex'), 'hex');
+  fs.writeFileSync(path.join(od, 'makefile'), 'all:');
+  // a compilable suffix left in the output dir (assembler listing output)
+  // must NOT turn the row into a compile target
+  fs.writeFileSync(path.join(od, 'listing.s'), '.text');
+  fs.writeFileSync(path.join(outProj, '.project'), miniProject('OutTree'));
+  const outProject = { ...project, root: outProj, projectName: 'OutTree', buildDir: od, outputDirs: [od] };
+  const outStore = {
+    all: [outProject],
+    solutionList: [],
+    active: outProject,
+    onDidChange: () => ({ dispose() {} }),
+    onTreeDirsChanged: () => ({ dispose() {} }),
+  };
+  const provider3 = new ProjectTreeProvider(outStore, { joinPath: () => ({ fsPath: '' }) });
+  const outProjNode = provider3.getChildren().find((n) => n.nodeType === 'project');
+  const outRows = provider3.getChildren(outProjNode);
+  const outProducts = outRows.find((n) => n.nodeType === 'products');
+  check('output tree: the output dir is still the products row (never a duplicate folder)', !!outProducts && outProducts.fsPath === od && !outRows.some((n) => n !== outProducts && n.fsPath === od));
+  const top = provider3.getChildren(outProducts);
+  const shape = top.map((n) => `${n.nodeType}:${n.label}`);
+  check(
+    'output tree: directories first then files — everything on disk is listed',
+    JSON.stringify(shape) ===
+      JSON.stringify(['outputFolder:Core', 'outputFolder:Peripheral', 'file:Demo.elf', 'file:Demo.hex', 'file:listing.s', 'file:makefile']),
+    JSON.stringify(shape)
+  );
+  const coreNode = top[0];
+  check(
+    'output tree: a subdirectory is a collapsed outputFolder row at its real path',
+    coreNode.nodeType === 'outputFolder' && coreNode.contextValue === 'outputFolder' && coreNode.collapsibleState === 1 && coreNode.fsPath === path.join(od, 'Core')
+  );
+  const coreKids = provider3.getChildren(coreNode).map((n) => `${n.nodeType}:${n.label}:${n.contextValue}`);
+  check(
+    'output tree: .o/.d/subdir.mk inside the mirror are outputFile rows',
+    JSON.stringify(coreKids) === JSON.stringify(['file:core_riscv.d:outputFile', 'file:core_riscv.o:outputFile', 'file:subdir.mk:outputFile']),
+    JSON.stringify(coreKids)
+  );
+  const srcNode = provider3.getChildren(top[1])[0];
+  check(
+    'output tree: recursion — Peripheral/src is an outputFolder holding its .o',
+    srcNode.nodeType === 'outputFolder' && srcNode.fsPath === path.join(od, 'Peripheral', 'src') && provider3.getChildren(srcNode).length === 1
+  );
+  const listingNode = top.find((n) => n.label === 'listing.s');
+  provider3.getTreeItem(listingNode);
+  check('output tree: getTreeItem keeps the outputFile context on a compilable-suffixed artifact', listingNode.contextValue === 'outputFile', String(listingNode.contextValue));
+  // identity is stable across renders (scoped fires ride on it)
+  const topAgain = provider3.getChildren(outProducts);
+  check('output tree: subdirectory node identity is stable across renders', topAgain[0] === coreNode && topAgain[1] === top[1]);
+  // a deleted mirror: its own node fires AND the parent (the row goes away)
+  const fired = [];
+  const sub3 = provider3.onDidChangeTreeData((el) => el && fired.push(el));
+  fs.rmSync(path.join(od, 'Core'), { recursive: true, force: true });
+  provider3.refreshDirs([path.join(od, 'Core')]);
+  sub3.dispose();
+  check('output tree: a deleted subdirectory fires its node and the products row', fired.includes(coreNode) && fired.includes(outProducts), fired.map((n) => n.label).join(','));
+  const topAfter = provider3.getChildren(outProducts);
+  check('output tree: the deleted subdirectory row is gone after the re-read', !topAfter.some((n) => n.label === 'Core') && topAfter[0] === top[1]);
+  // context-menu parity: whatever the products row offers, its subdirectories
+  // offer too — and never a build-config command
+  const pkgOut = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const ctxItems = pkgOut.contributes.menus['view/item/context'];
+  const productItems = ctxItems.filter((i) => /viewItem == products\b/.test(i.when || ''));
+  check('output tree: the products menu exists (sanity)', productItems.length >= 8, String(productItems.length));
+  check('output tree: every products menu item also covers outputFolder', productItems.every((i) => /viewItem == outputFolder\b/.test(i.when)));
+  const outputFolderItems = ctxItems.filter((i) => /viewItem == outputFolder\b/.test(i.when || ''));
+  check(
+    'output tree: no build-config command on output subdirectories',
+    !outputFolderItems.some((i) => ['mrvc.excludeFromBuild', 'mrvc.includeFromBuild', 'mrvc.compileFile', 'mrvc.flag', 'mrvc.rename'].includes(i.command)),
+    outputFolderItems.map((i) => i.command).join(',')
+  );
+  fs.rmSync(outProj, { recursive: true, force: true });
 }
 
 // ---- decorations: fire ONLY on real content change (user report

@@ -12,8 +12,9 @@
  * A build with `analysisFlags()` emitted into buildDir produces:
  *   <file>.su        one "file:line:col:name TAB size TAB scope" record
  *                    per function
- *   *.c.*r.expand    RTL expand dumps (the file name carries the
- *                    GCC-version-specific pass number)
+ *   *.NNNr.expand  RTL expand dumps for every C/C++ source (the file name
+ *                    carries the source's own suffix and the GCC-version-
+ *                    specific pass number; see isExpandDump)
  */
 
 export interface StackRecord {
@@ -127,6 +128,24 @@ function hasWord(line: string, word: string): boolean {
 
 function unquote(s: string): string {
   return s.startsWith(QUOTE) && s.endsWith(QUOTE) ? s.slice(1, -1) : s;
+}
+
+/**
+ * Is this file name a GCC `-fdump-rtl-expand` dump? GCC writes
+ * `<source file name>.<pass number>r.expand` — `main.c.191r.expand`,
+ * `main.cpp.191r.expand`, `driver.Cxx.205r.expand` — for every C/C++
+ * translation unit it compiles.
+ *
+ * Deliberately NOT keyed on the source suffix (0.3.7 round1 P2.2: a
+ * `\.c\.\d+r\.expand` matcher silently ignored every C++ project, because
+ * the dump carries the source's own suffix spelling and that set is open —
+ * case-variant C++ suffixes, `.cp`, `.c++` ...). Assembly inputs produce no
+ * RTL, and no other GCC dump pass is named `expand` with an `r` (RTL) tag —
+ * the tree-level one is `...t.expand`. The ONE definition is shared by the
+ * extension's report command and the MCP tool so the two cannot drift.
+ */
+export function isExpandDump(name: string): boolean {
+  return /\.\d+r\.expand$/.test(name);
 }
 
 /**

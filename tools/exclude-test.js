@@ -84,6 +84,16 @@ if (HAS_BLE) {
 if (HAS_BLE) {
 fs.rmSync(scratch, { recursive: true, force: true });
 fs.cpSync(BLE_UART, scratch, { recursive: true });
+// round18 gate: the copied EVT .project climbs PARENT-N outside scratch
+// (even into the repo root) — repoint every link at a materialized scratch
+// dir (link NAMES stay, so all exclusion assertions are unaffected)
+const { readProjectFile, changeLinkedFolderTarget, unscannableLinkedTarget } = require('../out/core/projectFile.js');
+for (const l of readProjectFile(scratch).linkedResources) {
+  if (!unscannableLinkedTarget(l.location)) continue;
+  const newLoc = path.join(scratch, 'links', l.name);
+  fs.mkdirSync(newLoc, { recursive: true });
+  changeLinkedFolderTarget(scratch, l.name, newLoc);
+}
 // link targets point outside the project and are gone in the scratch copy —
 // the write path only manipulates XML, scans use the real APP/ tree
 const cp = Cproject.load(scratch);

@@ -109,18 +109,11 @@ function copyTree(src: string, dst: string, skipDir?: string): void {
 }
 
 /** a .project link name becomes a path segment inside the export folder —
- * third-party projects are untrusted input: reject separators, Windows-
- * illegal characters and dot-only names (".." would escape the export),
- * plus trailing dots/spaces (Windows strips them on create — "Lib." and
- * "Lib" would merge into one directory) and DOS reserved device names
- * (mkdir("CON") fails and aborts the whole export). core/newProject.ts
- * applies the same rejection to wizard names. */
-export function isSafeLinkName(name: string): boolean {
-  if (name === '.' || name === '..' || /[\\/:*?"<>|]/.test(name)) return false;
-  if (/[. ]$/.test(name)) return false;
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) return false;
-  return true;
-}
+ * the validator lives in core/projectFile.ts since round18 P2-4 (one
+ * definition guards addLinkedFolder writes, the MCP tool and this export);
+ * re-exported for tools/cmake-test.js */
+import { isSafeLinkName } from '../core/projectFile';
+export { isSafeLinkName };
 
 export { copyTree }; // re-exported for tools/cmake-test.js
 

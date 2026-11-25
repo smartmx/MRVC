@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "Unofficial, independent project — not developed or supported by WCH or MounRiver. MRVC opens, configures and builds MounRiver (MRS) projects for WCH MCUs directly in VSCode; for development and debugging use.",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "publisher": "smartmx",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -536,6 +536,11 @@
         "category": "MRVC"
       },
       {
+        "command": "mrvc.exportMcp",
+        "title": "%command.mrvc.exportMcp.title%",
+        "category": "MRVC"
+      },
+      {
         "command": "mrvc.ispTool",
         "title": "%command.mrvc.ispTool.title%",
         "category": "MRVC"
@@ -845,37 +850,37 @@
         },
         {
           "command": "mrvc.flashUtility",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.tool.linkUtility",
           "group": "5_tools@1"
         },
         {
           "command": "mrvc.ispTool",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.tool.ispStudio",
           "group": "5_tools@2"
         },
         {
           "command": "mrvc.touchkeyTool",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.tool.touchkey",
           "group": "5_tools@3"
         },
         {
           "command": "mrvc.uiDesigner",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.tool.uiDesigner",
           "group": "5_tools@4"
         },
         {
           "command": "mrvc.hexBinTool",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.tool.hexBinStudio",
           "group": "5_tools@5"
         },
         {
           "command": "mrvc.comTransmit",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.tool.comTransmit",
           "group": "5_tools@6"
         },
         {
           "command": "mrvc.wchToolKit",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.mrs3Active",
+          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.mrs3Active && mrvc.tool.wchToolKit",
           "group": "5_tools@7"
         },
         {
@@ -894,14 +899,19 @@
           "group": "0_new@2"
         },
         {
-          "command": "mrvc.clearIntelliSenseCache",
+          "command": "mrvc.exportMcp",
           "when": "view == mrvc.projectExplorer",
           "group": "7_settings@1"
         },
         {
-          "command": "mrvc.openSettings",
+          "command": "mrvc.clearIntelliSenseCache",
           "when": "view == mrvc.projectExplorer",
           "group": "7_settings@2"
+        },
+        {
+          "command": "mrvc.openSettings",
+          "when": "view == mrvc.projectExplorer",
+          "group": "7_settings@3"
         }
       ],
       "view/item/context": [
@@ -1112,47 +1122,47 @@
         },
         {
           "command": "mrvc.file.newFile",
-          "when": "view == mrvc.projectExplorer && viewItem == products",
+          "when": "view == mrvc.projectExplorer && (viewItem == products || viewItem == outputFolder)",
           "group": "products@1"
         },
         {
           "command": "mrvc.file.newFolder",
-          "when": "view == mrvc.projectExplorer && viewItem == products",
+          "when": "view == mrvc.projectExplorer && (viewItem == products || viewItem == outputFolder)",
           "group": "products@2"
         },
         {
           "command": "mrvc.file.copy",
-          "when": "view == mrvc.projectExplorer && viewItem == products",
+          "when": "view == mrvc.projectExplorer && (viewItem == products || viewItem == outputFolder)",
           "group": "products@3"
         },
         {
           "command": "mrvc.file.paste",
-          "when": "view == mrvc.projectExplorer && viewItem == products",
+          "when": "view == mrvc.projectExplorer && (viewItem == products || viewItem == outputFolder)",
           "group": "products@4"
         },
         {
           "command": "mrvc.file.copyPath",
-          "when": "view == mrvc.projectExplorer && viewItem == products",
+          "when": "view == mrvc.projectExplorer && (viewItem == products || viewItem == outputFolder)",
           "group": "products@5"
         },
         {
           "command": "mrvc.file.copyRelPath",
-          "when": "view == mrvc.projectExplorer && viewItem == products",
+          "when": "view == mrvc.projectExplorer && (viewItem == products || viewItem == outputFolder)",
           "group": "products@6"
         },
         {
           "command": "mrvc.file.copyName",
-          "when": "view == mrvc.projectExplorer && viewItem == products",
+          "when": "view == mrvc.projectExplorer && (viewItem == products || viewItem == outputFolder)",
           "group": "products@7"
         },
         {
           "command": "mrvc.file.delete",
-          "when": "view == mrvc.projectExplorer && viewItem == products",
+          "when": "view == mrvc.projectExplorer && (viewItem == products || viewItem == outputFolder)",
           "group": "products@9"
         },
         {
           "command": "mrvc.file.reveal",
-          "when": "view == mrvc.projectExplorer && viewItem == products",
+          "when": "view == mrvc.projectExplorer && (viewItem == products || viewItem == outputFolder)",
           "group": "products@10"
         },
         {
@@ -1527,6 +1537,7 @@
         "name": "mrvcgcc",
         "label": "MRVC GCC",
         "owner": "mrvc",
+        "fileLocation": "absolute",
         "pattern": {
           "regexp": "^(.*?):(\\d+):(\\d*):?\\s+(?:fatal\\s+)?(warning|error|note):\\s+(.*)$",
           "file": 1,

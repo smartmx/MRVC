@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { encodeArtifact } from './platformEncoding';
+import { isOutsideRelPath } from './macros';
 
 export const ADDRESS_RE = /^0x[0-9a-fA-F]{1,8}$/;
 
@@ -21,7 +22,7 @@ export function displayTargetPath(projectRoot: string, resolved: string): string
   if (!resolved) return '';
   if (!path.isAbsolute(resolved)) return resolved;
   const rel = path.relative(projectRoot, resolved);
-  return rel.startsWith('..') ? resolved : rel;
+  return isOutsideRelPath(rel) ? resolved : rel;
 }
 
 /**
@@ -191,8 +192,20 @@ export function prepareFlash(opts: FlashOptions): FlashPlan {
     }
   }
   // Firmware path: forward slashes (Jim Tcl eats backslashes inside double
-  // quotes — "E:\x\y" becomes E:xy) + quotes to keep spaces one argument
-  const fwPosix = opts.firmware.replace(/\\/g, '/');
+  // quotes — "E:\x\y" becomes E:xy) + quotes to keep spaces one argument.
+  // Jim Tcl ALSO evaluates [cmd] / $var / \" inside double quotes, so a
+  // bracketed path (D:\Work\CH32[v2]\obj\app.hex) would abort the download
+  // — and a crafted one could inject Tcl commands (code-review H2). Escape
+  // the meta-characters and refuse line breaks outright. Normal paths are
+  // byte-for-byte unchanged, so receipt plan fingerprints stay valid; only
+  // paths carrying these characters produce a different script, and with
+  // those the pre-fix script errored anyway.
+  if (/[\r\n]/.test(opts.firmware)) {
+    throw new Error('invalid firmware path (line break): ' + opts.firmware);
+  }
+  const fwPosix = opts.firmware
+    .replace(/\\/g, '/')
+    .replace(/(["$\\[\]])/g, '\\$1');
   const steps: string[] = [];
   // power-off-reset download: the rail goes back up at config time, BEFORE
   // anything else in the session (the off pass + delay de-energised it)

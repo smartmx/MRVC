@@ -20,7 +20,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Cproject, foldPathOnPlatform } from './cproject';
 import { ToolchainInfo } from './toolchain';
-import { scanSources, classifySourceExt } from './scan';
+import { scanSources, classifySourceExt, assertScannableLinkedFolders } from './scan';
 import { intellisenseArgs } from './flags';
 
 export interface CompileCommandEntry {
@@ -82,6 +82,9 @@ function fileKey(file: string): string {
  * projects. Logically removed (filteredResources) files stay invisible.
  */
 export function buildCompileEntries(cp: Cproject, tc: ToolchainInfo): CompileCommandEntry[] {
+  // round18 P2-1: same stale-link refusal as the makefile/CMake entries —
+  // a compile database missing a linked tree must not look complete
+  assertScannableLinkedFolders(cp);
   const map = scanSources(cp, { includeExcluded: true });
   const out: CompileCommandEntry[] = [];
   for (const [, files] of map.entries()) {

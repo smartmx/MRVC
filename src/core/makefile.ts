@@ -11,7 +11,7 @@ import * as path from 'path';
 import { encodeArtifact } from './platformEncoding';
 import { analysisFlags } from './analysis';
 import { Cproject } from './cproject';
-import { LogicDirMap, dirGroups, extGroups, scanSources } from './scan';
+import { LogicDirMap, dirGroups, extGroups, scanSources, assertScannableLinkedFolders } from './scan';
 import { toPosix, resolveLocationUri } from './macros';
 import {
   assemblerOptions,
@@ -152,6 +152,11 @@ export function generateMakefiles(
   const autoMathLib = opts.autoMathLib ?? true;
 
   const isCpp = cp.isCpp;
+  // round18 P2-1: scanSources silently skips linked folders whose target is
+  // missing — refuse up-front so a stale EVT link can never produce a
+  // "successful" makefile missing an entire linked source tree (extension
+  // F7 / Build All / Rebuild All parity with the MCP gate)
+  assertScannableLinkedFolders(cp);
   const map: LogicDirMap = scanSources(cp);
   const dirsDesc = [...map.keys()].sort((a, b) => (a > b ? -1 : 1));
   const dirsAsc = [...map.keys()].sort((a, b) => (a > b ? 1 : -1));

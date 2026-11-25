@@ -41,7 +41,7 @@ const subLabels = Object.fromEntries((pkg.contributes.submenus || []).map((s) =>
 const labelOf = (i) => (i.command ? cmds[i.command] : '『' + (subLabels[i.submenu] ?? i.submenu) + '』');
 const refOf = (i) => (i.command ? i.command : 'submenu ' + i.submenu);
 
-const NODES = ['project', 'file.src', 'file.src.excluded', 'file', 'file.excluded', 'folder', 'folder.excluded', 'linkedFolder', 'products', 'outputFile', 'solution'];
+const NODES = ['project', 'file.src', 'file.src.excluded', 'file', 'file.excluded', 'folder', 'folder.excluded', 'linkedFolder', 'products', 'outputFolder', 'outputFile', 'solution'];
 for (const node of NODES) {
   const list = items
     .filter((i) => appliesTo(i.when, node) && !i.group.startsWith('inline'))

@@ -59,10 +59,23 @@ const { buildMakeCmdScript, buildDryRunCmdScript } = require('../out/core/taskWr
       ps.indexOf('New-Item -ItemType Directory') < ps.indexOf('New-Object System.IO.StreamWriter')
   );
   check('tee: every line reaches the record', /\$writer\.WriteLine\(\$line\)/.test(ps));
+  // the Problems-panel path fix (user report 2026-11-24): GCC diagnostics are
+  // printed relative to the BUILD directory, so the terminal copy must
+  // absolute-ize the `../` prefix for the $mrvcgcc matcher (fileLocation:
+  // "absolute"); the RECORD keeps the raw make output
+  check('tee: computes the project root from the build dir', /\$srcRoot = Split-Path -Parent '/.test(ps));
+  check(
+    'tee: the terminal copy absolute-izes the diagnostic prefix (record stays raw)',
+    ps.includes("if ($line.StartsWith('../') -or $line.StartsWith('..\\')) {") &&
+      /\[Console\]::Out\.WriteLine\(\$srcRoot \+ \$line\.Substring\(2\)\)/.test(ps) &&
+      ps.indexOf('$writer.WriteLine($line)') < ps.indexOf('$srcRoot + $line.Substring(2)')
+  );
   check(
     'tee: echoed lines are written straight through; AutoFlush set only where it exists',
     /if \(\$null -ne \$out\.PSObject\.Properties\['AutoFlush'\]\) \{ \$out\.AutoFlush = \$true \}/.test(ps) &&
-      /if \(\$echo\) \{ \[Console\]::Out\.WriteLine\(\$line\) \}/.test(ps) &&
+      // the straight-through write lives in the else branch of the diagnostic
+      // prefix transform (../… → <projectRoot>/…, Problems-panel fix)
+      /else \{\s*\[Console\]::Out\.WriteLine\(\$line\)\s*\}/.test(ps) &&
       !/StringBuilder/.test(ps) &&
       // a bare assignment would throw "property not found" on PowerShell 5.1
       !/^\[Console\]::Out\.AutoFlush/m.test(ps)
@@ -166,6 +179,15 @@ if (process.platform !== 'win32') {
     'posix build: make streams through tee (record + terminal per line)',
     /'\/opt\/mrs\/make' -j5 all 2>&1 \| tee "\$record"/.test(sh)
   );
+  // Problems-panel path fix: the terminal copy runs through sed, which
+  // absolute-izes the leading `../` for the "absolute" matcher (record keeps
+  // raw lines); `&`/`|` in the root are escaped for sed
+  // (replacement-special/delimiter)
+  check('posix build: the source root is derived from the build dir', /srcRoot=\$\{PWD%\/\*\}/.test(sh) && sh.includes('srcRoot=${srcRoot//&/\\\\&}') && sh.includes('srcRoot=${srcRoot//|/\\\\|}'));
+  check(
+    'posix build: the terminal copy absolute-izes the diagnostic prefix (record stays raw)',
+    /tee "\$record" \| sed "s\|\^\\\.\\\.\/\|\$\{srcRoot\}\/\|"/.test(sh) && sh.indexOf('| tee "$record"') < sh.indexOf('| sed "s|^')
+  );
   check(
     'posix build: the exit code survives the pipe (PIPESTATUS)',
     /code=\$\{PIPESTATUS\[0\]\}/.test(sh) && /exit \$code\n$/.test(sh) && sh.indexOf('exit $code') > sh.indexOf('PIPESTATUS')
@@ -211,6 +233,7 @@ fs.writeFileSync(
       'echo cwd=%CD%\r\n' +
       'if "%1"=="-n" goto dry\r\n' +
       'echo compiling ../src/main.c\r\n' +
+      "echo ../src/main.c:12:5: warning: unused variable 'len' [-Wunused-variable]\r\n" +
       'ping -n 3 127.0.0.1 > nul\r\n' + // ~2 s: the first line must arrive long before the end
       'echo linking val:7.0.0\r\n' +
       'if "%3"=="fail" exit /b 7\r\n' +
@@ -255,6 +278,11 @@ const run = (extra, done) => {
 run([], (r) => {
   check('functional: the wrapper exits 0 for a successful make', r.code === 0);
   check('functional: make output reaches the terminal', r.out.includes('compiling ../src/main.c') && r.out.includes('linking val:7.0.0'));
+  check(
+    'functional: diagnostics reach the terminal ABSOLUTE (Problems panel fix)',
+    r.out.includes(proj + '/src/main.c:12:5: warning: unused variable') && !r.out.includes('../src/main.c:12:5')
+  );
+  check('functional: the record keeps the RAW relative diagnostic path', fs.readFileSync(r.record, 'utf8').includes('../src/main.c:12:5: warning: unused variable'));
   // a PowerShell error that does not stop the script (e.g. a property that does
   // not exist on PS 5.1) lands on the wrapper's stderr and ONLY there — the
   // build still succeeds, so this is the assertion that catches it
@@ -313,6 +341,7 @@ function runPosix() {
       'echo "cwd=$(pwd)"',
       'if [ "$1" = "-n" ]; then echo DRYRUN-COMMAND-ONLY-IN-RECORD; exit 0; fi',
       'echo compiling ../src/main.c',
+      'echo "../src/main.c:12:5: warning: unused variable \'len\' [-Wunused-variable]"',
       'sleep 2',
       'echo linking val:7.0.0',
       'if [ "$3" = "fail" ]; then exit 7; fi',
@@ -357,12 +386,17 @@ function runPosix() {
   runSh([], (r) => {
     check('posix functional: the wrapper exits 0 for a successful make', r.code === 0);
     check('posix functional: make output reaches the terminal', r.out.includes('compiling ../src/main.c') && r.out.includes('linking val:7.0.0'));
+    check(
+      'posix functional: diagnostics reach the terminal ABSOLUTE (the `../` prefix is replaced by the source root)',
+      r.out.includes('/src/main.c:12:5: warning: unused variable') && !r.out.includes('../src/main.c:12:5')
+    );
     check(`posix functional: the script prints nothing on stderr (${JSON.stringify(r.err.slice(0, 120))})`, r.err.trim() === '');
     check(
       `posix functional: output arrives WHILE the build runs (first chunk ${r.firstAt} ms, exited ${r.elapsed} ms)`,
       r.firstAt > 0 && r.elapsed - r.firstAt > 700
     );
     const record = fs.readFileSync(r.record, 'utf8');
+    check('posix functional: the record keeps the RAW relative diagnostic path', record.includes('../src/main.c:12:5: warning: unused variable'));
     check('posix functional: the record holds the make output', record.includes('compiling ../src/main.c') && record.includes('linking val:7.0.0'));
     check('posix functional: make runs in the build directory (the script cd)', /cwd=.*(obj|proj)/.test(record) || r.out.includes('cwd='));
     check('posix functional: the record ends with the dry-run appendix', /===== All Build Commands \(dry run: make -n -B\) =====[\s\S]*DRYRUN-COMMAND-ONLY-IN-RECORD/.test(record));

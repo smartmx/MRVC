@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Cproject } from '../core/cproject';
+import { isOutsideRelPath } from '../core/macros';
 import { MrsProjectFile, readProjectFile, linkedFolderMap, watchableLinkedDirs } from '../core/projectFile';
 import { migrateLegacyCppNature } from '../core/projectType';
 import { readTemplate, TemplateData } from '../core/templateFile';
@@ -76,7 +77,7 @@ export class MrsProject {
    */
   logicPathOf(fsPath: string): string | undefined {
     const rel = path.relative(this.root, fsPath);
-    if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+    if (!isOutsideRelPath(rel)) {
       return rel.split(path.sep).join('/');
     }
     const link = this.projectFile.linkedResources.find(

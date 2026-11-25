@@ -7,6 +7,7 @@
  * pulling TreeItem-derived classes in.
  */
 import * as path from 'path';
+import { isOutsideRelPath } from '../core/macros';
 
 export interface LogicKeyable {
   fsPath?: string;
@@ -35,7 +36,7 @@ export function nodeLogicPath(el: LogicKeyable): string | undefined {
     const loc = el.project.projectFile.linkedResources.find((l) => l.name === el.linkedName)?.location;
     if (loc) {
       const rel = path.relative(loc, el.fsPath);
-      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+      if (rel && !isOutsideRelPath(rel)) {
         return [el.linkedName, ...rel.split(path.sep)].join('/');
       }
     }

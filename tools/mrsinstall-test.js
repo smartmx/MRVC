@@ -39,6 +39,7 @@ const {
   MRS3_DEFAULT_PATHS,
   STANDALONE_LABEL,
 } = require('../out/core/toolchain.js');
+const { mrsToolAvailability, MRS_TOOL_CONTEXT_KEYS } = require('../out/core/mrsTools.js');
 
 const REAL_HOST = process.platform;
 const ROOT = path.join(__dirname, '..', '.scratch', 'mrsinstall');
@@ -191,6 +192,75 @@ try {
       'launcher names: win form',
       launcherFileNames('mrs2')[0] === 'MounRiver Studio 2.exe' && launcherFileNames('mrs3')[0] === 'MounRiver Studio 3.exe'
     );
+  }
+
+  // 1b. Windows GUI tools availability (0.3.7, user request: the `…` menu's
+  // tool entries hide on Linux/macOS and pure-toolchain roots — the fake IDE
+  // trees here have NO tools dirs, so availability is false; a tree WITH the
+  // tools dirs is true). PER TOOL (0.3.7 round1 P3.1): the first cut had ONE
+  // key for all six, so a single missing exe hid the five working tools.
+  {
+    const allFalse = (avail) => Object.values(avail).every((v) => v === false);
+    const onlyFalse = (avail, key) => Object.keys(avail).filter((k) => avail[k] === false).join(',') === key;
+    const bare = locateInstall(inst2.root, { defaults: [] });
+    check('tools: a Windows IDE without the tools dirs -> every key false', !!bare && allFalse(mrsToolAvailability(bare, 'win32')));
+    // add the six common tools to inst2's win32 layer at the exact resolved
+    // positions (linkUtilityExe = components/WCH/Others/SWDTool/default/ —
+    // the REAL install layout; the fixture used to put it one level too
+    // high, which the unchecked value never noticed)
+    const res2 = path.join(inst2.root, 'resources', 'app', 'resources', 'win32');
+    const put = (rel) => {
+      fs.mkdirSync(path.dirname(path.join(res2, rel)), { recursive: true });
+      fs.writeFileSync(path.join(res2, rel), '');
+    };
+    put('components/WCH/Others/SWDTool/default/WCH-LinkUtility.exe');
+    put('components/WCH/Others/WCHISPTool/default/WchIspStudio.exe');
+    put('components/WCH/Others/WCHTouchKeyTool/default/WCHTouchKeyTool.exe');
+    put('components/WCH/Others/WCHGUIDesigner/default/WCHGUIDesigner.exe');
+    put('others/HexBinStudio/HexBinStudio.exe');
+    // PARTIAL install: COMTransmit is missing — only its own entry hides
+    // (wchToolKit is false here too: the fixture never puts that MRS3 exe)
+    const partial = mrsToolAvailability(locateInstall(inst2.root, { defaults: [] }), 'win32');
+    check(
+      'tools: five of six present -> exactly the missing tool is false',
+      onlyFalse(partial, 'comTransmit,wchToolKit') && partial.linkUtility && partial.ispStudio && partial.touchkeyTool && partial.uiDesigner && partial.hexBinStudio,
+      JSON.stringify(partial)
+    );
+    put('others/COMTransmit/COMTransmit.exe');
+    const withTools = locateInstall(inst2.root, { defaults: [] });
+    const full = mrsToolAvailability(withTools, 'win32');
+    check('tools: all six on disk -> the six shared keys true', !!withTools && full.linkUtility && full.ispStudio && full.touchkeyTool && full.uiDesigner && full.hexBinStudio && full.comTransmit);
+    check('tools: WCHToolKit has its own key (MRS2 ships no such component)', full.wchToolKit === false);
+    // one distinct context key per tool
+    check('tools: one distinct context key per tool', Object.keys(MRS_TOOL_CONTEXT_KEYS).length === 7 && new Set(Object.values(MRS_TOOL_CONTEXT_KEYS)).size === 7);
+    // the exes present but the host is not Windows: nothing to launch there
+    check('tools: a non-Windows host -> every key false even with the exes on disk', allFalse(mrsToolAvailability(withTools, 'linux')));
+    // a POSIX layer install can never have the Windows exes
+    setHostPlatformForTests('linux');
+    const instLinux = fakeIde('fake-mrs3-linux', { host: 'linux', flavor: 'mrs3' });
+    const linuxInstall = locateInstall(instLinux.root, { defaults: [] });
+    check('tools: a Linux IDE layout -> every key false (no Windows exes)', !!linuxInstall && allFalse(mrsToolAvailability(linuxInstall, 'linux')));
+    setHostPlatformForTests('win32');
+    check('tools: no install at all -> every key false, no throw', allFalse(mrsToolAvailability(undefined, 'win32')) && allFalse(mrsToolAvailability(null, 'win32')));
+
+    // each `…` menu entry is gated on ITS OWN key (and nothing shared)
+    const pkgTools = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    const titleMenu = pkgTools.contributes.menus['view/title'];
+    const expectedKey = {
+      'mrvc.flashUtility': 'mrvc.tool.linkUtility',
+      'mrvc.ispTool': 'mrvc.tool.ispStudio',
+      'mrvc.touchkeyTool': 'mrvc.tool.touchkey',
+      'mrvc.uiDesigner': 'mrvc.tool.uiDesigner',
+      'mrvc.hexBinTool': 'mrvc.tool.hexBinStudio',
+      'mrvc.comTransmit': 'mrvc.tool.comTransmit',
+      'mrvc.wchToolKit': 'mrvc.tool.wchToolKit',
+    };
+    for (const [cmd, key] of Object.entries(expectedKey)) {
+      const item = titleMenu.find((i) => i.command === cmd);
+      const keysInWhen = item ? Object.values(MRS_TOOL_CONTEXT_KEYS).filter((k) => (item.when || '').includes(k)) : [];
+      check(`tools: menu ${cmd} is gated on ${key} only`, !!item && keysInWhen.length === 1 && keysInWhen[0] === key && !(item.when || '').includes('mrvc.winTools'), item && item.when);
+    }
+    check('tools: WCHToolKit also requires the MRS3 install (kept)', (titleMenu.find((i) => i.command === 'mrvc.wchToolKit') || {}).when.includes('mrvc.mrs3Active'));
   }
 
   // 2. locateInstall (win)

@@ -91,5 +91,53 @@ check('.vscodeignore excludes **/tsconfig.json', fs.readFileSync(path.join(here,
   }
 }
 
+// 0.3.7 round1: SIXTEEN release files tracked in MRVC since the 0.1.x era
+// were never named by this script (src/core/analysis.ts, colorMarks.ts,
+// macroDefs.ts, src/vscode/analysisReport.ts, macroBatch.ts, renameProject.ts
+// and ten tools/*). Both trees happened to hold identical copies, so no
+// dry-run ever saw them — until the first edit to one of them refused the
+// sync. From now on a release-tree file the script never names fails HERE:
+// in the current checkout (the source of truth when that is develop) and in
+// the sibling MRVC checkout (what a clone actually receives).
+{
+  const named = new Set(entries);
+  for (const m of src.matchAll(/'((?:src|tools|mcp)\/[^']+)'/g)) named.add(m[1]);
+  const releaseTreeFiles = (root) => {
+    const out = [];
+    const walk = (rel) => {
+      const dir = path.join(root, rel);
+      if (path.dirname(dir) !== root && !path.resolve(dir).startsWith(path.resolve(root) + path.sep)) {
+        throw new Error('release-tree walk escaped its root: ' + dir);
+      }
+      let dirents;
+      try {
+        dirents = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const d of dirents) {
+        if (d.isDirectory()) walk(`${rel}/${d.name}`);
+        else if (d.isFile()) out.push(`${rel}/${d.name}`);
+      }
+    };
+    walk('src');
+    walk('tools');
+    walk('mcp');
+    return out.sort();
+  };
+  const checkouts = [
+    ['current', path.join(here, '..')],
+    ['MRVC sibling', path.join(here, '..', '..', 'MRVC')],
+  ];
+  for (const [label, root] of checkouts) {
+    if (!fs.existsSync(path.join(root, 'src'))) {
+      check(`release tree(${label}): checkout absent — skipped`, true);
+      continue;
+    }
+    const unnamed = releaseTreeFiles(root).filter((rel) => !named.has(rel));
+    check(`release tree(${label}): every file under src/ tools/ mcp/ is named by the sync script`, unnamed.length === 0, JSON.stringify(unnamed));
+  }
+}
+
 console.log(failures ? `\n${failures} FAILURES` : '\nall sync-list tests passed');
 process.exit(failures ? 1 : 0);

@@ -50,6 +50,9 @@ check(
     fs.rmSync(scratch, { recursive: true, force: true });
     fs.mkdirSync(path.join(scratch, 'src'), { recursive: true });
     for (const f of ['.project', '.cproject']) fs.copyFileSync(path.join(LED_PROJ, f), path.join(scratch, f));
+    // round18 gate: materialize the copied EVT tree's PARENT-linked SRC dirs
+    const { readProjectFile: readPfMaterialize } = require('../out/core/projectFile.js');
+    for (const l of readPfMaterialize(scratch).linkedResources) fs.mkdirSync(l.location, { recursive: true });
     fs.writeFileSync(path.join(scratch, 'src', 'main.c'), 'int main(void){return 0;}\n');
     const { Cproject } = require('../out/core/cproject.js');
     const { generateMakefiles } = require('../out/core/makefile.js');

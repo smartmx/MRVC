@@ -25,7 +25,7 @@ export interface MrsProjectFile {
   raw: string;
 }
 
-export function readProjectFile(projectRoot: string): MrsProjectFile {
+export function readProjectFile(projectRoot: string, opts?: { repair?: boolean }): MrsProjectFile {
   const raw = fs.readFileSync(projectRoot + '/.project', 'utf-8');
   const root = parseXml(raw);
   const pd = root.child('projectDescription');
@@ -59,7 +59,11 @@ export function readProjectFile(projectRoot: string): MrsProjectFile {
   const result: MrsProjectFile = { root, name, natures, linkedResources, raw };
   // EVT trees often ship stale absolute linked paths from the packager's
   // machine; repair them (like MRS2's rewriteLinkedFolders) on first open.
-  repairLinkedResources(projectRoot, result);
+  // The MCP listing tool passes repair:false — a READ-ONLY query must not
+  // rewrite the project, not even by auto-repair (round13 P3.3).
+  if (opts?.repair !== false) {
+    repairLinkedResources(projectRoot, result);
+  }
   return result;
 }
 
@@ -95,16 +99,77 @@ export function watchableLinkedDirs(root: string, dirs: Iterable<string>): strin
   return out;
 }
 
+/** a .project LINK NAME becomes a path segment (the export tree names
+ *  directories after it; the MCP/extension input boxes validate their own
+ *  subset) — reject what cannot be a safe single directory segment:
+ *  separators, dot-only names (.. would escape an export), Windows-illegal
+ *  characters, trailing dots/spaces (Windows merges "Lib." into "Lib") and
+ *  DOS reserved device names. Promoted from the CMake-export layer so
+ *  addLinkedFolder enforces it at the single write entry (round18 P2-4);
+ *  EXISTING projects with unusual names still load — this guards WRITES. */
+export function isSafeLinkName(name: string): boolean {
+  if (!name) return false; // empty names would corrupt every path join
+  if (/[\x00-\x1f]/.test(name)) return false; // control characters
+  if (name === '.' || name === '..' || /[\\/:*?"<>|]/.test(name)) return false;
+  if (/[. ]$/.test(name)) return false;
+  // Windows treats device names WITH extensions as devices too (CON.txt,
+  // NUL.foo) — judge the stem before the first dot (round19 P3-3)
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name.split('.')[0])) return false;
+  return true;
+}
+
 /**
  * Append a linked folder to .project (in place) and save.
  * `target` may be outside the workspace; it will be expressed with
  * PARENT-N-PROJECT_LOC when possible.
  */
+/** a linked-folder target must not be (or resolve through a link to) the
+ *  project root or any directory CONTAINING it — the scan would walk the
+ *  whole tree a second time under the link name and every source would
+ *  compile twice / race on one object file (round21 P2-2). Physical
+ *  identity (realpathSync.native) covers junctions/symlinks pointing at or
+ *  above the root; a missing target only gets the logical check. */
+export function assertSafeLinkTarget(projectRoot: string, target: string): void {
+  const norm = (s: string) => (process.platform === 'win32' ? s.toLowerCase() : s);
+  const root = path.resolve(projectRoot);
+  const t = path.resolve(target);
+  const rootN = norm(root);
+  const tN = norm(t);
+  // a DRIVE ROOT (D:\) or POSIX root (/) already ends with its separator —
+  // appending another one would break the prefix compare and let a target
+  // that CONTAINS the whole project through (round22 follow-up)
+  const tPrefix = tN.endsWith(path.sep) ? tN : tN + path.sep;
+  if (tN === rootN || rootN.startsWith(tPrefix)) {
+    throw new Error(`linked folder target must not be or contain the project root itself: ${target}`);
+  }
+  try {
+    const realT = norm(fs.realpathSync.native(t));
+    const realR = norm(fs.realpathSync.native(root));
+    const realPrefix = realT.endsWith(path.sep) ? realT : realT + path.sep;
+    if (realT === realR || realR.startsWith(realPrefix)) {
+      throw new Error(`linked folder target resolves (through a link) to or above the project root: ${target} -> ${realT}`);
+    }
+  } catch (e) {
+    if (e instanceof Error && /project root/.test(e.message)) throw e;
+    // missing target — callers validate existence separately
+  }
+}
+
 export function addLinkedFolder(projectRoot: string, name: string, target: string): LinkedResource {
+  if (!isSafeLinkName(name)) {
+    throw new Error(
+      `linked folder name "${name}" is not safe (no separators, no "."/"..", no trailing dot/space, no Windows-illegal or reserved characters)`
+    );
+  }
+  assertSafeLinkTarget(projectRoot, target);
   const p = readProjectFile(projectRoot);
-  const existing = p.linkedResources.find((l) => l.name === name);
+  // case-folded duplicate check (round21 P2-1): on NTFS "Foo" and "foo" are
+  // the SAME directory — two links over it scan the same objects twice and
+  // their object files race on one name during make -j
+  const foldN = (s: string) => (process.platform === 'win32' ? s.toLowerCase() : s);
+  const existing = p.linkedResources.find((l) => foldN(l.name) === foldN(name));
   if (existing) {
-    throw new Error(`A linked resource named "${name}" already exists`);
+    throw new Error(`A linked resource named "${existing.name}" already exists`);
   }
   const pd = p.root.child('projectDescription')!;
   let lr = pd.child('linkedResources');
@@ -160,6 +225,9 @@ export function removeLinkedFolder(projectRoot: string, name: string): void {
  * renders unresolved links without collapsing).
  */
 export function changeLinkedFolderTarget(projectRoot: string, name: string, newTarget: string): LinkedResource | undefined {
+  // re-pointing at/above the project root re-scans the whole tree under the
+  // link name — same refusal as add (round21 P2-2)
+  assertSafeLinkTarget(projectRoot, newTarget);
   const p = readProjectFile(projectRoot);
   const pd = p.root.child('projectDescription')!;
   const lr = pd.child('linkedResources');
@@ -202,8 +270,30 @@ export interface RemovedResource {
 const MULTI_FILTER_ID = 'org.eclipse.ui.ide.multiFilter';
 
 function filteredListElement(projectRoot: string, create: boolean): { file: MrsProjectFile; pd: XElement; list: XElement } | undefined {
-  const file = readProjectFile(projectRoot);
-  const pd = file.root.child('projectDescription')!;
+  // repair only when we are about to WRITE (append/remove flows); the read
+  // path (listRemovedResources → scanSources → compile entries) must never
+  // rewrite .project as a side effect — a stale-link repair rode along on
+  // every scan before round14 P3.1
+  let file: MrsProjectFile;
+  try {
+    file = readProjectFile(projectRoot, { repair: create });
+  } catch (e) {
+    // a project may legally lack .project (Cproject.load tolerates it) — the
+    // READ path then simply sees no removed resources. The round25 High
+    // try/catch shielded the gate's own raw-link read, but the caller-side
+    // listRemovedResources at the head of assertScannableLinkedFolders /
+    // scanSources still threw ENOENT before reaching it (round26 Medium)
+    if (!create) return undefined;
+    throw e;
+  }
+  let pd = file.root.child('projectDescription');
+  if (!pd) {
+    if (!create) return undefined;
+    // the write path needs the containers to exist — materialize them the
+    // same way the missing filteredResources element below is
+    pd = new XElement('projectDescription');
+    file.root.append(pd);
+  }
   let list = pd.child('filteredResources');
   if (!list) {
     if (!create) return undefined;
@@ -450,28 +540,34 @@ export function renameProject(projectRoot: string, newName: string, opts: { isSl
  * when a match is found, rewrite the link as a portable
  * PARENT-N-PROJECT_LOC URI. Returns the number of repaired links.
  */
+/** the would-be repair target for one stale linked folder, or null when no
+ *  candidate resolves on disk. Shared by the write-mode auto-repair and the
+ *  read-only planner (staleLinkedFolders) — one search, two consumers. */
+function searchStaleLinkFix(projectRoot: string, location: string): string | null {
+  const staleSegs = toPosixParts(location);
+  if (staleSegs.length < 2) return null;
+  // closest ancestor wins (the tree the project actually lives in), then
+  // most specific trailing path — otherwise a stale EVT path can match a
+  // nested leftover copy of the same EVT instead of the real workspace
+  for (let level = 0; level <= 6; level++) {
+    let base = projectRoot;
+    for (let i = 0; i < level; i++) base = path.dirname(base);
+    for (let tail = staleSegs.length - 1; tail >= 1; tail--) {
+      const suffix = staleSegs.slice(staleSegs.length - tail);
+      const cand = path.join(base, ...suffix);
+      if (fs.existsSync(cand)) {
+        return path.normalize(cand);
+      }
+    }
+  }
+  return null;
+}
+
 export function repairLinkedResources(projectRoot: string, p: MrsProjectFile): number {
   let repaired = 0;
   for (const link of p.linkedResources) {
     if (link.type !== 2 || fs.existsSync(link.location)) continue;
-    const staleSegs = toPosixParts(link.location);
-    if (staleSegs.length < 2) continue;
-    let fixed: string | null = null;
-    // closest ancestor wins (the tree the project actually lives in), then
-    // most specific trailing path — otherwise a stale EVT path can match a
-    // nested leftover copy of the same EVT instead of the real workspace
-    search: for (let level = 0; level <= 6; level++) {
-      let base = projectRoot;
-      for (let i = 0; i < level; i++) base = path.dirname(base);
-      for (let tail = staleSegs.length - 1; tail >= 1; tail--) {
-        const suffix = staleSegs.slice(staleSegs.length - tail);
-        const cand = path.join(base, ...suffix);
-        if (fs.existsSync(cand)) {
-          fixed = path.normalize(cand);
-          break search;
-        }
-      }
-    }
+    const fixed = searchStaleLinkFix(projectRoot, link.location);
     if (!fixed) continue;
     const uri = makeLocationUri(projectRoot, fixed);
     const locEl = link.element.child('location') ?? link.element.child('locationURI');
@@ -493,6 +589,54 @@ export function repairLinkedResources(projectRoot: string, p: MrsProjectFile): n
     saveProjectFile(projectRoot, p);
   }
   return repaired;
+}
+
+/** can scanSources actually walk this linked-folder target? A target that is
+ *  MISSING, exists but is NOT a directory (a stray file passes the old
+ *  existsSync check and was then silently skipped by the scan's readdir
+ *  failure — round18 P3-1), or cannot be READ (permission-locked dirs
+ *  stat fine and were still skipped silently — round19 P3-1) counts as
+ *  unscannable. statSync (not lstat): a junction/symlink pointing at a real
+ *  directory IS scannable. */
+export function unscannableLinkedTarget(location: string): boolean {
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(location);
+  } catch {
+    return true; // missing / unreadable — the scan would skip it silently
+  }
+  if (!st.isDirectory()) return true;
+  try {
+    fs.readdirSync(location);
+    return false;
+  } catch {
+    return true; // stat-able but not walkable
+  }
+}
+
+/** READ-ONLY: the project's linked folders whose target directory does not
+ *  exist on disk, each with the would-be repair target when one resolves.
+ *  The extension's first-open auto-repair applies exactly this fix; the MCP
+ *  build/export gate reports it instead of writing (round15 — with
+ *  auto-repair off, scanSources would silently SKIP the missing directory
+ *  and a copied EVT project would build/export without entire linked
+ *  source trees). */
+export function staleLinkedFolders(
+  projectRoot: string
+): Array<{ name: string; locationUri: string; location: string; suggestedFix?: string }> {
+  const p = readProjectFile(projectRoot, { repair: false });
+  const out: Array<{ name: string; locationUri: string; location: string; suggestedFix?: string }> = [];
+  for (const link of p.linkedResources) {
+    if (link.type !== 2 || !unscannableLinkedTarget(link.location)) continue;
+    const fix = searchStaleLinkFix(projectRoot, link.location);
+    out.push({
+      name: link.name,
+      locationUri: link.locationUri,
+      location: link.location,
+      ...(fix ? { suggestedFix: makeLocationUri(projectRoot, fix) } : {}),
+    });
+  }
+  return out;
 }
 
 function toPosixParts(p: string): string[] {

@@ -236,6 +236,14 @@ function cleanCount() {
   check('clean exit 1: the second rebuild is not refused', !hasAlreadyBuilding());
   check('clean exit 1: the second rebuild runs clean + build', cleanCount() === 1 && executed.length === 2);
   check('clean exit 1: the guard is released again', manager.buildInFlightForTests(root) === false);
+  // the task cwd must be the BUILD directory (where make runs — belt and
+  // braces with the wrapper's own `cd`); the path fix itself lives in the
+  // wrapper: its terminal copy absolute-izes the `../` diagnostic prefix,
+  // which used to be resolved against the workspace folder, cancelling the
+  // project folder segment and pointing every Problems entry at a file
+  // outside the project (user report 2026-11-24)
+  const buildExec = executed.find((t) => t.definition.type === 'mrvc-build').execution;
+  check('cwd: the build task runs in the build directory', buildExec.options && buildExec.options.cwd === project.buildDir, String(buildExec.options && buildExec.options.cwd));
 }
 
 // 2. cancelling during the clean phase releases the guard

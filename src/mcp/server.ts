@@ -22,18 +22,39 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { MCP_EXPORT_PACKAGE_NAME } from '../core/mcpExport';
 import { callTool, listTools, terminateChildren, SUPPORTED_PROTOCOL_VERSION } from './tools';
 
-let serverVersion = '0.0.0';
-try {
-  // the bundle lives in <root>/mcp/ — the package.json sits ONE level up
-  // (same depth as the old out/ location), both in the repo and in the
-  // installed extension directory
-  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  if (typeof pkg.version === 'string') serverVersion = pkg.version;
-} catch {
-  // unnamed server is acceptable — never crash over branding
+/** version string of a package.json (undefined when absent/unreadable/wrong package) */
+function packageVersion(file: string, expectName?: string): string | undefined {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (expectName && (!pkg || pkg.name !== expectName)) return undefined;
+    return typeof pkg.version === 'string' ? pkg.version : undefined;
+  } catch {
+    return undefined;
+  }
 }
+
+// Two layouts carry the version:
+//  - in the extension (repo and installed): the bundle lives in <root>/mcp/
+//    and package.json sits ONE level up (same depth as the old out/ spot) —
+//    name-checked too, so a bundle copied into somebody else's npm package
+//    never reports THAT package's version (0.3.7 round3 P3.2). The allowlist
+//    carries BOTH of our own package names: the extension's "mrvc" and the
+//    mrvc-ai ZCode plugin wrapper (its package.json is the wrapper bundle's
+//    version source — the strict equality added in round3 had silently
+//    knocked the wrapper down to 0.0.0)
+//  - exported ("Export AI MCP Server", 0.3.7): the bundle sits BESIDE the
+    //    package.json the export wrote — recognized by its package name, so an
+    //    export dropped inside somebody else's package never reports THAT
+    //    version
+const MRVC_FAMILY_PACKAGE_NAMES = ['mrvc', 'mrvc-ai'];
+const parentPkg = path.join(__dirname, '..', 'package.json');
+const serverVersion =
+  packageVersion(path.join(__dirname, 'package.json'), MCP_EXPORT_PACKAGE_NAME) ??
+  MRVC_FAMILY_PACKAGE_NAMES.map((n) => packageVersion(parentPkg, n)).find((v) => v !== undefined) ??
+  '0.0.0'; // unnamed server is acceptable — never crash over branding
 
 interface JsonRpcRequest {
   id?: number | string | null;

@@ -10,6 +10,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { isOutsideRelPath } from './macros';
 
 export interface TemplateData {
   values: Record<string, string>;
@@ -93,7 +94,7 @@ export function staleTargetPath(projectRoot: string, ownFirmware: string): { old
   if (fs.existsSync(recorded)) return undefined;
   if (!fs.existsSync(ownFirmware)) return undefined;
   const rel = path.relative(projectRoot, ownFirmware);
-  const next = rel.startsWith('..') ? ownFirmware : rel;
+  const next = isOutsideRelPath(rel) ? ownFirmware : rel;
   if (next === old) return undefined;
   return { old, next };
 }

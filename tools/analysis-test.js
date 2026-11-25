@@ -111,5 +111,46 @@ check('flags: stack usage + rtl expand', JSON.stringify(a.analysisFlags()) === J
   fs.rmSync(WS, { recursive: true, force: true });
 }
 
+// ---------- RTL expand dump recognition (0.3.7 round1 P2.2) ----------
+// GCC names a dump after the SOURCE file's own suffix (`main.cpp.191r.expand`,
+// `driver.Cxx.205r.expand` ...). The first matcher accepted `\.c\.` only and
+// silently ignored every C++ project — in the MCP tool AND in the extension's
+// report command. One shared predicate now serves both.
+{
+  const yes = [
+    'main.c.191r.expand',
+    'main.C.191r.expand',
+    'main.cpp.191r.expand',
+    'main.CPP.010r.expand',
+    'util.cc.205r.expand',
+    'util.CC.205r.expand',
+    'driver.cxx.250r.expand',
+    'driver.Cxx.250r.expand',
+    'x.cp.003r.expand',
+    'x.c++.003r.expand',
+    path.join('obj', 'src', 'deep', 'main.cpp.191r.expand'),
+  ];
+  const no = [
+    'main.c.191t.expand', // tree-level dump (t), not RTL
+    'main.c.191r.prologue', // another RTL pass
+    'main.c.expand', // no pass number
+    'main.cpp.191r.expand.bak',
+    'main.c.r.expand',
+    'expand',
+    'main.cpp',
+  ];
+  check('dump: every C/C++ source spelling is an expand dump', yes.every((n) => a.isExpandDump(n)), yes.filter((n) => !a.isExpandDump(n)).join(', '));
+  check('dump: other dumps / backups / plain sources are not', no.every((n) => !a.isExpandDump(n)), no.filter((n) => a.isExpandDump(n)).join(', '));
+
+  // both consumers go through the shared predicate — and no private
+  // `.c`-only matcher is left behind
+  const toolsSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'mcp', 'tools.ts'), 'utf8');
+  const reportSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'vscode', 'analysisReport.ts'), 'utf8');
+  const OLD_MATCHER = '\\.c\\.\\d+r\\.expand';
+  check('dump: the MCP call-analysis tool uses the shared predicate', toolsSrc.includes('collectAnalysisFiles(buildDir, isExpandDump)'));
+  check('dump: the extension report command uses the shared predicate', reportSrc.includes('collectFiles(buildDir, isExpandDump)'));
+  check('dump: no private .c-only matcher is left behind', !toolsSrc.includes(OLD_MATCHER) && !reportSrc.includes(OLD_MATCHER));
+}
+
 console.log(failures ? `\n${failures} FAILURES` : '\nall analysis tests passed');
 process.exit(failures ? 1 : 0);

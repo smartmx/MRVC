@@ -19,8 +19,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Cproject, foldPathOnPlatform } from './cproject';
+import { isSafeLinkName } from './projectFile';
 import { ToolchainInfo } from './toolchain';
-import { scanSources } from './scan';
+import { scanSources, assertScannableLinkedFolders } from './scan';
+import { isOutsideRelPath } from './macros';
 import {
   commonOptions,
   assemblerOptions,
@@ -155,25 +157,62 @@ export interface CmakeOptions {
  */
 export function buildCMakeContent(cp: Cproject, tc: ToolchainInfo, file: string, opts: CmakeOptions = {}): CmakeBuild {
   const forExport = opts.forExport === true;
+  // round18 P2-1: refuse stale linked folders before scanning (the extension
+  // Export As CMake Project parity with the MCP gate)
+  assertScannableLinkedFolders(cp);
+  // round18 P2-4: a hostile LINK NAME would become an export directory path —
+  // copyLinkedFolders skips unsafe names, so generating anyway would produce
+  // a CMakeLists pointing outside the export folder. Throw an actionable
+  // error instead of emitting a half-broken export. In-place generation does
+  // NOT throw: existing EVT trees keep building.
+  if (forExport) {
+    for (const name of cp.linkedFolders.keys()) {
+      if (!isSafeLinkName(name)) {
+        throw new Error(
+          `linked folder name "${name}" is not safe as an export directory name — rename the link in the project tree before exporting`
+        );
+      }
+    }
+  }
   const isExecutable = cp.artifactType !== 'staticLib';
   const prefix = tc.prefix;
 
+  // CMake double-quoted argument escaping, used by EVERY interpolated path
+  // below (sources / includes / names / flags): backslash encoded as `\\`
+  // (literal preservation — a POSIX filename like a\b.c must not turn into
+  // a/b.c; PATH-LIKE values are toPosix-normalized at their own sites
+  // before esc), quotes escaped, line breaks flattened, `$` escaped as
+  // `\$` (a${X}.c must not collapse via variable expansion), `;` escaped
+  // as `\;` (an unescaped semicolon splits the ${SRC_FILES} list into
+  // phantom entries — round18 P2-3). Only VALUES are escaped; the
+  // template's own ${TARGET_ARTIFACT}/${SRC_FILES} references never pass
+  // through here.
+  const esc = (s: string): string =>
+    s
+      .replace(/\\/g, () => '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r?\n/g, ' ')
+      .replace(/\$/g, () => '\\$')
+      .replace(/;/g, () => '\\;');
+
   // --- sources: every scanned file, relative to the project root; linked
-  // folder files per the in-place/export convention above ---
+  // folder files per the in-place/export convention above. Entries go
+  // through esc(): POSIX filenames may legally carry quotes/backslashes
+  // that would close the quoted CMake argument (round16 P3) ---
   const sources: string[] = [];
   for (const files of scanSources(cp).values()) {
     for (const f of files) {
       const rel = path.relative(cp.projectRoot, f.fullpath);
-      if (!rel.startsWith('..')) {
-        sources.push('"' + toPosix(rel) + '"');
+      if (!isOutsideRelPath(rel)) {
+        sources.push('"' + esc(toPosix(rel)) + '"');
         continue;
       }
       const link = linkOf(cp, f.fullpath);
       if (!link) continue; // outside any known link — unrepresentable
       if (forExport) {
-        sources.push('"' + toPosix(link[1] ? path.join(link[0], link[1]) : link[0]) + '"');
+        sources.push('"' + esc(toPosix(link[1] ? path.join(link[0], link[1]) : link[0])) + '"');
       } else {
-        sources.push('"' + toPosix(rel) + '"');
+        sources.push('"' + esc(toPosix(rel)) + '"');
       }
     }
   }
@@ -187,7 +226,7 @@ export function buildCMakeContent(cp: Cproject, tc: ToolchainInfo, file: string,
   // assembler include path. ---
   const toCmakeInc = (incPath: string): string => {
     const rel = path.relative(cp.projectRoot, incPath);
-    if (!rel.startsWith('..')) return toPosix(rel);
+    if (!isOutsideRelPath(rel)) return toPosix(rel);
     const link = linkOf(cp, incPath);
     if (forExport) return link ? (link[1] ? toPosix(path.join(link[0], link[1])) : link[0]) : toPosix(incPath);
     return toPosix(rel);
@@ -201,19 +240,21 @@ export function buildCMakeContent(cp: Cproject, tc: ToolchainInfo, file: string,
       const incPath = m[1] ?? m[2] ?? m[3] ?? m[4];
       if (incPath === undefined) continue;
       if (m[3] !== undefined) {
-        // forced include file — stays in the flags of its own language
+        // forced include file — stays in the flags of its own language.
+        // NO esc() here: the flags block below escapes the whole assembled
+        // string, and escaping twice turns a$b.h into a\\$b.h (CMake then
+        // resolves a literal backslash and the compiler cannot find the
+        // header — round22 follow-up)
         if (lang) forced[lang].push(`-include"${toCmakeInc(incPath)}"`);
         continue;
       }
-      includes.push('"' + toCmakeInc(incPath) + '"');
+      includes.push('"' + esc(toCmakeInc(incPath)) + '"');
     }
   };
   collectIncludes(cCompilerOptions(cp), 'c');
   collectIncludes(cppCompilerOptions(cp), 'cpp');
   collectIncludes(assemblerOptions(cp), 'asm');
   const uniqIncludes = [...new Set(includes)];
-
-  const esc = (s: string): string => s.replace(/\\/g, '/').replace(/"/g, '\\"');
 
   let body = '';
   body += manual();
@@ -226,7 +267,9 @@ export function buildCMakeContent(cp: Cproject, tc: ToolchainInfo, file: string,
   // toolchain block (MRS2 resolveExecutableExtname: .exe suffix on Windows)
   const exe = process.platform === 'win32' ? '.exe' : '';
   body += '# Use MRS toolchain to compile\r\n';
-  body += setLine('TOOLCHAIN_FOLDER', `"${esc(tc.dir)}"`);
+  // a platform path: normalize separators BEFORE escaping (esc preserves
+  // backslashes literally since round18 P3-2)
+  body += setLine('TOOLCHAIN_FOLDER', `"${esc(toPosix(tc.dir))}"`);
   body += setLine('TOOLCHAIN_PREFIX', `"${prefix}"`);
   body += setLine('CMAKE_C_COMPILER', `"${'${TOOLCHAIN_FOLDER}/bin/'}${path.basename(tc.compilerC)}${exe}"`);
   body += setLine('CMAKE_CXX_COMPILER', `"${'${TOOLCHAIN_FOLDER}/bin/'}${path.basename(tc.compilerCpp)}${exe}"`);
@@ -240,8 +283,11 @@ export function buildCMakeContent(cp: Cproject, tc: ToolchainInfo, file: string,
   body += 'SET(CMAKE_CXX_COMPILER_WORKS TRUE)\r\n';
   body += 'SET(CMAKE_ASM_COMPILER_WORKS TRUE)\r\n\r\n';
 
-  body += setLine('PROJECT_NAME', `"${cp.projectName}"`);
-  body += setLine('TARGET_ARTIFACT', `"${cp.targetName}"`);
+  // names/paths interpolated into double-quoted CMake arguments go through
+  // esc() like every flag block below: a quote in a .project display name
+  // would otherwise close the string and inject commands (code-review H3)
+  body += setLine('PROJECT_NAME', `"${esc(cp.projectName)}"`);
+  body += setLine('TARGET_ARTIFACT', `"${esc(cp.targetName)}"`);
   body += '\r\n';
   body += setLine('CMAKE_C_OUTPUT_EXTENSION', '.o');
   body += setLine('CMAKE_CXX_OUTPUT_EXTENSION', '.o');
@@ -270,7 +316,7 @@ export function buildCMakeContent(cp: Cproject, tc: ToolchainInfo, file: string,
     const link = cLinkerOptions(cp);
     body += `set_target_properties("\${TARGET_ARTIFACT}" PROPERTIES LINK_FLAGS "${esc(link)}")\r\n\r\n`;
 
-    const libs = userLibs(cp).map((l) => `"${l}"`);
+    const libs = userLibs(cp).map((l) => `"${esc(l)}"`);
     body += libs.length
       ? `target_link_libraries(\r\n"\${TARGET_ARTIFACT}" \r\n${libs.join('\r\n')}\r\n)\r\n\r\n`
       : 'target_link_libraries("${TARGET_ARTIFACT}" )\r\n\r\n';
@@ -281,10 +327,10 @@ export function buildCMakeContent(cp: Cproject, tc: ToolchainInfo, file: string,
     const objcopyFlags = objCopyOptions(cp);
     for (const ext of exts) {
       const kind = ext === 'bin' ? 'binary' : 'ihex';
-      post.push(`COMMAND-PLACEHOLDER-OBJCOPY ARGS -O ${kind}${objcopyFlags} "$<TARGET_FILE:\${TARGET_ARTIFACT}>" "\${TARGET_ARTIFACT}.${ext}"`);
+      post.push(`COMMAND-PLACEHOLDER-OBJCOPY ARGS -O ${kind}${esc(objcopyFlags)} "$<TARGET_FILE:\${TARGET_ARTIFACT}>" "\${TARGET_ARTIFACT}.${ext}"`);
     }
     if (cp.createListing) {
-      post.push(`COMMAND-PLACEHOLDER-OBJDUMP ARGS ${listingOptions(cp)} "$<TARGET_FILE:\${TARGET_ARTIFACT}>" > "\${TARGET_ARTIFACT}.lst"`);
+      post.push(`COMMAND-PLACEHOLDER-OBJDUMP ARGS ${esc(listingOptions(cp))} "$<TARGET_FILE:\${TARGET_ARTIFACT}>" > "\${TARGET_ARTIFACT}.lst"`);
     }
     if (cp.printSize) {
       post.push(`COMMAND-PLACEHOLDER-SIZE ARGS "$<TARGET_FILE:\${TARGET_ARTIFACT}>"`);

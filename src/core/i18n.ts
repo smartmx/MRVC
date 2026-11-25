@@ -143,6 +143,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     en: 'No MounRiver installation found — point "mrvc.mrs2InstallPath" (MRS2 IDE), "mrvc.mrs3InstallPath" (MRS3 IDE) or "mrvc.toolchainOnlyPath" (standalone toolchain) at your folder.',
     'zh-cn': '未找到 MounRiver 安装——请在 "mrvc.mrs2InstallPath"（MRS2 IDE）、"mrvc.mrs3InstallPath"（MRS3 IDE）或 "mrvc.toolchainOnlyPath"（纯工具链）中指定文件夹。',
   },
+  dlOpFailed: {
+    en: 'WCH-Link operation failed: {0}',
+    'zh-cn': 'WCH-Link 操作失败：{0}',
+  },
   installSwappedFields: {
     en: 'The two install paths look swapped — "mrvc.mrs2InstallPath" points at {0} and "mrvc.mrs3InstallPath" at {1}.',
     'zh-cn': '两个安装路径看起来填反了："mrvc.mrs2InstallPath" 指向 {0}，"mrvc.mrs3InstallPath" 指向 {1}。',
@@ -702,6 +706,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     en: '.template Address "{0}" is not 0x-formatted. Fix: clear it (download falls back to inference).',
     'zh-cn': '.template 的 Address " {0} " 不是 0x 格式。修复：清空（下载回退为自动推断）。',
   },
+  'auditF_dangling-entry': {
+    en: 'Dangling source entry: {0} — MRS skips it and the build proceeds (report only, not an error).',
+    'zh-cn': '悬空的 source entry：{0}——MRS 同样跳过、构建照常进行（仅报告，不是错误）。',
+  },
   buildFailedNoDownload: {
     en: 'MRVC: build failed for "{0}" (exit code {1}) — download skipped.',
     'zh-cn': 'MRVC：" {0} " 编译失败（退出码 {1}）——已跳过下载。',
@@ -861,6 +869,18 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   propertiesSaveFailed: { en: 'MRVC: failed to save configuration ({0})', 'zh-cn': 'MRVC：保存配置失败（{0}）' },
   configSwitched: { en: 'MRVC: active configuration switched to {0}', 'zh-cn': 'MRVC：活动配置已切换为 {0}' },
   configSwitchFailed: { en: 'MRVC: failed to switch configuration ({0})', 'zh-cn': 'MRVC：切换配置失败（{0}）' },
+  cfgDuplicateNames: {
+    en: 'Duplicate configuration name(s): "{0}".',
+    'zh-cn': '存在同名编译配置：“{0}”。',
+  },
+  cfgDuplicateNamesHint: {
+    en: 'Each configuration name is also its output directory, so these configurations share one folder — a rebuild regenerates its makefiles once per row and the last row wins (MRS behaves the same way). Rename one of them to give each its own output.',
+    'zh-cn': '配置名同时就是输出目录名，因此这些配置共用一个目录——重建会逐行重新生成 makefile，最后一行生效（MRS 行为相同）。重命名其中一项即可让各自拥有独立输出。',
+  },
+  cfgDuplicateBuildNotice: {
+    en: 'MRVC: "{1}" has configuration name(s) used more than once: "{0}" — those configurations share ONE output directory, so each rebuild overwrites it once per row (last row wins, same as MRS). Rename one to separate the outputs.',
+    'zh-cn': 'MRVC：“{1}”存在重复使用的配置名：“{0}”——这些配置共用一个输出目录，每次重建会逐行覆盖（最后一行生效，MRS 行为相同）。重命名其中一项即可分开输出。',
+  },
   configAdded: { en: 'MRVC: configuration {0} added', 'zh-cn': 'MRVC：已添加配置 {0}' },
   configRenamed: { en: 'MRVC: configuration renamed to {0}', 'zh-cn': 'MRVC：配置已重命名为 {0}' },
   configDeleted: { en: 'MRVC: configuration {0} deleted', 'zh-cn': 'MRVC：已删除配置 {0}' },
@@ -1031,6 +1051,46 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   flagNotInProject: {
     en: 'MRVC: this file does not belong to a loaded project.',
     'zh-cn': 'MRVC：该文件不属于任何已加载的工程。',
+  },
+
+  // "Export AI MCP Server" (Project Explorer ... menu, 0.3.7)
+  mcpExportTitle: { en: 'Export the MRVC MCP server — choose a folder', 'zh-cn': '导出 MRVC MCP 服务器——选择位置' },
+  mcpExportHere: { en: 'Export here', 'zh-cn': '导出到此处' },
+  mcpExportNoServer: {
+    en: 'MRVC: this installation has no MCP server bundle (mcp/mcp-server.js).',
+    'zh-cn': 'MRVC：本安装缺少 MCP 服务器文件（mcp/mcp-server.js）。',
+  },
+  mcpExportNoManifest: { en: 'MRVC: the extension package.json is missing or unreadable.', 'zh-cn': 'MRVC：扩展的 package.json 缺失或无法读取。' },
+  mcpExportInsideExt: {
+    en: 'MRVC: choose a folder outside the extension installation directory.',
+    'zh-cn': 'MRVC：请选择扩展安装目录以外的位置。',
+  },
+  mcpExportForeign: {
+    en: '"{0}" already exists and was not created by MRVC. Write the MCP server into it anyway?',
+    'zh-cn': '“{0}”已存在且不是 MRVC 导出的目录。仍要写入 MCP 服务器吗？',
+  },
+  mcpExportFailed: { en: 'MRVC: MCP server export failed: {0}', 'zh-cn': 'MRVC：MCP 服务器导出失败：{0}' },
+  mcpExported: {
+    en: 'MRVC: MCP server exported to {0}. Point your MCP client at this file — the path survives MRVC upgrades.',
+    'zh-cn': 'MRVC：MCP 服务器已导出到 {0}。将 MCP 客户端指向该文件——MRVC 升级后此路径仍然有效。',
+  },
+  mcpExportUpdated: {
+    en: 'MRVC: MCP server at {0} updated to {1} ({2} file(s) rewritten).',
+    'zh-cn': 'MRVC：{0} 处的 MCP 服务器已更新到 {1}（重写 {2} 个文件）。',
+  },
+  mcpExportUpgrade: {
+    en: 'MRVC: MCP server at {0} updated {1} → {2} ({3} file(s) rewritten).',
+    'zh-cn': 'MRVC：{0} 处的 MCP 服务器已从 {1} 更新到 {2}（重写 {3} 个文件）。',
+  },
+  mcpExportDowngrade: {
+    en: 'The exported MCP server at {0} is version {1} — NEWER than this extension ({2}). Overwrite it with {2}?',
+    'zh-cn': '{0} 处导出的 MCP 服务器是 {1} 版本——比当前扩展（{2}）更新。仍要覆盖为 {2} 吗？',
+  },
+  mcpExportSame: { en: 'MRVC: the MCP server at {0} already is version {1}.', 'zh-cn': 'MRVC：{0} 处的 MCP 服务器已是 {1} 版本。' },
+  mcpExportCopyConfig: { en: 'Copy client config', 'zh-cn': '复制客户端配置' },
+  mcpExportConfigCopied: {
+    en: 'MRVC: MCP client config (command + args) copied to the clipboard.',
+    'zh-cn': 'MRVC：MCP 客户端配置（command + args）已复制到剪贴板。',
   },
 };
 

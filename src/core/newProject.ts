@@ -207,7 +207,15 @@ export function createProjectFromTemplate(template: TemplateChip, opts: CreatePr
       throw new Error(`Template extraction failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   } else {
-    const psLit = (s: string) => `'${s.replace(/'/g, "''")}'`;
+    const psLit = (s: string) => {
+      // PowerShell's tokenizer also accepts curly quotes as string
+      // delimiters and the '' escape does not cover them — refuse such
+      // paths instead of silently quoting a different file (code-review H1)
+      if (/[\u2018\u2019\u201A\u201B]/.test(s)) {
+        throw new Error('path contains a character PowerShell treats as a string delimiter: ' + s);
+      }
+      return `'${s.replace(/'/g, "''")}'`;
+    };
     try {
       // -ErrorAction Stop + exit 1: Windows PowerShell 5.1 reports archive
       // errors (broken zip, locked file) as NON-terminating and still exits 0

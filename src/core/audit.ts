@@ -25,8 +25,15 @@ import { parseXml, XElement } from './xml';
 import { Cproject } from './cproject';
 import { readTemplate, templateSet } from './templateFile';
 import { ADDRESS_RE } from './flash';
+import { danglingSourceEntries } from './scan';
 
-export type AuditCode = 'project-xml' | 'project-name' | 'enum-value-missing' | 'rvgcc-form' | 'template-address';
+export type AuditCode =
+  | 'project-xml'
+  | 'project-name'
+  | 'enum-value-missing'
+  | 'rvgcc-form'
+  | 'template-address'
+  | 'dangling-entry';
 
 export interface AuditFinding {
   code: AuditCode;
@@ -296,7 +303,10 @@ export function auditProjectConfig(root: string): AuditResult {
     try {
       const px = parseFile(cprojectFile, findings, 'project-xml', 'cproject');
       if (px) {
-        cp = Cproject.load(root);
+        // read pass: no auto-repair — the audit tool promises a read-only
+        // report, and a stale-link fix here would rewrite .project under it
+        // (the WRITE pass below, repairProjectConfig, keeps the repair)
+        cp = Cproject.load(root, { repairProject: false });
         if (!cp.config) {
           findings.push({ code: 'project-xml', file: '.cproject', detail: 'no <cconfiguration> found', fixable: false });
           cp = undefined;
@@ -307,6 +317,17 @@ export function auditProjectConfig(root: string): AuditResult {
       cp = undefined;
     }
     if (cp) {
+      // dangling named source entries: a HINT (report-only), never a refusal
+      // — MRS compiles such projects (user ruling 2026-11-25, EVT V1_2 BLE
+      // projects ship a leftover dangling `Profile` entry)
+      for (const d of danglingSourceEntries(cp)) {
+        findings.push({
+          code: 'dangling-entry',
+          file: '.cproject',
+          detail: `source entry "${d.name}" -> ${d.dir} (no resolvable directory)`,
+          fixable: false,
+        });
+      }
       for (const opt of cp.config.findAll((e) => e.name === 'option')) {
         const id = opt.attr('id') ?? '';
         const valueType = opt.attr('valueType');

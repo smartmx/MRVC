@@ -26,6 +26,7 @@ export function targetDir(node: TreeNode): string | undefined {
     case 'folder':
     case 'linkedFolder':
     case 'products':
+    case 'outputFolder': // subdirectory of the output dir (0.3.7 disk-faithful listing)
     case 'project':
       return node.fsPath;
     case 'file':

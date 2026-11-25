@@ -16,234 +16,18 @@ import { Cproject, foldPathOnPlatform } from '../core/cproject';
 import { ToolchainInfo, withRealSuffix } from '../core/toolchain';
 import { buildCompileEntries, partitionByReference, contextDatabases, versionAtLeast, CompileCommandEntry } from '../core/intellisense';
 import { t } from '../core/i18n';
+import {
+  stripJsonc,
+  matchBracket,
+  skipWs,
+  indentOf,
+  reindent,
+  objectProps,
+  arrayElements,
+  hadTrailingCommaFn,
+} from '../core/jsonc';
 
 const CONFIG_NAME = 'MRVC';
-
-/**
- * c_cpp_properties.json is officially JSONC (cpptools tolerates comments,
- * trailing commas, BOM). stripJsonc blanks those OFFSET-PRESERVING (comment
- * bytes become spaces) so one text serves both JSON.parse and the surgical
- * editor in writePropsFile — user comments must survive our updates, and
- * line-end comments (which the old whole-file rewriter destroyed or choked
- * on) parse like any other.
- */
-function stripJsonc(raw: string, trailingCommas?: Map<number, number>): string {
-  const out: string[] = [];
-  let i = 0;
-  let inStr = false;
-  const blankTo = (end: number): void => {
-    while (i < end) {
-      out.push(raw[i] === '\n' || raw[i] === '\r' ? raw[i] : ' ');
-      i++;
-    }
-  };
-  if (raw.charCodeAt(0) === 0xfeff) {
-    out.push(' '); // BOM -> whitespace: JSON.parse skips it, offsets stay
-    i = 1;
-  }
-  while (i < raw.length) {
-    const c = raw[i];
-    if (inStr) {
-      out.push(c);
-      if (c === '\\') {
-        out.push(raw[i + 1] ?? '');
-        i += 2;
-        continue;
-      }
-      if (c === '"') inStr = false;
-      i++;
-      continue;
-    }
-    if (c === '"') {
-      inStr = true;
-      out.push(c);
-      i++;
-      continue;
-    }
-    if (c === '/' && raw[i + 1] === '/') {
-      let j = i;
-      while (j < raw.length && raw[j] !== '\n') j++;
-      blankTo(j);
-      continue;
-    }
-    if (c === '/' && raw[i + 1] === '*') {
-      let j = i + 2;
-      while (j < raw.length && !(raw[j] === '*' && raw[j + 1] === '/')) j++;
-      blankTo(Math.min(j + 2, raw.length));
-      continue;
-    }
-    if (c === ',') {
-      // trailing comma — the closer may sit behind whitespace or a comment
-      let j = i + 1;
-      while (j < raw.length) {
-        if (/\s/.test(raw[j])) {
-          j++;
-          continue;
-        }
-        if (raw[j] === '/' && raw[j + 1] === '/') {
-          while (j < raw.length && raw[j] !== '\n') j++;
-          continue;
-        }
-        if (raw[j] === '/' && raw[j + 1] === '*') {
-          j += 2;
-          while (j + 1 < raw.length && !(raw[j] === '*' && raw[j + 1] === '/')) j++;
-          j += 2;
-          continue;
-        }
-        break;
-      }
-      if (raw[j] === '}' || raw[j] === ']') {
-        // record where a trailing comma was blanked: the surgical splice
-        // must NOT add a separator after it (the raw text still carries
-        // the comma — adding ours would produce ", ," and a file that no
-        // longer parses, permanently bricking the 'unreadable' sentinel).
-        // The value is the comma's OWN container closer: a nested element's
-        // trailing comma closes long before the array/object we splice into
-        // and must never suppress that container's separator.
-        if (trailingCommas) trailingCommas.set(i, j);
-        out.push(' ');
-        i++;
-        continue;
-      }
-    }
-    out.push(c);
-    i++;
-  }
-  return out.join('');
-}
-
-// ---- minimal offset arithmetic over stripped JSONC (comments are spaces;
-// strings still need their own state so brackets inside them never count) ----
-
-function matchString(s: string, open: number): number {
-  let i = open + 1;
-  while (i < s.length) {
-    if (s[i] === '\\') i += 2;
-    else if (s[i] === '"') return i + 1;
-    else i++;
-  }
-  return -1;
-}
-
-function matchBracket(s: string, open: number): number {
-  const closeCh = s[open] === '{' ? '}' : ']';
-  let depth = 0;
-  let i = open;
-  while (i < s.length) {
-    const c = s[i];
-    if (c === '"') {
-      i = matchString(s, i);
-      if (i < 0) return -1;
-      continue;
-    }
-    if (c === '{' || c === '[') depth++;
-    else if (c === '}' || c === ']') {
-      depth--;
-      if (depth === 0) return c === closeCh ? i : -1;
-    }
-    i++;
-  }
-  return -1;
-}
-
-function skipWs(s: string, p: number): number {
-  while (p < s.length && /\s/.test(s[p])) p++;
-  return p;
-}
-
-/** whitespace between the line start and pos (non-whitespace becomes spaces:
- * still a usable indent even when pos is not the first token of its line) */
-function indentOf(s: string, pos: number): string {
-  const lineStart = s.lastIndexOf('\n', pos - 1) + 1;
-  return s.slice(lineStart, pos).replace(/\S/g, '');
-}
-
-function reindent(json: string, indent: string): string {
-  const lines = json.split('\n');
-  return lines.map((l, i) => (i === 0 ? l : indent + l)).join('\n');
-}
-
-interface ValueSpan {
-  start: number;
-  end: number; // exclusive
-}
-
-/** spans of the ROOT object's properties (key must be a string, value span
- * stops at the next same-depth comma or the root close) */
-function objectProps(s: string): Array<{ key: string; value: ValueSpan }> | null {
-  const open = skipWs(s, 0);
-  if (s[open] !== '{') return null;
-  const close = matchBracket(s, open);
-  if (close < 0) return null;
-  const props: Array<{ key: string; value: ValueSpan }> = [];
-  let p = skipWs(s, open + 1);
-  while (p < close) {
-    if (s[p] !== '"') return null;
-    const kEnd = matchString(s, p);
-    if (kEnd < 0) return null;
-    let key: string;
-    try {
-      key = JSON.parse(s.slice(p, kEnd)) as string;
-    } catch {
-      return null;
-    }
-    const colon = skipWs(s, kEnd);
-    if (s[colon] !== ':') return null;
-    const vStart = skipWs(s, colon + 1);
-    let depth = 0;
-    let i = vStart;
-    while (i < close) {
-      const c = s[i];
-      if (c === '"') {
-        i = matchString(s, i);
-        if (i < 0) return null;
-        continue;
-      }
-      if (c === '{' || c === '[') depth++;
-      else if (c === '}' || c === ']') depth--;
-      else if (c === ',' && depth === 0) break;
-      i++;
-    }
-    const vEnd = i < close ? i : close;
-    props.push({ key, value: { start: vStart, end: vEnd } });
-    p = skipWs(s, vEnd + 1); // past the separating comma
-  }
-  return props;
-}
-
-/** spans of an array's elements (between the brackets, split at depth-1
- * commas). A blanked TRAILING comma (recorded in trailingCommas) must also
- * terminate the last element's span: on the stripped view it is whitespace,
- * so without this the final element's span swallows everything up to the
- * closing bracket — replacing that span would silently erase the user's
- * raw trailing comma and any line-end comment sitting behind it. */
-function arrayElements(s: string, open: number, trailingCommas?: Map<number, number>): ValueSpan[] | null {
-  if (s[open] !== '[') return null;
-  const close = matchBracket(s, open);
-  if (close < 0) return null;
-  const spans: ValueSpan[] = [];
-  let p = skipWs(s, open + 1);
-  while (p < close) {
-    let depth = 0;
-    let i = p;
-    while (i < close) {
-      const c = s[i];
-      if (c === '"') {
-        i = matchString(s, i);
-        if (i < 0) return null;
-        continue;
-      }
-      if (c === '{' || c === '[') depth++;
-      else if (c === '}' || c === ']') depth--;
-      else if (depth === 0 && (c === ',' || trailingCommas?.has(i))) break;
-      i++;
-    }
-    const end = i < close ? i : close;
-    spans.push({ start: p, end });
-    p = skipWs(s, end + 1);
-  }
-  return spans;
-}
 
 function writeIfChanged(file: string, content: string): boolean {
   try {
@@ -307,7 +91,7 @@ function writeWorkspaceCacheSettings(settingsFile: string, writes: WorkspaceSett
     return writeIfChanged(settingsFile, JSON.stringify(settings, null, 2) + '\n') ? 'written' : 'unchanged';
   }
   // ---- JSONC path: splice only our value spans / insert our properties ----
-  const props = objectProps(stripped);
+  const props = objectProps(stripped, trailingCommas);
   if (!props) return 'unreadable';
   const rootOpen = skipWs(stripped, 0);
   const rootClose = matchBracket(stripped, rootOpen);
@@ -345,13 +129,6 @@ function writeWorkspaceCacheSettings(settingsFile: string, writes: WorkspaceSett
   let out = raw;
   for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
   return writeIfChanged(settingsFile, out) ? 'written' : 'unchanged';
-}
-
-/** does the raw file carry a trailing comma whose own container closes at
- * `closer`? (same rule writePropsFile uses before adding a separator) */
-function hadTrailingCommaFn(trailingCommas: Map<number, number>, closer: number): boolean {
-  for (const end of trailingCommas.values()) if (end === closer) return true;
-  return false;
 }
 
 /**
@@ -396,7 +173,7 @@ function writePropsFile(propsFile: string, mine: Record<string, unknown>): Props
   }
 
   // ---- JSONC path: splice only our entry into the original text ----
-  const props = objectProps(stripped);
+  const props = objectProps(stripped, trailingCommas);
   if (!props) return 'unreadable';
   const rootOpen = skipWs(stripped, 0);
   const rootClose = matchBracket(stripped, rootOpen);
@@ -407,10 +184,7 @@ function writePropsFile(propsFile: string, mine: Record<string, unknown>): Props
    * by closer (not by offset range) keeps a NESTED element's trailing
    * comma from suppressing the container's separator: `{"a": {"x": 1,}}`
    * needs a comma between its properties, only `{"a": {...},}` doesn't. */
-  const hadTrailingComma = (closer: number): boolean => {
-    for (const end of trailingCommas.values()) if (end === closer) return true;
-    return false;
-  };
+  const hadTrailingComma = (closer: number): boolean => hadTrailingCommaFn(trailingCommas, closer);
   const rootIndent = indentOf(stripped, rootOpen) + '  ';
   const entryJson = JSON.stringify(mine, null, 2);
   const cfg = props.find((p) => p.key === 'configurations');

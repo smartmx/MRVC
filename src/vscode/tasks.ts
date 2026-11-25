@@ -7,7 +7,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { ProjectStore, MrsProject, MrsSolution, msg, getInstall } from './projects';
 import { nodeLogicPath } from './logicPath';
-import { Cproject, foldPathOnPlatform } from '../core/cproject';
+import { Cproject, duplicateConfigNames, foldPathOnPlatform } from '../core/cproject';
 import { generateMakefiles, objectTargetFor, singleFileMakeArg } from '../core/makefile';
 import { classifySourceExt, isLogicExcluded } from '../core/scan';
 import { clearOutputDir, deleteConfigOutputs, removeOutputDir } from '../core/output';
@@ -23,12 +23,23 @@ import { downloadProject } from './flash';
  * is generated under the temp dir and never exec-bit'd into a lookup path,
  * and /bin/bash exists on every supported Linux and macOS (the script itself
  * is plain bash: PIPESTATUS for make's exit code, tee for the live record).
+ *
+ * `cwd` is the BUILD directory (the wrapper `cd`s there itself — this keeps
+ * the task's own working directory consistent with where make runs; belt and
+ * braces). The Problems-panel path fix lives in the wrapper itself: its
+ * terminal copy makes the GCC diagnostic paths absolute (they are printed
+ * relative to the build dir, `../<folder>/<file>.c`), and the `$mrvcgcc`
+ * matcher takes them as-is with `fileLocation: "absolute"` — resolving them
+ * against the workspace folder instead cancelled the project folder segment
+ * and pointed every Problems entry at a file outside the project (user
+ * report 2026-11-24: clicking a warning opened "file not found").
  */
-function wrapperExecution(wrapper: string, envPath: string): vscode.ProcessExecution {
+function wrapperExecution(wrapper: string, envPath: string, cwd?: string): vscode.ProcessExecution {
+  const extra = cwd ? { cwd } : {};
   if (process.platform === 'win32') {
-    return new vscode.ProcessExecution(wrapper, [], { env: { PATH: envPath } });
+    return new vscode.ProcessExecution(wrapper, [], { env: { PATH: envPath }, ...extra });
   }
-  return new vscode.ProcessExecution('/bin/bash', [wrapper], { env: { PATH: envPath } });
+  return new vscode.ProcessExecution('/bin/bash', [wrapper], { env: { PATH: envPath }, ...extra });
 }
 
 export type BuildKind = 'build' | 'rebuild' | 'clean';
@@ -258,6 +269,15 @@ export class BuildManager {
       vscode.window.showErrorMessage(t('makefileGenFailed', '.cproject: no <cconfiguration> found'));
       return;
     }
+    // duplicate names (imported from an EVT tree / MRS): every name IS its
+    // output directory, so the two rows share one folder and the second
+    // makefile generation overwrites the first (MRS behaves identically —
+    // it loops by index and uses the name as the path). Say it up front
+    // instead of letting "rebuilt 2 configurations" imply two outputs.
+    const dupes = duplicateConfigNames(names);
+    if (dupes.length) {
+      void vscode.window.showWarningMessage(t('cfgDuplicateBuildNotice', dupes.join('", "'), project.projectName));
+    }
 
     // from the first clean on, a make may run: hold the single-build guard
     // for the WHOLE two-phase flow (executeAndWait releases nothing)
@@ -355,7 +375,7 @@ export class BuildManager {
           { type: 'mrvc-build', task: `MRVC: build [${name}]`, project: project.projectName, root: project.root },
           `MRVC: build [${name}] - ${project.projectName}`,
           'MRVC',
-          wrapperExecution(wrapper, [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter)),
+          wrapperExecution(wrapper, [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter), buildDir),
           ['$mrvcgcc']
         );
         task.group = vscode.TaskGroup.Build;
@@ -414,6 +434,10 @@ export class BuildManager {
     }
     const cleanFlags = buildMakeArgs('clean', parallelJobsSetting(), buildVerbosity()).slice(0, -1);
     const names = project.cproject.configurationNames;
+    const dupes = duplicateConfigNames(names);
+    if (dupes.length) {
+      void vscode.window.showWarningMessage(t('cfgDuplicateBuildNotice', dupes.join('", "'), project.projectName));
+    }
 
     this.building.set(buildKey, {});
     this.store.suspendTreeRefresh();
@@ -836,7 +860,7 @@ export class BuildManager {
           { type: 'mrvc-build-all', project: p.projectName, root: p.root },
           'MRVC: Build All',
           'MRVC',
-          wrapperExecution(wrapper, [toolchainBinDir, install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter)),
+          wrapperExecution(wrapper, [toolchainBinDir, install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter), p.buildDir),
           ['$mrvcgcc']
         );
         task.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Shared, clear: true };
@@ -1002,7 +1026,8 @@ export class BuildManager {
                 // indication (user report 2026-11-18)
                 project.cproject.artifactType === 'staticLib' ? t('buildFinished', `${project.cproject.targetName}.a`) : undefined
               ),
-              envPath
+              envPath,
+              project.buildDir
             );
     const task = new vscode.Task(
       { type: 'mrvc-build', task: target, project: project.projectName, root: project.root },
@@ -1202,7 +1227,7 @@ export class BuildManager {
         { type: 'mrvc-compile-file', project: project.projectName, root: project.root },
         `${t('compileFileTaskTitle')} - ${base} - ${project.projectName}`,
         'MRVC',
-        wrapperExecution(wrapper, [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter)),
+        wrapperExecution(wrapper, [path.join(tc.dir, 'bin'), install.makeBin, process.env['PATH'] ?? ''].filter(Boolean).join(path.delimiter), project.buildDir),
         ['$mrvcgcc']
       );
       task.group = vscode.TaskGroup.Build;

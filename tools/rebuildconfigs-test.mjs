@@ -388,5 +388,39 @@ const taskNames = (type) => executed.filter((t) => t.definition.type === type).m
   manager.building.delete(keyOf(path.resolve(projectD.root)));
 }
 
+// the Problems-panel path fix (user report 2026-11-24): GCC diagnostics are
+// printed relative to the BUILD directory (`../<folder>/<file>.c` — make runs
+// there), and the $mrvcgcc matcher used to resolve them against the WORKSPACE
+// folder, so `../` cancelled the project folder segment and every entry
+// pointed at a file outside the project ("由于找不到该文件" on click). The fix
+// has two halves: each build task must run IN its build directory, and the
+// wrapper's terminal copy absolute-izes the diagnostic prefix (the matcher
+// then takes them as-is with fileLocation "absolute").
+{
+  const names = ['obj1', 'obj'];
+  reset(names);
+  const project = makeProject(names, names);
+  await manager.rebuildAllConfigs({ project });
+  const buildTasks = executed.filter((t) => t.definition.type === 'mrvc-build');
+  check(
+    'cwd: each configuration build runs in ITS OWN build directory',
+    buildTasks.length === 2 &&
+      buildTasks.map((t) => t.execution.options && t.execution.options.cwd).join(',') ===
+        [path.join(project.root, 'obj1'), path.join(project.root, 'obj')].join(','),
+    buildTasks.map((t) => t.execution.options && t.execution.options.cwd).join(',')
+  );
+  const pkg = JSON.parse(fs.readFileSync(path.join(DEVELOP_DIR, 'package.json'), 'utf8'));
+  const matcher = (pkg.contributes.problemMatchers || []).find((m) => m.name === 'mrvcgcc');
+  // the diagnostics are made ABSOLUTE in the build wrapper's terminal copy —
+  // the matcher just takes them as-is (VS Code's FileLocationKind schema is
+  // case-sensitive and a 1-item array is absolute-only: "autodetect" was
+  // doubly invalid and the matcher never registered, round6 P2.1)
+  check(
+    'cwd: the mrvcgcc matcher takes the (absolute) diagnostics as-is',
+    !!matcher && matcher.fileLocation === 'absolute',
+    JSON.stringify(matcher && matcher.fileLocation)
+  );
+}
+
 fs.rmSync(scratchRoot, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);

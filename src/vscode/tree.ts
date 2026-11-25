@@ -13,7 +13,7 @@ import { toPosix } from '../core/macros';
 import { themeColorFor } from '../core/colorMarks';
 import { t } from '../core/i18n';
 
-type NodeType = 'project' | 'solution' | 'linkedFolder' | 'folder' | 'file' | 'products' | 'empty';
+type NodeType = 'project' | 'solution' | 'linkedFolder' | 'folder' | 'file' | 'products' | 'outputFolder' | 'empty';
 
 export class TreeNode extends vscode.TreeItem {
   constructor(
@@ -454,7 +454,10 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     // `file.src` context value so the right-click menu only offers the
     // command on compilable kinds — case-variant C++ suffixes (.Cxx/.Cc/.CC
     // ...) count too (round: user request); headers keep plain `file`
-    if (el.nodeType === 'file' && el.fsPath) {
+    // an output file is never a compile target even when a build step leaves
+    // a compilable suffix in the output dir (.s listing output): the
+    // outputFile context set by the products listing wins
+    if (el.nodeType === 'file' && el.fsPath && el.contextValue !== 'outputFile') {
       if (classifySourceExt(el.fsPath)) el.contextValue = 'file.src';
     }
     // exclude/include menu visibility rides on contextValue
@@ -558,11 +561,14 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         const logic = proj.logicPathOf(fsPath);
         return !!logic && isLogicExcluded(proj.cproject, logic);
       };
+      // every OTHER configuration's output dir (by path, folded: the name IS
+      // the dir name) — rendered as output rows, see the mapping below
+      const outputDirKeys = new Set((proj.outputDirs ?? []).map((d) => ProjectStore.key(d)));
       const realFolders = entries
         // the ACTIVE configuration's output dir is represented by the
         // products node below — hide it here (by config name: the dir IS the
-        // config name). A second configuration's dir stays a regular folder
-        // row; the decorations feed colors it as an output dir too.
+        // config name). Another configuration's dir stays a row here, but as
+        // an OUTPUT folder (see the mapping below), never a plain source one
         .filter(
           (e) =>
             e.isDirectory() &&
@@ -576,7 +582,19 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
           const ex = (isNodeExcluded(a.full) ? 1 : 0) - (isNodeExcluded(b.full) ? 1 : 0);
           return ex || a.e.name.localeCompare(b.e.name);
         })
-        .map(({ e, full }) => this.cached(new TreeNode('folder', e.name, vscode.TreeItemCollapsibleState.Collapsed, full, proj)));
+        .map(({ e, full }) =>
+          this.cached(
+            outputDirKeys.has(ProjectStore.key(full))
+              ? // another configuration's output dir (0.3.7 round1 P2.1): as a
+                // plain `folder` row it offered "Exclude From Build" on every
+                // row inside and turned a compilable-suffixed artifact into a
+                // compile target — inside ANY build directory there is nothing
+                // to exclude or compile, so it renders exactly like the active
+                // one (disk-faithful listing, output menus only)
+                new TreeNode('outputFolder', e.name, vscode.TreeItemCollapsibleState.Collapsed, full, proj)
+              : new TreeNode('folder', e.name, vscode.TreeItemCollapsibleState.Collapsed, full, proj)
+          )
+        );
       nodes.push(...realFolders);
       // root-level files (11.c etc.) — the scanner compiles them, the tree
       // must show them too; project management files (.wvproj/.template/
@@ -598,20 +616,35 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       return this.recordChildren(el, nodes);
     }
 
-    if (el.nodeType === 'products' && el.fsPath) {
+    // The output directory renders AS ON DISK (0.3.7, user request): files
+    // AND subdirectories, recursively, nothing filtered. Until then the node
+    // was a flat list of the top-level files and hid the per-source-folder
+    // mirrors (Core/, User/, ... holding the .o/.d/subdir.mk). The mirrors
+    // are `outputFolder` rows — they take the generic file operations of the
+    // products row and never a build-config command (no exclusion etc.
+    // inside a build dir); files keep the outputFile context. Directories
+    // first, then files by name: the order of every other folder row here.
+    if ((el.nodeType === 'products' || el.nodeType === 'outputFolder') && el.fsPath) {
+      const dir = el.fsPath;
       let entries: fs.Dirent[] = [];
       try {
-        entries = fs.readdirSync(el.fsPath, { withFileTypes: true });
+        entries = fs.readdirSync(dir, { withFileTypes: true });
       } catch {
         // ignore
       }
-      // build artifacts: no build-config context menu (exclusion etc.)
       return this.recordChildren(
         el,
         entries
-          .filter((e) => e.isFile())
+          .sort((a, b) => {
+            if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+            return a.name.localeCompare(b.name);
+          })
           .map((e) => {
-            const n = this.cached(new TreeNode('file', e.name, vscode.TreeItemCollapsibleState.None, path.join(el.fsPath!, e.name), proj));
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) {
+              return this.cached(new TreeNode('outputFolder', e.name, vscode.TreeItemCollapsibleState.Collapsed, full, proj));
+            }
+            const n = this.cached(new TreeNode('file', e.name, vscode.TreeItemCollapsibleState.None, full, proj));
             n.contextValue = 'outputFile';
             return n;
           })

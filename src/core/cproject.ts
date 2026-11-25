@@ -87,6 +87,38 @@ export function isValidConfigName(raw: string): boolean {
 }
 
 /**
+ * Configuration names that occur more than once (0.3.7, user request B).
+ * A configuration's name IS its output directory, so two configurations
+ * sharing a name share ONE directory: "ReBuild Project All Configurations"
+ * regenerates the makefiles of the second configuration over the first one
+ * in the same folder (MRS behaves identically — it loops by index and uses
+ * the name as the path). That is not an error, but the user should know why
+ * the two configurations do not produce two outputs. Returns each duplicated
+ * name once, in first-seen order (first-seen spelling); empty when every
+ * name is unique.
+ *
+ * Two names are "the same" when they land in ONE output directory: on
+ * Windows that is case-insensitive — `obj` and `OBJ` share a folder, the
+ * same pair MRVC's own assertUnique refuses — so the comparison folds case
+ * there (0.3.7 round1 P3.3). On Linux/macOS the two are distinct folders and
+ * stay distinct names. `fold` is the test seam for the host platform.
+ */
+export function duplicateConfigNames(names: readonly string[], fold: (s: string) => string = foldPathOnPlatform): string[] {
+  const firstByKey = new Map<string, string>();
+  const dupes: string[] = [];
+  for (const n of names) {
+    const key = fold(n);
+    const first = firstByKey.get(key);
+    if (first === undefined) {
+      firstByKey.set(key, n);
+      continue;
+    }
+    if (!dupes.includes(first)) dupes.push(first);
+  }
+  return dupes;
+}
+
+/**
  * A configuration's name — CDT keeps it on the inner <configuration
  * name="obj">, the outer <cconfiguration> wrapper only carries the id.
  * The name becomes a directory under the project root, so it must pass
@@ -132,11 +164,14 @@ export class Cproject {
    * so a non-first-configuration model still reads entries from index 0. */
   private entriesConfig: XElement;
 
-  constructor(file: string, configIndex = 0) {
+  constructor(file: string, configIndex = 0, opts?: { repairProject?: boolean }) {
     this.file = file;
     this.projectRoot = path.dirname(file);
     try {
-      const proj = readProjectFile(this.projectRoot);
+      // repairProject defaults to TRUE (the extension's first-open auto-repair
+      // of stale EVT links rides on this load); MCP read-only tools pass
+      // false — a query must never rewrite the project (round14 P3.1)
+      const proj = readProjectFile(this.projectRoot, { repair: opts?.repairProject });
       this.projectDisplayName = proj.name ?? '';
       this.linkedFolders = linkedFolderMap(proj);
       // CDT's C++ nature id is org.eclipse.cdt.core.ccnature — checking only
@@ -191,7 +226,9 @@ export class Cproject {
   private resolveImplicitLinkedFolders(): void {
     for (const entry of this.sourceEntries) {
       const name = entry.name;
-      if (!name || this.linkedFolders.has(name)) continue;
+      // case-folded link match (win32): an .cproject entry may spell the
+      // .project link name with different case (round20 P2-1)
+      if (!name || [...this.linkedFolders.keys()].some((k) => foldName(k) === foldName(name))) continue;
       if (fs.existsSync(path.join(this.projectRoot, name))) continue; // real dir
       let resolved: string | null = null;
       for (const t of this.linkedFolders.values()) {
@@ -217,8 +254,8 @@ export class Cproject {
     }
   }
 
-  static load(projectRoot: string): Cproject {
-    return new Cproject(path.join(projectRoot, '.cproject'));
+  static load(projectRoot: string, opts?: { repairProject?: boolean }): Cproject {
+    return new Cproject(path.join(projectRoot, '.cproject'), 0, opts);
   }
 
   /** a configuration-scoped model: index 0 is the ACTIVE configuration (the
@@ -226,8 +263,8 @@ export class Cproject {
    * ("ReBuild Project All Configurations"). Options/target name/build dir
    * follow the chosen configuration; the exclusion table still comes from
    * index 0 (MRS parity — see entriesConfig). */
-  static loadConfigAt(projectRoot: string, index: number): Cproject {
-    return new Cproject(path.join(projectRoot, '.cproject'), index);
+  static loadConfigAt(projectRoot: string, index: number, opts?: { repairProject?: boolean }): Cproject {
+    return new Cproject(path.join(projectRoot, '.cproject'), index, opts);
   }
 
   get isCpp(): boolean {
@@ -243,6 +280,13 @@ export class Cproject {
   /** configuration names in file order (same strings as MRS2's list) */
   get configurationNames(): string[] {
     return this.configurationElements.map((el) => configurationName(el));
+  }
+
+  /** configuration names used by more than one configuration — each once,
+   * first-seen order; empty when unique. Duplicate names SHARE one output
+   * directory (see duplicateConfigNames) */
+  get duplicateConfigurationNames(): string[] {
+    return duplicateConfigNames(this.configurationNames);
   }
 
   get artifactName(): string {

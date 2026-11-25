@@ -234,6 +234,9 @@ check('regeneration is deterministic', fs.readFileSync(file, 'utf-8') === first)
 {
   const projInc = path.join(WS, 'proj-inc');
   fs.cpSync(PROJ, projInc, { recursive: true });
+  // round18 gate: materialize the copied EVT tree's PARENT-linked SRC dirs
+  const { readProjectFile: readPfInc } = require('../out/core/projectFile.js');
+  for (const l of readPfInc(projInc).linkedResources) fs.mkdirSync(l.location, { recursive: true });
   fs.mkdirSync(path.join(projInc, 'sysinc'), { recursive: true });
   fs.mkdirSync(path.join(projInc, 'asminc'), { recursive: true });
   fs.writeFileSync(path.join(projInc, 'sysinc', 'force.h'), '#pragma once\n');
@@ -260,6 +263,8 @@ check('regeneration is deterministic', fs.readFileSync(file, 'utf-8') === first)
 {
   const projLib = path.join(WS, 'proj-lib');
   fs.cpSync(PROJ, projLib, { recursive: true });
+  const { readProjectFile: readPfLib } = require('../out/core/projectFile.js');
+  for (const l of readPfLib(projLib).linkedResources) fs.mkdirSync(l.location, { recursive: true });
   const cpLib = Cproject.load(projLib);
   cpLib.setBuildIdentity({ artifactType: 'staticLib', artifactExtension: 'a' });
   cpLib.save();
@@ -278,6 +283,8 @@ check('regeneration is deterministic', fs.readFileSync(file, 'utf-8') === first)
 {
   const projP = path.join(WS, 'proj-picolibc');
   fs.cpSync(PROJ, projP, { recursive: true });
+  const { readProjectFile: readPfP } = require('../out/core/projectFile.js');
+  for (const l of readPfP(projP).linkedResources) fs.mkdirSync(l.location, { recursive: true });
   const cpP = Cproject.load(projP);
   cpP.setOptionValue('c.linker.picolibc', 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.c.linker.picolibc.minimal');
   cpP.save();
