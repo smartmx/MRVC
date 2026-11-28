@@ -1,0 +1,576 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- MRVC QingKe RISC-V assembly grammar (source.mrvc-qingke).
+     Authored in-repo for MRVC. Instruction, register and CSR names follow
+     the open RISC-V ISA manual (RV32/64 I/M/A/F/D/C and the ratified Z*
+     extensions) and the WCH QingKe V2/V3/V4/V5 core manuals: the XW
+     compressed stack-pointer forms, the vendor CSR names, and the V3B
+     custom instructions (mnemonics taken from the WCH SDK core headers —
+     the manuals document the family without asm names; the custom delay
+     instructions have no public mnemonics). Rule layout follows ordinary
+     TextMate practice: comments/strings/numbers first, then preprocessor,
+     labels, relocations, CSRs, registers, assembler directives, and the
+     instruction families last (each tagged with its extension so themes
+     can address them via support.function.riscv.*). -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>name</key>
+  <string>MRVC QingKe RISC-V</string>
+  <key>scopeName</key>
+  <string>source.mrvc-qingke</string>
+  <key>patterns</key>
+  <array>
+
+    <!-- GAS block comments (startup files carry /* ... */ banners).
+         TextMate tokenizes LINE BY LINE — a `match` rule can never span
+         lines, so multi-line banners MUST be a begin/end state rule -->
+    <dict>
+      <key>comment</key>
+      <string>block comment</string>
+      <key>begin</key>
+      <string>/\*</string>
+      <key>end</key>
+      <string>\*/</string>
+      <key>name</key>
+      <string>comment.block.riscv</string>
+    </dict>
+
+    <!-- C preprocessor lines (.S files run through cpp): known keywords
+         only, so `# comment` still falls through to the comment rule. Only
+         the directive itself is captured — the rest of the line (the
+         #include path string, a trailing // note) stays with its own rules -->
+    <dict>
+      <key>comment</key>
+      <string>C preprocessor directive</string>
+      <key>match</key>
+      <string>^[ \t]*(#[ \t]*(?:include|include_next|define|undef|if|ifdef|ifndef|elif|else|endif|pragma|line|error|warning)\b)</string>
+      <key>captures</key>
+      <dict>
+        <key>1</key>
+        <dict>
+          <key>name</key>
+          <string>meta.preprocessor.riscv</string>
+        </dict>
+      </dict>
+    </dict>
+
+    <!-- line comments: GAS # plus the // style WCH startup files use -->
+    <dict>
+      <key>comment</key>
+      <string>line comment (#)</string>
+      <key>match</key>
+      <string>#.*</string>
+      <key>name</key>
+      <string>comment.line.number-sign.riscv</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>line comment (//)</string>
+      <key>match</key>
+      <string>//.*</string>
+      <key>name</key>
+      <string>comment.line.double-slash.riscv</string>
+    </dict>
+
+    <!-- strings and character literals (.ascii/.asciz data, #include paths) -->
+    <dict>
+      <key>comment</key>
+      <string>double-quoted string</string>
+      <key>match</key>
+      <string>"(?:[^"\\]|\\.)*"?</string>
+      <key>name</key>
+      <string>string.quoted.double.riscv</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>character literal</string>
+      <key>match</key>
+      <string>'(?:\\.|[^\\'])'</string>
+      <key>name</key>
+      <string>constant.character.riscv</string>
+    </dict>
+
+    <!-- labels: word: / numeric: (local GAS labels). AHEAD of the number
+         rule — for `1:` both match at offset 0 and the earlier rule wins,
+         so the number rule would otherwise swallow the digit and strand the
+         colon. The NAME is capture 1 (the colon is capture 2) -->
+    <dict>
+      <key>comment</key>
+      <string>label definition</string>
+      <key>match</key>
+      <string>^[ \t]*([A-Za-z_.$][A-Za-z0-9_.$]*|[0-9]+)(:)(?![:])</string>
+      <key>captures</key>
+      <dict>
+        <key>1</key>
+        <dict>
+          <key>name</key>
+          <string>entity.name.label.riscv</string>
+        </dict>
+      </dict>
+    </dict>
+
+    <!-- numbers: hex, binary, decimal (sign included so -4 stays one token) -->
+    <dict>
+      <key>comment</key>
+      <string>hex/binary/decimal number</string>
+      <key>match</key>
+      <string>-?\b(?:0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9]+)\b</string>
+      <key>name</key>
+      <string>constant.numeric.riscv</string>
+    </dict>
+
+    <!-- %hi/%lo/%pcrel_hi ... relocation operators (longest names first);
+         the `(` stays OUT of the span (lookahead) so the brackets pair with
+         the unscoped `)` -->
+    <dict>
+      <key>comment</key>
+      <string>relocation operators</string>
+      <key>match</key>
+      <string>(?i)%(?:tprel_hi|tprel_lo|tprel_add|dtprel_hi|dtprel_lo|got_pcrel_hi|tls_ie_pcrel_hi|tls_gd_pcrel_hi|tls_got_pcrel_hi|tlsdesc_hi|tlsdesc_lo|pcrel_hi|pcrel_lo|hi|lo)(?=\()</string>
+      <key>name</key>
+      <string>support.function.relocation.riscv</string>
+    </dict>
+
+    <!-- WCH vendor CSRs (QingKe manuals, section "user-defined CSR");
+         kept ahead of the standard list so vendor names always win -->
+    <dict>
+      <key>comment</key>
+      <string>WCH vendor CSRs (QingKe V2/V3/V4/V5)</string>
+      <key>match</key>
+      <string>(?i)\b(?:gintenr|intsyscr|inestcr|corecfgr|cstrcr|cache_strtg_ctlr|cpmpocr|cache_pmp_ovr|cmcr|opcache_ctlr|cinfor|meminfo|hw_popdm_addr|memary_cfgr|tcm_rrduty_cfgr|dbgmcu_0|mcount_inhibit)\b</string>
+      <key>name</key>
+      <string>variable.other.csr.wch</string>
+    </dict>
+
+    <!-- standard CSRs: machine / supervisor / hypervisor / user / debug /
+         pmp / hardware performance counters. NOTE: patterns stay on ONE
+         line without free-spacing — TextMate's oniguruma would honor (?x),
+         but keeping patterns plain keeps them testable verbatim in plain
+         JavaScript (the regression suite compiles every rule) -->
+    <dict>
+      <key>comment</key>
+      <string>standard CSRs</string>
+      <key>match</key>
+      <string>(?i)\b(?:mstatus|mstatush|misa|mvendorid|marchid|mimpid|mhartid|mcounteren|mcountinhibit|menvcfg|menvcfgh|mscratch|mepc|mcause|mtval|mtinst|mtval2|medeleg|mideleg|mie|mip|mtvec|mconfigptr|mcontext|mseccfg|mseccfgh|mnscratch|mnepc|mncause|mnstatus|sstatus|sie|sip|stvec|sscratch|sepc|scause|stval|scounteren|senvcfg|satp|stimecmp|stimecmph|scontext|sstateen[0-3]|hstatus|hideleg|hedeleg|hie|hip|hvip|hgeip|hgeie|hcounteren|henvcfg|henvcfgh|hgatp|hcontext|htinst|htval|hscratch[01]|hepc|fflags|frm|fcsr|cycle|time|instret|cycleh|timeh|instreth|[ms]hpmcounter[0-9]+|[ms]hpmcounterh[0-9]+|[ms]hpmevent[0-9]+|pmpcfg[0-9]+|pmpaddr[0-9]+|dcsr|dpc|dscratch[01]|tselect|tdata[123]|tinfo|tcontrol|mscontext)\b</string>
+      <key>name</key>
+      <string>variable.other.csr.riscv</string>
+    </dict>
+
+    <!-- registers: x0-31 + ABI, f0-31 + ft/fs/fa ABI, v0-31 -->
+    <dict>
+      <key>comment</key>
+      <string>integer/float/vector registers</string>
+      <key>match</key>
+      <string>(?i)\b(?:x(?:[0-9]|[12][0-9]|3[01])|zero|ra|sp|gp|tp|fp|t[0-6]|s(?:[0-9]|1[01])|a[0-7]|f(?:[0-9]|[12][0-9]|3[01])|ft(?:1[01]|[0-9])|fs(?:1[01]|[0-9])|fa[0-7]|v(?:[0-9]|[12][0-9]|3[01]))\b</string>
+      <key>name</key>
+      <string>variable.other.register.riscv</string>
+    </dict>
+
+    <!-- assembler directives: data-emitting -->
+    <dict>
+      <key>comment</key>
+      <string>data directives</string>
+      <key>match</key>
+      <string>(?i)(?<![A-Za-z0-9_$.])\.(?:byte|half|word|dword|2byte|4byte|8byte|short|long|quad|float|double|ascii|asciz|string|zero|space|skip|incbin|inst|sleb128|uleb128)\b</string>
+      <key>name</key>
+      <string>storage.type.riscv</string>
+    </dict>
+    <!-- assembler directives: sections/symbols/flow -->
+    <dict>
+      <key>comment</key>
+      <string>assembler control directives</string>
+      <key>match</key>
+      <string>(?i)(?<![A-Za-z0-9_$.])\.(?:text|data|rodata|bss|section|pushsection|popsection|previous|globl|global|local|weak|extern|type|size|align|p2align|balign|set|equ|equiv|eqv|macro|endm|end|include|option|attribute|insn|reloc|ident|file|comm|lcomm|symver|func|endfunc|if|ifdef|ifndef|ifb|ifnb|ifc|ifnc|elseif|else|endif|altmacro|noaltmacro|list|nolist|title|print)\b</string>
+      <key>name</key>
+      <string>storage.modifier.riscv</string>
+    </dict>
+
+    <!-- WCH QingKe XW extension: stack-pointer compressed forms (the four
+         byte/half forms without SP are covered by the C rule below) -->
+    <dict>
+      <key>comment</key>
+      <string>WCH XW compressed stack-pointer instructions</string>
+      <key>match</key>
+      <string>(?i)\bc\.(?:lbusp|lhusp|sbsp|shsp)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.wch</string>
+    </dict>
+    <!-- WCH V3B custom instructions: block copy / shift-multiply / 64-bit
+         extract. Mnemonics from the WCH SDK core headers (ASM_MCPY,
+         ASM_MRSLU, ASM_MRSL, ASM_WEXTI inline asm); the QingKe V3 manual
+         documents the family without asm names, and the custom delay
+         instructions (mimpid[7:0] = 3) have no public mnemonics yet -->
+    <dict>
+      <key>comment</key>
+      <string>WCH V3B custom instructions</string>
+      <key>match</key>
+      <string>(?i)\b(?:mcpy|mrslu|mrsl|wexti)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.wch</string>
+    </dict>
+
+    <!-- Zicsr: the csrr* family plus the csrw/csrs/csrc short forms -->
+    <dict>
+      <key>comment</key>
+      <string>Zicsr CSR-access instructions</string>
+      <key>match</key>
+      <string>(?i)\b(?:csrrw|csrrs|csrrc|csrrwi|csrrsi|csrrci|csrw|csrs|csrc|csrwi|csrsi|csrci|csrr)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zicsr</string>
+    </dict>
+    <!-- Zifencei (+ plain fence) — ahead of the base rule so fence.i keeps
+         its extension tag instead of matching bare fence -->
+    <dict>
+      <key>comment</key>
+      <string>Zifencei instruction-fetch fence</string>
+      <key>match</key>
+      <string>(?i)\bfence(?:\.(?:i|tso))?\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zifencei</string>
+    </dict>
+    <!-- Zicntr: hardware counter reads -->
+    <dict>
+      <key>comment</key>
+      <string>Zicntr counter reads</string>
+      <key>match</key>
+      <string>(?i)\brd(?:cycle|time|instret)h?\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zicntr</string>
+    </dict>
+
+    <!-- privileged -->
+    <dict>
+      <key>comment</key>
+      <string>privileged instructions</string>
+      <key>match</key>
+      <string>(?i)\b(?:sret|mret|mnret|wfi|sfence\.vma|hfence\.(?:bvma|gvma)|hinval\.(?:bvma|gvma))\b</string>
+      <key>name</key>
+      <string>support.function.riscv.privileged</string>
+    </dict>
+
+    <!-- Zba / Zbb / Zbc / Zbs / Zbkb / Zbkx -->
+    <dict>
+      <key>comment</key>
+      <string>Zba address-generation</string>
+      <key>match</key>
+      <string>(?i)\b(?:sh[123]add(?:\.uw)?|add\.uw|slli\.uw)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zba</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>Zbb bit-manipulation</string>
+      <key>match</key>
+      <string>(?i)\b(?:andn|orn|xnor|clzw?|ctzw?|cpopw?|maxu?|minu?|sext\.[bhw]|zext\.[bhw]|rolw?|ror(?:w|i|iw)?|orc\.b|rev8)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zbb</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>Zbc carry-less multiply</string>
+      <key>match</key>
+      <string>(?i)\bclmul(?:h|r)?\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zbc</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>Zbs single-bit ops</string>
+      <key>match</key>
+      <string>(?i)\bb(?:clr|ext|inv|set)i?\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zbs</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>Zbkb instructions for crypto</string>
+      <key>match</key>
+      <string>(?i)\b(?:packh?|packw|brev8|zip|unzip)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zbkb</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>Zbkx crossbar permutations</string>
+      <key>match</key>
+      <string>(?i)\bxperm[48]\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zbkx</string>
+    </dict>
+
+    <!-- cache-block / conditional /wait extension pairs -->
+    <dict>
+      <key>comment</key>
+      <string>Zicbom/Zicboz/Zicbop cache-block ops</string>
+      <key>match</key>
+      <string>(?i)\bcbo\.(?:clean|flush|inval|zero)\b|\bprefetch\.[irw]\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zicbo</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>Zicond conditional-zero</string>
+      <key>match</key>
+      <string>(?i)\bczero\.(?:eqz|nez)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zicond</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>Zawrs wait-on-reservation-set</string>
+      <key>match</key>
+      <string>(?i)\bwrs\.(?:nto|sto)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zawrs</string>
+    </dict>
+
+    <!-- Zfa / Zfh -->
+    <dict>
+      <key>comment</key>
+      <string>Zfa float extensions</string>
+      <key>match</key>
+      <string>(?i)\bf(?:li|minm|maxm|round|roundnx)\.[sdhq]\b|\bfmvh\.x\.[sdq]\b|\bfmvp\.[sdq]\.x\b|\bfcvtmod\.w\.d\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zfa</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>Zfh half-precision</string>
+      <key>match</key>
+      <string>(?i)\b(?:flh|fsh|fm(?:add|msub|nmadd|nmsub)\.h|f(?:add|sub|mul|div|sqrt|sgnj|sgnjn|sgnjx|min|max)\.h|fcvt\.[sd]\.h|fcvt\.h\.[sd]|fcvt\.h\.w(?:u)?|fcvt\.w(?:u)?\.h|fmv\.x\.h|fmv\.h\.x|fmv\.h|fabs\.h|fneg\.h|fclass\.h|f(?:eq|lt|le)\.h)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zfh</string>
+    </dict>
+
+    <!-- scalar crypto (Zk* union: AES/SHA/SM) -->
+    <dict>
+      <key>comment</key>
+      <string>scalar crypto instructions</string>
+      <key>match</key>
+      <string>(?i)\b(?:aes32(?:esi|esmi|dsi|dsmi)|aes64(?:ks1i|ks2|im|es|esm|ds|dsm)|sha1(?:sig[01]|sum[01])|sha256(?:sig[01]|sum[01])|sha512(?:sig[01]|sum[01])|sm3p[01]|sm4(?:ed|ks))\b</string>
+      <key>name</key>
+      <string>support.function.riscv.zk</string>
+    </dict>
+
+    <!-- RVV 1.0 vector extension -->
+    <dict>
+      <key>comment</key>
+      <string>vector configuration</string>
+      <key>match</key>
+      <string>(?i)\bvset(?:ivli|vli|vl)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector unit-stride / strided loads</string>
+      <key>match</key>
+      <string>(?i)\bvl(?:e|se)(?:8|16|32|64|128)\.v\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector indexed loads</string>
+      <key>match</key>
+      <string>(?i)\bvl[ou]xei(?:8|16|32|64|128)\.v\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector whole-register loads</string>
+      <key>match</key>
+      <string>(?i)\bvl[1-8]r\.v\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector stores (unit/strided/indexed)</string>
+      <key>match</key>
+      <string>(?i)\bvs(?:e|se|[ou]xei)(?:8|16|32|64|128)\.v\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector whole-register stores</string>
+      <key>match</key>
+      <string>(?i)\bvs[1-8]r\.v\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector integer compute (op.vv/vx/vi and widening .w forms)</string>
+      <key>match</key>
+      <string>(?i)\bv(?:add|sub|rsub|mul|mulh|mulhu|mulhsu|div|divu|rem|remu|macc|nmsac|madd|nmsub|and|or|xor|sll|srl|sra|rgather|rgatherei16|slideup|slidedown|minu?|maxu?)\.(?:vv|vx|vi|wv|wx|wi)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector widening arithmetic</string>
+      <key>match</key>
+      <string>(?i)\bvw(?:addu?|subu?|mulu?|mul(?:su|hu)?|maccu?|macc(?:su|us)?)\.(?:vv|vx|wv|wx)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector narrowing shift and clip</string>
+      <key>match</key>
+      <string>(?i)\bvns(?:rl|ra)\.(?:wv|wx|wi)\b|\bvnclipu?\.wi\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector compare</string>
+      <key>match</key>
+      <string>(?i)\bvm(?:seq|sne|slt|sltu|sle|sleu|sgt|sgtu)\.(?:vv|vx|vi)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector mask logic</string>
+      <key>match</key>
+      <string>(?i)\bvm(?:and|andn|nand|or|orn|xor|nor)\.mm\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector mask control / population</string>
+      <key>match</key>
+      <string>(?i)\bvm(?:clr|set|mv|not)\.m\b|\bvms(?:bf|if|of)\.m\b|\bvcpop\.m\b|\bvfirst\.m\b|\bviota\.m\b|\bvid\.v\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector integer reductions</string>
+      <key>match</key>
+      <string>(?i)\bvred(?:sum|and|or|xor|maxu?|minu?)\.vs\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector float reductions</string>
+      <key>match</key>
+      <string>(?i)\bvf(?:w)?red(?:usum|osum|max|min)\.vs\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector float compute</string>
+      <key>match</key>
+      <string>(?i)\bvf(?:add|sub|rsub|mul|div|merge|sgnj|sgnjn|sgnjx|min|max|macc|nmsac|madd|nmsub)\.(?:vv|vf|wv|wf)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector float widening arithmetic</string>
+      <key>match</key>
+      <string>(?i)\bvf(?:wadd|wsub)(?:\.w)?\.(?:vv|wf|wv)\b|\bvfwmacc\.(?:vv|vf)\b|\bvfw(?:msac|nmsac)\.(?:vv|vf)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector float compare</string>
+      <key>match</key>
+      <string>(?i)\bvmf(?:eq|ne|lt|le|gt|ge)\.(?:vv|vf)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector float specials and register moves</string>
+      <key>match</key>
+      <string>(?i)\bvf(?:rsqrt7|rec7)\.v\b|\bvfclass\.f\b|\bvfmv\.(?:v\.f|s\.f|f\.s)\b|\bvmv\.(?:v\.[vxi]|s\.[xi])\b|\bvmerge\.v[vxi]m\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>vector conversions (vfcvt/vfncvt/vfwcvt, .rtz rounding forms)</string>
+      <key>match</key>
+      <string>(?i)\bvf[nw]?cvt(?:\.rtz)?\.[a-z][a-z0-9.]*\b</string>
+      <key>name</key>
+      <string>support.function.riscv.v</string>
+    </dict>
+
+    <!-- pseudo-instructions (assembler shortcuts, not encodings) -->
+    <dict>
+      <key>comment</key>
+      <string>assembler pseudo-instructions</string>
+      <key>match</key>
+      <string>(?i)\b(?:nop|la|lla|li|mv|not|neg|negw|negz|seqz|snez|sltz|sgez|sgtz|beqz|bnez|bgt|bgtu|ble|bleu|j|jr|call|tail|ret)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.pseudo</string>
+    </dict>
+
+    <!-- A extension: atomics (.aq/.rl/.aqrl orderings) -->
+    <dict>
+      <key>comment</key>
+      <string>A extension atomics</string>
+      <key>match</key>
+      <string>(?i)\b(?:lr|sc)\.[wd](?:\.(?:aq|rl|aqrl))?\b|\bamo(?:add|swap|xor|and|or|min|max|minu|maxu)\.[wd](?:\.(?:aq|rl|aqrl))?\b</string>
+      <key>name</key>
+      <string>support.function.riscv.a</string>
+    </dict>
+    <!-- F / D / Zfh float loads, fma, arithmetic, conversions -->
+    <dict>
+      <key>comment</key>
+      <string>F single-precision</string>
+      <key>match</key>
+      <string>(?i)\b(?:flw|fsw|fm(?:add|msub|nmadd|nmsub)\.s|f(?:add|sub|mul|div|sqrt|sgnj|sgnjn|sgnjx|min|max)\.s|fcvt\.s\.w(?:u)?|fcvt\.w(?:u)?\.s|fcvt\.s\.l(?:u)?|fcvt\.l(?:u)?\.s|fmv\.x\.s|fmv\.s\.x|fmv\.s|fabs\.s|fneg\.s|fclass\.s|f(?:eq|lt|le)\.s|f(?:r|s)(?:csr|rm|flags))\b</string>
+      <key>name</key>
+      <string>support.function.riscv.f</string>
+    </dict>
+    <dict>
+      <key>comment</key>
+      <string>D double-precision</string>
+      <key>match</key>
+      <string>(?i)\b(?:fld|fsd|fm(?:add|msub|nmadd|nmsub)\.d|f(?:add|sub|mul|div|sqrt|sgnj|sgnjn|sgnjx|min|max)\.d|fcvt\.[sd]\.d|fcvt\.d\.[sd]|fcvt\.d\.w(?:u)?|fcvt\.w(?:u)?\.d|fcvt\.d\.l(?:u)?|fcvt\.l(?:u)?\.d|fmv\.x\.d|fmv\.d\.x|fmv\.d|fabs\.d|fneg\.d|fclass\.d|f(?:eq|lt|le)\.d)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.d</string>
+    </dict>
+    <!-- C extension: compressed + the Zc byte/half forms -->
+    <dict>
+      <key>comment</key>
+      <string>C extension compressed (incl. Zc byte/half forms)</string>
+      <key>match</key>
+      <string>(?i)\bc\.(?:nop|addi4spn|addi16sp|addi|addiw?|add|sub|subw|and|andi|or|xor|slli(?:64)?|srai(?:64)?|srli(?:64)?|li|lui|mv|j|jr|jal|jalr|beqz|bnez|ebreak|l[wd](?:sp)?|s[wd](?:sp)?|fl[wd](?:sp)?|fs[wd](?:sp)?|lbu|lhu|sb|sh)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.c</string>
+    </dict>
+    <!-- M extension multiply/divide -->
+    <dict>
+      <key>comment</key>
+      <string>M extension multiply/divide</string>
+      <key>match</key>
+      <string>(?i)\b(?:mul|mulh|mulhsu|mulhu|div|divu|rem|remu|mulw|divw|divuw|remw|remuw)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.m</string>
+    </dict>
+    <!-- base RV32/64I (kept late: zicsr/zifencei/vector rules must win the
+         shared prefixes first) -->
+    <dict>
+      <key>comment</key>
+      <string>base integer instructions</string>
+      <key>match</key>
+      <string>(?i)\b(?:addi?|addw|sub|subw|and|andi|or|ori|xor|xori|sll|slli|sllw|slliw|srl|srli|srlw|srliw|sra|srai|sraw|sraiw|slt|slti|sltu|sltiu|lui|auipc|addiw|jal|jalr|beq|bne|blt|bltu|bge|bgeu|bltz|bgez|blez|bgtz|lb|lh|lw|lwu|ld|lbu|lhu|sb|sh|sw|sd|ecall|ebreak)\b</string>
+      <key>name</key>
+      <string>support.function.riscv.i</string>
+    </dict>
+
+  </array>
+</dict>
+</plist>

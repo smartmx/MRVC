@@ -108,8 +108,18 @@ async function runWizard(store: ProjectStore, artifactType: 'exe' | 'lib'): Prom
       try {
         const result = createProjectFromTemplate(template, { projectName: name.trim(), parentDir, artifactType });
         store.setLastCreateDir(parentDir);
-        store.add(result.projectRoot);
-        store.setActive(store.get(result.projectRoot)!);
+        // store.add applies the three-file contract check — when it skips
+        // the folder (e.g. a rename failure left the tree markerless) the
+        // old `setActive(get(...)!)` dereferenced undefined and THREW,
+        // swallowing the carefully built result.warning entirely (review M1)
+        const added = store.add(result.projectRoot);
+        if (added) store.setActive(added);
+        // the final rename can fail midway (locked files) — the project is
+        // created and usable under the template name, but the user must know
+        // the launch/marker state may need a manual look (round28 P2-2)
+        if (result.warning) {
+          void vscode.window.showWarningMessage(`MRVC: ${result.warning}`);
+        }
         // the created project lives outside this workspace — offer the same
         // "new window" opening the Open MRS Project command uses
         const openPick = await vscode.window.showInformationMessage(

@@ -171,6 +171,22 @@ function assertValidName(name: string): void {
   }
 }
 
+/**
+ * (review P1) a configuration's name IS its output directory name — a name
+ * colliding with an existing project directory (e.g. the source dir "src")
+ * would make the batch delete-output commands recursive-delete real sources
+ * once the config has been created. Refuse at creation/rename time; the
+ * delete side carries its own artifact-proof guard for configurations that
+ * were imported from outside MRVC and never passed through here.
+ */
+function assertFreeOutputName(projectRoot: string, name: string): void {
+  if (fs.existsSync(path.join(projectRoot, name))) {
+    throw new Error(
+      `a directory named "${name}" already exists in the project — a configuration's name becomes its build output directory, so reusing it would put real files at risk of deletion`
+    );
+  }
+}
+
 function assertUnique(names: string[], name: string): void {
   // case-insensitive: the name is a directory, and Windows folds case
   const fold = name.toLowerCase();
@@ -355,6 +371,7 @@ export function addConfiguration(
     throw new Error(`at most ${MAX_CONFIGURATIONS} configurations are supported`);
   }
   assertUnique(names, name);
+  assertFreeOutputName(projectRoot, name);
   let sourceIdx = 0;
   if (typeof copyFromIndex === 'number' && Number.isInteger(copyFromIndex) && copyFromIndex >= 0 && copyFromIndex < names.length) {
     if (copyFrom !== undefined && names[copyFromIndex] !== copyFrom) {
@@ -419,6 +436,7 @@ export function renameConfiguration(projectRoot: string, oldName: string, newNam
   // the no-op above; every collision with ANOTHER row still refuses)
   const others = names.filter((_, i) => i !== idx);
   assertUnique(others, newName);
+  assertFreeOutputName(projectRoot, newName);
   renameConfigBlock(els[idx], newName);
   const nextNames = names.map((n, i) => (i === idx ? newName : n));
   const targetPath = idx === 0 ? writeTemplateTarget(projectRoot, cp, newName) : undefined;

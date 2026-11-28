@@ -1,0 +1,165 @@
+{
+  "name": "MRVC GNU LD Map",
+  "scopeName": "source.mrvc-ld-map",
+  "patterns": [
+    {
+      "comment": "Discarded input sections block (dimmed until blank line or next heading)",
+      "begin": "^(Discarded input sections)[ \\t]*$",
+      "beginCaptures": {
+        "1": { "name": "markup.heading.ld-map" }
+      },
+      "end": "(?=^(?:Memory Configuration|Linker script and memory map|Cross Reference Table|Archive member included|Allocating common symbols)\\b)|^[ \\t]*$",
+      "contentName": "comment.block.discarded.ld-map",
+      "patterns": [
+        { "include": "#section-name" },
+        { "include": "#hex-number" },
+        { "include": "#obj-path" }
+      ]
+    },
+    {
+      "comment": "GNU ld major section headings",
+      "match": "^(?:Archive member included to satisfy reference by file \\(symbol\\)|Allocating common symbols|Memory Configuration|Linker script and memory map|Cross Reference Table|Common symbol[ \\t]+size[ \\t]+file|Archive member[ \\t]+.*|Symbol[ \\t]+File|Name[ \\t]+Origin[ \\t]+Length[ \\t]+Attributes)[ \\t]*$",
+      "name": "markup.heading.ld-map"
+    },
+    {
+      "comment": "Memory Configuration region row (FLASH / RAM / *default*)",
+      "match": "^(\\*default\\*|[A-Za-z_][A-Za-z0-9_.-]*)[ \\t]+(0x[0-9a-fA-F]+)[ \\t]+(0x[0-9a-fA-F]+)(?:[ \\t]+([rwxal!]+))?[ \\t]*$",
+      "captures": {
+        "1": { "name": "entity.name.type.region.ld-map" },
+        "2": { "name": "constant.numeric.address.ld-map" },
+        "3": { "name": "constant.numeric.size.ld-map" },
+        "4": { "name": "storage.modifier.ld-map" }
+      }
+    },
+    {
+      "comment": "LOAD directive for object files and static libraries",
+      "match": "^(LOAD)[ \\t]+(.+?)[ \\t]*$",
+      "captures": {
+        "1": { "name": "keyword.control.ld-map" },
+        "2": { "patterns": [{ "include": "#obj-path" }] }
+      }
+    },
+    {
+      "comment": "START GROUP / END GROUP directives",
+      "match": "^(?:START GROUP|END GROUP)[ \\t]*$",
+      "name": "keyword.control.ld-map"
+    },
+    {
+      "comment": "OUTPUT(artifact elf32-littleriscv) line",
+      "match": "^(OUTPUT)\\(([^\\s)]+)(?:[ \\t]+([^)\\r\\n]+))?\\)[ \\t]*$",
+      "captures": {
+        "1": { "name": "keyword.control.ld-map" },
+        "2": { "name": "string.unquoted.path.ld-map" },
+        "3": { "name": "entity.name.type.ld-map" }
+      }
+    },
+    {
+      "comment": "Column-0 output section summary line (with optional load address)",
+      "match": "^(\\.[A-Za-z0-9_.$*-]+|/DISCARD/)[ \\t]+(0x[0-9a-fA-F]+)[ \\t]+(0x[0-9a-fA-F]+)(?:[ \\t]+(load address)[ \\t]+(0x[0-9a-fA-F]+))?[ \\t]*$",
+      "captures": {
+        "1": { "name": "entity.name.section.output.ld-map" },
+        "2": { "name": "constant.numeric.address.ld-map" },
+        "3": { "name": "constant.numeric.size.ld-map" },
+        "4": { "name": "keyword.other.ld-map" },
+        "5": { "name": "constant.numeric.address.ld-map" }
+      }
+    },
+    {
+      "comment": "Indented *fill* padding entry",
+      "match": "^[ \\t]+(\\*fill\\*)[ \\t]+(0x[0-9a-fA-F]+)[ \\t]+(0x[0-9a-fA-F]+)(?:[ \\t]+([0-9a-fA-F]+))?[ \\t]*$",
+      "captures": {
+        "1": { "name": "keyword.other.fill.ld-map" },
+        "2": { "name": "constant.numeric.address.ld-map" },
+        "3": { "name": "constant.numeric.size.ld-map" },
+        "4": { "name": "constant.numeric.hex.ld-map" }
+      }
+    },
+    {
+      "comment": "Indented input section line (single-line: section + address + size + object)",
+      "match": "^[ \\t]+(\\.[A-Za-z0-9_.$*-]+|COMMON)[ \\t]+(0x[0-9a-fA-F]+)[ \\t]+(0x[0-9a-fA-F]+)[ \\t]+(.+?)[ \\t]*$",
+      "captures": {
+        "1": { "name": "entity.name.section.input.ld-map" },
+        "2": { "name": "constant.numeric.address.ld-map" },
+        "3": { "name": "constant.numeric.size.ld-map" },
+        "4": { "patterns": [{ "include": "#obj-path" }] }
+      }
+    },
+    {
+      "comment": "Wrapped input section name alone on its line (followed by indented addr/size)",
+      "match": "^[ \\t]+(\\.[A-Za-z0-9_.$*-]+|COMMON)[ \\t]*$",
+      "captures": {
+        "1": { "name": "entity.name.section.input.ld-map" }
+      }
+    },
+    {
+      "comment": "Continuation line for wrapped input section or size-only output section (address + size + optional obj)",
+      "match": "^[ \\t]+(0x[0-9a-fA-F]+)[ \\t]+(0x[0-9a-fA-F]+)(?:[ \\t]+(load address)[ \\t]+(0x[0-9a-fA-F]+))?(?:[ \\t]+(.+?))?[ \\t]*$",
+      "captures": {
+        "1": { "name": "constant.numeric.address.ld-map" },
+        "2": { "name": "constant.numeric.size.ld-map" },
+        "3": { "name": "keyword.other.ld-map" },
+        "4": { "name": "constant.numeric.address.ld-map" },
+        "5": { "patterns": [{ "include": "#obj-path" }] }
+      }
+    },
+    {
+      "comment": "Linker script expression line with leading address (PROVIDE, ASSERT, etc.)",
+      "match": "^[ \\t]+(0x[0-9a-fA-F]+)[ \\t]+((?:PROVIDE|PROVIDE_HIDDEN|FILL|ASSERT|BYTE|SHORT|LONG|QUAD|SQUAD)\\b.*)$",
+      "captures": {
+        "1": { "name": "constant.numeric.address.ld-map" },
+        "2": {
+          "patterns": [
+            {
+              "match": "\\b(?:PROVIDE|PROVIDE_HIDDEN|FILL|ASSERT|ALIGN|ORIGIN|LENGTH|ADDR|LOADADDR|SIZEOF|BYTE|SHORT|LONG|QUAD|SQUAD)\\b",
+              "name": "support.function.ld-map"
+            },
+            { "include": "#hex-number" }
+          ]
+        }
+      }
+    },
+    {
+      "comment": "Linker script symbol assignment or symbol definition line",
+      "match": "^[ \\t]+(0x[0-9a-fA-F]+)[ \\t]+(?:([A-Za-z_.$][A-Za-z0-9_.$]*)[ \\t]*(=).*|([A-Za-z_.$][A-Za-z0-9_.$]*)[ \\t]*$)",
+      "captures": {
+        "1": { "name": "constant.numeric.address.ld-map" },
+        "2": { "name": "variable.other.symbol.ld-map" },
+        "3": { "name": "keyword.operator.assignment.ld-map" },
+        "4": { "name": "entity.name.function.symbol.ld-map" }
+      }
+    },
+    {
+      "comment": "Input section wildcard globs from linker script, e.g. *(.text .text.*)",
+      "match": "(\\*|\\?[^\\s(]*)\\(([^)\\r\\n]+)\\)",
+      "captures": {
+        "1": { "name": "keyword.operator.wildcard.ld-map" },
+        "2": { "patterns": [{ "include": "#section-name" }] }
+      }
+    },
+    {
+      "comment": "GNU ld built-in linker script functions and directives",
+      "match": "\\b(?:PROVIDE|PROVIDE_HIDDEN|FILL|ASSERT|ALIGN|KEEP|SORT_BY_NAME|SORT_BY_ALIGNMENT|SORT_BY_INIT_PRIORITY|SORT|EXCLUDE_FILE|ORIGIN|LENGTH|ADDR|LOADADDR|SIZEOF|ABSOLUTE|DEFINED|BYTE|SHORT|LONG|QUAD|SQUAD|COMMON|SEARCH_DIR)\\b",
+      "name": "support.function.ld-map"
+    },
+    { "include": "#section-name" },
+    { "include": "#hex-number" },
+    { "include": "#obj-path" }
+  ],
+  "repository": {
+    "section-name": {
+      "comment": "ELF section identifier",
+      "match": "(?<![A-Za-z0-9_])\\.(?:text|rodata|data|sdata|sbss|bss|init|fini|preinit_array|init_array|fini_array|vector|highcode|stack|heap|eh_frame|comment|riscv\\.attributes|debug_[A-Za-z0-9_]+)(?:\\.[A-Za-z0-9_.$*-]+)*",
+      "name": "entity.name.section.ld-map"
+    },
+    "hex-number": {
+      "comment": "hexadecimal address, size, or constant",
+      "match": "\\b0[xX][0-9a-fA-F]+\\b",
+      "name": "constant.numeric.hex.ld-map"
+    },
+    "obj-path": {
+      "comment": "object file or static library member path (.o / .obj / .a(member.o))",
+      "match": "[^\\s()]+\\.(?:o|obj|a)(?:\\([^\\s)]+\\))?",
+      "name": "string.unquoted.path.ld-map"
+    }
+  }
+}

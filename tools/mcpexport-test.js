@@ -463,7 +463,7 @@ check('wiring: the ... menu lists it for the view, with no project required', !!
 const clearItem = pkg.contributes.menus['view/title'].find((i) => i.command === 'mrvc.clearIntelliSenseCache');
 check(
   'wiring: it sits directly ABOVE Clear C/C++ IntelliSense Cache (user request 2026-11-24)',
-  !!menu && menu.group === '7_settings@1' && !!clearItem && clearItem.group === '7_settings@2',
+  !!menu && menu.group === '5_settings@1' && !!clearItem && clearItem.group === '5_settings@2',
   menu && clearItem && `${menu.group} / ${clearItem.group}`
 );
 const WANT_TITLE = { 'package.nls.json': 'Export AI MCP Server', 'package.nls.zh-cn.json': '导出 AI MCP 服务器' };

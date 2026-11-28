@@ -314,8 +314,13 @@ const last = () => messages[messages.length - 1];
   if (useBtn) {
     promo.reply(useBtn);
     await flush();
-    check('gate: adopting the detected install writes a real path', settings.mrs2InstallPath !== BAD2 && fs.existsSync(settings.mrs2InstallPath));
-    fireConfig('mrs2InstallPath');
+    // the adoption writes whichever GENERATION the machine actually has — an
+    // MRS3-only host writes mrs3InstallPath, not mrs2InstallPath (the old
+    // mrs2-only assertion false-failed on such machines)
+    const adoptedM2 = settings.mrs2InstallPath !== BAD2 && fs.existsSync(settings.mrs2InstallPath);
+    const adoptedM3 = settings.mrs3InstallPath !== BAD2 && fs.existsSync(settings.mrs3InstallPath);
+    check('gate: adopting the detected install writes a real path', adoptedM2 || adoptedM3, `m2=${settings.mrs2InstallPath} m3=${settings.mrs3InstallPath}`);
+    fireConfig(adoptedM2 ? 'mrs2InstallPath' : 'mrs3InstallPath');
     check('gate: ... and that starts the extension', started === 4);
   } else {
     console.log('SKIP  gate: no conventional installation on this machine to adopt');

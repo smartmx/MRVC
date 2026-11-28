@@ -12,7 +12,7 @@ const check = (name, cond) => {
   if (!cond) failures++;
 };
 
-const { sdkRoot, scanTemplates, createProjectFromTemplate, normalizeParentDirInput, extractZipArchivePosix } = require('../out/core/newProject.js');
+const { sdkRoot, scanTemplates, createProjectFromTemplate, normalizeParentDirInput, extractZipArchivePosix, isInsideParent } = require('../out/core/newProject.js');
 const { chipDbRoot } = require('../out/core/chipdb.js');
 const { Cproject } = require('../out/core/cproject.js');
 const { scanSources } = require('../out/core/scan.js');
@@ -143,6 +143,240 @@ void lib;
   check('exe twin untouched: MyApp stays exe', ecp.artifactType === 'exe');
 }
 
+// 5b. multi-launch template (round28 P2-2): the launch named after the
+// TEMPLATE becomes the project launch, user-named launches keep their
+// filenames and their attrs migrate — nothing is lost
+{
+  const tplDir = path.join(WS, 'multilaunch-tpl');
+  fs.mkdirSync(tplDir, { recursive: true });
+  const launchXml = (marker) =>
+    '<?xml version="1.0" encoding="UTF-8"?><launchConfiguration type="cdt.launch.application">' +
+    '<stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="obj/Template.elf"/>' +
+    '<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="Template"/>' +
+    '<stringAttribute key="marker" value="' + marker + '"/>' +
+    '<listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS"><listEntry value="/Template/src/main.c"/></listAttribute>' +
+    '</launchConfiguration>';
+  fs.writeFileSync(path.join(tplDir, '.project'), '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>Template</name></projectDescription>');
+  fs.writeFileSync(
+    path.join(tplDir, '.cproject'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+  );
+  fs.writeFileSync(path.join(tplDir, 'Template.launch'), launchXml('TEMPLATE'));
+  fs.writeFileSync(path.join(tplDir, 'b.launch'), launchXml('B'));
+  const multiZip = path.join(WS, 'multilaunch.zip');
+  require('child_process').execFileSync(
+    'powershell.exe',
+    ['-NoProfile', '-Command', 'Compress-Archive -Path ' + JSON.stringify(tplDir + '\\*') + ' -DestinationPath ' + JSON.stringify(multiZip) + ' -Force'],
+    { stdio: 'pipe', timeout: 120000 }
+  );
+  const created2 = createProjectFromTemplate(
+    { series: 'CH32V307', os: 'NoneOS', chip: 'MULTI', zipPath: multiZip },
+    { projectName: 'MyApp2', parentDir: WS, artifactType: 'exe' }
+  );
+  void created2;
+  const proj2 = path.join(WS, 'MyApp2');
+  check('multilaunch: both launches survive creation', fs.existsSync(path.join(proj2, 'MyApp2.launch')) && fs.existsSync(path.join(proj2, 'b.launch')));
+  const projectLaunch = fs.readFileSync(path.join(proj2, 'MyApp2.launch'), 'utf8');
+  check(
+    'multilaunch: project-named launch carries the new attrs',
+    projectLaunch.includes('value="MyApp2"') && projectLaunch.includes('/MyApp2/src/main.c') && projectLaunch.includes('TEMPLATE')
+  );
+  const userLaunch = fs.readFileSync(path.join(proj2, 'b.launch'), 'utf8');
+  check(
+    'multilaunch: the user-named b.launch keeps its marker and follows the new project attrs',
+    userLaunch.includes('B') && userLaunch.includes('value="MyApp2"') && userLaunch.includes('/MyApp2/src/main.c'),
+    userLaunch.slice(0, 200)
+  );
+}
+
+// 5c. template already carries a launch named after the REQUESTED project
+// (round29 P2 regression): the template launch must NEVER overwrite it —
+// the template launch lands on a unique "-template" name and BOTH survive
+{
+  const tplDir = path.join(WS, 'userlaunch-tpl');
+  fs.mkdirSync(tplDir, { recursive: true });
+  const launchXml = (marker, program) =>
+    '<?xml version="1.0" encoding="UTF-8"?><launchConfiguration type="cdt.launch.application">' +
+    '<stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="obj/' + program + '"/>' +
+    '<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="Template"/>' +
+    '<stringAttribute key="marker" value="' + marker + '"/>' +
+    '<listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS"><listEntry value="/Template/src/main.c"/></listAttribute>' +
+    '</launchConfiguration>';
+  fs.writeFileSync(path.join(tplDir, '.project'), '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>Template</name></projectDescription>');
+  fs.writeFileSync(
+    path.join(tplDir, '.cproject'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+  );
+  fs.writeFileSync(path.join(tplDir, 'Template.launch'), launchXml('TEMPLATE', 'Template.elf'));
+  fs.writeFileSync(path.join(tplDir, 'MyApp3.launch'), launchXml('USER', 'user.elf'));
+  const zip3 = path.join(WS, 'userlaunch.zip');
+  require('child_process').execFileSync(
+    'powershell.exe',
+    ['-NoProfile', '-Command', 'Compress-Archive -Path ' + JSON.stringify(tplDir + '\\*') + ' -DestinationPath ' + JSON.stringify(zip3) + ' -Force'],
+    { stdio: 'pipe', timeout: 120000 }
+  );
+  const created3 = createProjectFromTemplate(
+    { series: 'CH32V307', os: 'NoneOS', chip: 'USERLAUNCH', zipPath: zip3 },
+    { projectName: 'MyApp3', parentDir: WS, artifactType: 'exe' }
+  );
+  const proj3 = path.join(WS, 'MyApp3');
+  check('userlaunch: creation succeeds without warning', !created3.warning, created3.warning);
+  check('userlaunch: BOTH launches survive', fs.existsSync(path.join(proj3, 'MyApp3-template.launch')) && fs.existsSync(path.join(proj3, 'MyApp3.launch')));
+  const tplLaunch = fs.readFileSync(path.join(proj3, 'MyApp3-template.launch'), 'utf8');
+  check(
+    'userlaunch: the TEMPLATE launch moved to the unique -template name with migrated attrs',
+    tplLaunch.includes('TEMPLATE') && tplLaunch.includes('value="MyApp3"') && tplLaunch.includes('/MyApp3/src/main.c') && tplLaunch.includes('MyApp3.elf'),
+    tplLaunch.slice(0, 200)
+  );
+  const userL = fs.readFileSync(path.join(proj3, 'MyApp3.launch'), 'utf8');
+  check(
+    'userlaunch: the USER launch is NOT overwritten — its marker survives and its attrs follow the project',
+    userL.includes('USER') && userL.includes('value="MyApp3"') && userL.includes('/MyApp3/src/main.c'),
+    userL.slice(0, 200)
+  );
+  check('userlaunch: .project display name applied', fs.readFileSync(path.join(proj3, '.project'), 'utf8').includes('<name>MyApp3</name>'));
+}
+
+// 5d. rename FAILURE rollback (round30 P2 regression): the snapshot must be
+// taken BEFORE the fresh <name>.wvproj marker write and the launch
+// pre-rename, so a failing renameProject restores the directory to the
+// template's ORIGINAL file set (single marker, launch name = .project name)
+{
+  const tplDir = path.join(WS, 'rollback-tpl');
+  fs.mkdirSync(tplDir, { recursive: true });
+  const fixture = {
+    '.project': '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>Template</name></projectDescription>',
+    '.cproject':
+      '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>',
+    'Template.launch':
+      '<?xml version="1.0" encoding="UTF-8"?><launchConfiguration type="cdt.launch.application">' +
+      '<stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="obj/Template.elf"/>' +
+      '<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="Template"/>' +
+      '<stringAttribute key="marker" value="TEMPLATE"/>' +
+      '<listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS"><listEntry value="/Template/src/main.c"/></listAttribute>' +
+      '</launchConfiguration>',
+    'Template.wvproj': '',
+    '.template': ['Vendor=WCH', 'MCU=CH32V307', 'Address=0x00000000', 'Target Path=obj\\Template.hex', ''].join('\r\n'),
+    'main.c': 'int main(void) { return 0; }\n',
+  };
+  for (const [f, body] of Object.entries(fixture)) fs.writeFileSync(path.join(tplDir, f), body);
+  const zip4 = path.join(WS, 'rollback.zip');
+  require('child_process').execFileSync(
+    'powershell.exe',
+    ['-NoProfile', '-Command', 'Compress-Archive -Path ' + JSON.stringify(tplDir + '\\*') + ' -DestinationPath ' + JSON.stringify(zip4) + ' -Force'],
+    { stdio: 'pipe', timeout: 120000 }
+  );
+  // fault injection: renameProject throws before writing anything
+  const pf = require('../out/core/projectFile.js');
+  const origRename = pf.renameProject;
+  pf.renameProject = () => {
+    throw new Error('simulated .project write failure');
+  };
+  let res;
+  try {
+    res = createProjectFromTemplate(
+      { series: 'CH32V307', os: 'NoneOS', chip: 'ROLLBACK', zipPath: zip4 },
+      { projectName: 'MyApp4', parentDir: WS, artifactType: 'exe' }
+    );
+  } finally {
+    pf.renameProject = origRename;
+  }
+  const proj4 = path.join(WS, 'MyApp4');
+  check('rollback: structured warning returned, finalName = template name', !!res && !!res.warning && res.finalName === 'Template', JSON.stringify(res).slice(0, 200));
+  const listing4 = fs.readdirSync(proj4).filter((f) => !f.startsWith('.')).sort().join(',');
+  check('rollback: visible file list equals the template original', listing4 === 'Template.launch,Template.wvproj,main.c', listing4);
+  check('rollback: dotfiles equal the template original', fs.readdirSync(proj4).filter((f) => f.startsWith('.')).sort().join(',') === '.cproject,.project,.template');
+  check('rollback: pre-renamed launch undone', !fs.existsSync(path.join(proj4, 'MyApp4.launch')) && fs.existsSync(path.join(proj4, 'Template.launch')));
+  check('rollback: single marker — the fresh MyApp4.wvproj is gone', !fs.existsSync(path.join(proj4, 'MyApp4.wvproj')) && fs.existsSync(path.join(proj4, 'Template.wvproj')));
+  check(
+    'rollback: Template.launch byte-identical (attrs untouched)',
+    fs.readFileSync(path.join(proj4, 'Template.launch'), 'utf8') === fixture['Template.launch']
+  );
+  check('rollback: .project display name restored', fs.readFileSync(path.join(proj4, '.project'), 'utf8').includes('<name>Template</name>'));
+  check(
+    'rollback: .template Target Path restored',
+    fs.readFileSync(path.join(proj4, '.template'), 'utf8') === fixture['.template']
+  );
+}
+
+// 5e. rollback of a REAL no-marker template (round31/antigravity M1
+// regression): real MRS template zips carry NO .wvproj — after a failed
+// rename the restore removes our fresh marker, so core must write ONE back
+// under the restored display name or the project breaks the three-file
+// contract (store.add skips it and the wizard swallowed the warning)
+{
+  const tplDir = path.join(WS, 'rollback-nomarker-tpl');
+  fs.mkdirSync(tplDir, { recursive: true });
+  fs.writeFileSync(path.join(tplDir, '.project'), '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>Template</name></projectDescription>');
+  fs.writeFileSync(
+    path.join(tplDir, '.cproject'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+  );
+  fs.writeFileSync(
+    path.join(tplDir, 'Template.launch'),
+    '<?xml version="1.0" encoding="UTF-8"?><launchConfiguration type="cdt.launch.application">' +
+      '<stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="obj/Template.elf"/>' +
+      '<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="Template"/>' +
+      '<listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS"><listEntry value="/Template/src/main.c"/></listAttribute>' +
+      '</launchConfiguration>'
+  );
+  fs.writeFileSync(path.join(tplDir, 'main.c'), 'int main(void) { return 0; }\n');
+  const zip5 = path.join(WS, 'rollback-nomarker.zip');
+  require('child_process').execFileSync(
+    'powershell.exe',
+    ['-NoProfile', '-Command', 'Compress-Archive -Path ' + JSON.stringify(tplDir + '\\*') + ' -DestinationPath ' + JSON.stringify(zip5) + ' -Force'],
+    { stdio: 'pipe', timeout: 120000 }
+  );
+  const pf2 = require('../out/core/projectFile.js');
+  const origRename2 = pf2.renameProject;
+  pf2.renameProject = () => {
+    throw new Error('simulated .project write failure');
+  };
+  let res5;
+  try {
+    res5 = createProjectFromTemplate(
+      { series: 'CH32V307', os: 'NoneOS', chip: 'ROLLBACK2', zipPath: zip5 },
+      { projectName: 'MyApp5', parentDir: WS, artifactType: 'exe' }
+    );
+  } finally {
+    pf2.renameProject = origRename2;
+  }
+  const proj5 = path.join(WS, 'MyApp5');
+  const markers5 = fs.readdirSync(proj5).filter((f) => f.toLowerCase().endsWith('.wvproj'));
+  check('rollback-nomarker: warning returned', !!res5 && !!res5.warning && res5.finalName === 'Template', JSON.stringify(res5).slice(0, 160));
+  check(
+    'rollback-nomarker: EXACTLY one marker under the restored name (three-file contract holds)',
+    markers5.length === 1 && markers5[0] === 'Template.wvproj' && fs.readFileSync(path.join(proj5, 'Template.wvproj'), 'utf8') === '',
+    markers5.join(',')
+  );
+  check('rollback-nomarker: no leftover MyApp5.wvproj', !fs.existsSync(path.join(proj5, 'MyApp5.wvproj')));
+}
+
+// 5f. a corrupt template WITHOUT .project must fail cleanly and remove the
+// extracted folder (review L1) — no half-created dir blocks every retry
+{
+  const tplDir = path.join(WS, 'bad-tpl');
+  fs.mkdirSync(tplDir, { recursive: true });
+  fs.writeFileSync(path.join(tplDir, 'main.c'), 'int main(void) { return 0; }\n');
+  const zip6 = path.join(WS, 'bad-tpl.zip');
+  require('child_process').execFileSync(
+    'powershell.exe',
+    ['-NoProfile', '-Command', 'Compress-Archive -Path ' + JSON.stringify(tplDir + '\\*') + ' -DestinationPath ' + JSON.stringify(zip6) + ' -Force'],
+    { stdio: 'pipe', timeout: 120000 }
+  );
+  let threw6 = '';
+  try {
+    createProjectFromTemplate(
+      { series: 'CH32V307', os: 'NoneOS', chip: 'BADPROJ', zipPath: zip6 },
+      { projectName: 'BadProj', parentDir: WS, artifactType: 'exe' }
+    );
+  } catch (e) {
+    threw6 = e instanceof Error ? e.message : String(e);
+  }
+  check('badproj: missing .project reports clearly', threw6.includes('not a valid MRS project'), threw6.slice(0, 160));
+  check('badproj: the half-created folder was cleaned up', !fs.existsSync(path.join(WS, 'BadProj')));
+}
+
 // 6. typed parent-folder normalization (the wizard location box) - a bare
 // or slashed drive letter must become a ROOT, never resolve to that drive's
 // current directory; normal paths just lose their trailing separator
@@ -155,6 +389,22 @@ check('normalize: plain path untouched', normalizeParentDirInput('F:\\MyProjects
 check('normalize: whitespace trimmed', normalizeParentDirInput('  F:\\x  ') === 'F:\\x');
 // round37 P3: the filesystem root must survive trailing-separator trimming
 check('normalize: filesystem root kept', normalizeParentDirInput('/') === '/' && normalizeParentDirInput('//') === '/');
+
+// review P3: the containment test must accept a child of a filesystem ROOT —
+// a `parent + sep` prefix check fails there (the root already ends in its
+// separator; the doubled separator matches no normal child path), which used
+// to report "Invalid project name" for a perfectly legal "D:\Blink"
+check('contain: drive-root parent accepts its child', isInsideParent('D:\\', 'D:\\Blink') === true);
+check('contain: posix root parent accepts its child', isInsideParent('/', '/Blink') === true);
+check('contain: plain parent accepts its child', isInsideParent(WS, path.join(WS, 'X')) === true);
+// a child merely NAMED "..Blink" is a legal directory name — only a real
+// parent segment (rel === '..' or '../…') escapes (review round2 P3)
+check('contain: a dot-dot-PREFIXED name is a legal child', isInsideParent(WS, path.join(WS, '..Blink')) === true);
+check('contain: a dot-dot-PREFIXED name under the posix root passes', isInsideParent('/', '/..Blink') === true);
+check('contain: a sibling is outside', isInsideParent(WS, path.join(WS, '..', 'X')) === false);
+check('contain: an escape is outside', isInsideParent(WS, path.join(WS, 'X', '..', '..')) === false);
+check('contain: the parent itself is not a child', isInsideParent(WS, WS) === false);
+check('contain: the bare parent marker is outside', isInsideParent(WS, path.join(WS, '..')) === false);
 
 // 7. POSIX template extraction (extractZipArchivePosix) — run the real
 // system unzip when one exists; the fallback-to-bsdtar / no-tool paths

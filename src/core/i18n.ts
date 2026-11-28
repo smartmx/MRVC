@@ -95,6 +95,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
     en: 'settings.json unreadable in: {0} — left untouched',
     'zh-cn': '以下位置的 settings.json 无法读取：{0}——未做修改',
   },
+  asmAssocUnreadable: {
+    en: 'could not write the language associations for assembly/listing/map files — settings.json unreadable in: {0} (assembly, .lst and .map highlighting stays off there until the file is fixed)',
+    'zh-cn': '无法写入汇编/编译清单/链接映射的语言关联——以下位置的 settings.json 无法读取：{0}（修复前这些文件夹的汇编、.lst 与 .map 高亮不会生效）',
+  },
   cppPropertiesUnreadable: {
     en: 'c_cpp_properties.json unreadable in: {0} — left untouched',
     'zh-cn': '以下位置的 c_cpp_properties.json 无法读取：{0}——未做修改',
@@ -255,6 +259,10 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   outputDirRemoved: { en: 'output directory removed', 'zh-cn': '输出目录已删除' },
   outputDirsRemoved: { en: '{0} output directories removed', 'zh-cn': '已删除 {0} 个输出目录' },
   entriesRemoved: { en: '{0} entries removed', 'zh-cn': '已删除 {0} 项' },
+  receiptNotSaved: {
+    en: '"{0}" succeeded, but the local MCP verification receipt was not saved because .vscode/mrvc/.gitignore could not be confirmed (another MRVC task is busy). Re-run once it finishes if MCP tools need verification.',
+    'zh-cn': '“{0}”操作已成功，但因无法确认 .vscode/mrvc/.gitignore 忽略规则（可能有其他 MRVC 任务正在运行），未写入本地 MCP 验证凭据；若需使用 MCP 硬件工具，请在空闲后重跑一次。',
+  },
 
   // tree
   noMrsProjectNode: { en: 'No MRS project', 'zh-cn': '无 MRS 工程' },
@@ -867,6 +875,16 @@ const strings: Record<string, { en: string; 'zh-cn': string }> = {
   disclaimerAck: { en: 'I understand', 'zh-cn': '我已知晓' },
   propertiesSaved: { en: 'MRVC: project properties saved ({0})', 'zh-cn': 'MRVC：工程属性已保存（{0}）' },
   propertiesSaveFailed: { en: 'MRVC: failed to save configuration ({0})', 'zh-cn': 'MRVC：保存配置失败（{0}）' },
+  propertiesConfigChanged: {
+    en: 'The active configuration changed after this page was rendered (switched from MRS or another tool). Applying now would write these edits into the NEW active configuration.',
+    'zh-cn': '页面渲染后活动配置已被外部切换（MRS 或其他工具）——继续应用会把当前编辑写入新的活动配置。',
+  },
+  propertiesConfigChangedReload: { en: 'Reload the page (discard these edits)', 'zh-cn': '重新加载页面（放弃当前编辑）' },
+  propertiesConfigChangedCancel: { en: 'Cancel', 'zh-cn': '取消' },
+  propertiesConfigChangedShort: {
+    en: 'the active configuration changed after this page was rendered — reload the Properties page and re-apply',
+    'zh-cn': '页面渲染后活动配置已被外部切换——请重新打开属性页再应用',
+  },
   configSwitched: { en: 'MRVC: active configuration switched to {0}', 'zh-cn': 'MRVC：活动配置已切换为 {0}' },
   configSwitchFailed: { en: 'MRVC: failed to switch configuration ({0})', 'zh-cn': 'MRVC：切换配置失败（{0}）' },
   cfgDuplicateNames: {

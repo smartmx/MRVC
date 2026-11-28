@@ -8,6 +8,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import { XElement, parseXml, serializeXml } from './xml';
 import { readProjectFile, linkedFolderMap } from './projectFile';
 
@@ -280,6 +281,39 @@ export class Cproject {
   /** configuration names in file order (same strings as MRS2's list) */
   get configurationNames(): string[] {
     return this.configurationElements.map((el) => configurationName(el));
+  }
+
+  /** stable identity of the ACTIVE configuration — the cconfiguration
+   *  element's id attribute. An EXTERNAL switch (MRS / MCP) reorders the
+   *  file, so index 0 can be a different configuration by the time a
+   *  consumer acts: comparing this id catches the swap even when both
+   *  configurations share a name (review P2 — a stale Properties panel must
+   *  not write its drafts into the new active configuration). */
+  get activeConfigurationId(): string | undefined {
+    return this.configurationElements[0]?.attr('id');
+  }
+
+  /**
+   * CONTENT fingerprint of the active configuration — SHA-256 over a
+   * WHITESPACE-CANONICAL shape of the <cconfiguration> subtree (tags,
+   * sorted attributes, decoded text; inter-tag whitespace ignored). Raw
+   * serialization is NOT round-trip stable for a mutated tree (an appended
+   * option's recorded indent differs from the re-parsed file's), so the
+   * fingerprint must ignore layout. This still distinguishes configurations
+   * whose ids are MISSING (hand-imported projects) or DUPLICATED (a clone
+   * whose non-standard ids our rewriter could not touch, review round2 P2).
+   * Two configurations with identical canonical content are semantically
+   * the same config, so a swap between them is undetectable AND harmless.
+   */
+  activeConfigurationFingerprint(): string {
+    return createHash('sha256').update(canonicalShape(this.configurationElements[0])).digest('hex');
+  }
+
+  /** content fingerprints of EVERY configuration, in file order — the
+   *  Manage-dialog staleness resolver matches a rendered row against this
+   *  list (see configView resolveRowIndex). */
+  configurationFingerprints(): string[] {
+    return this.configurationElements.map((el) => createHash('sha256').update(canonicalShape(el)).digest('hex'));
   }
 
   /** configuration names used by more than one configuration — each once,
@@ -687,7 +721,12 @@ export class Cproject {
   setOptionBool(suffix: string, value: boolean, create = false): void {
     const opt = this.option(suffix);
     if (!opt) {
-      if (create && value) this.createOption(suffix, 'true', 'boolean');
+      // create materializes the EXPLICIT choice, false included: several
+      // linker bools default ON when the option is absent (c.linker.gcsections
+      // / nostart — MRS2's CLinker model, mirrored in flags.ts) — skipping the
+      // write on false left such an option silently ON while every UI showed
+      // it off (v0.3.8 review H3)
+      if (create) this.createOption(suffix, value ? 'true' : 'false', 'boolean');
       return;
     }
     opt.setAttr('value', value ? 'true' : 'false');
@@ -766,10 +805,15 @@ export class Cproject {
     // a rewritten list is no longer empty — clear the CDT emptiness markers
     delete opt!.attrs['IS_VALUE_EMPTY'];
     delete opt!.attrs['IS_BUILTIN_EMPTY'];
+    // quoting policy follows the MRS2 model (see mirrorListOption's comment):
+    // library names and USER_OBJS reach MRS2's model VERBATIM — re-quoting
+    // them would carry literal quote characters into its reader (and into the
+    // link line), so only the path-ish lists get the quoted spelling
+    const quote = !(suffix.endsWith('.libs') || suffix.endsWith('.otherobjs'));
     for (const v of values) {
       const e = new XElement('listOptionValue');
       e.setAttr('builtIn', 'false');
-      e.setAttr('value', `"${v}"`);
+      e.setAttr('value', quote ? `"${v}"` : v);
       opt!.append(e);
     }
   }
@@ -903,6 +947,25 @@ export class Cproject {
   save(): void {
     fs.writeFileSync(this.file, serializeXml(this.root), 'utf-8');
   }
+}
+
+/**
+ * Layout-insensitive structural identity of an element subtree: tags in
+ * order, attributes sorted by name, decoded text content — inter-tag
+ * whitespace (the round-trip metadata `ws`/`emptyPairInSource`) ignored.
+ * Stable across save → re-parse even for a mutated tree, which raw
+ * serialization is NOT (an appended node's recorded indent differs from
+ * the written file's) — this is what the configuration fingerprints hash.
+ */
+function canonicalShape(el: XElement): string {
+  const attrs = Object.keys(el.attrs)
+    .sort()
+    .map((k) => `${k}="${el.attrs[k]}"`)
+    .join(' ');
+  let out = `<${el.name}${attrs ? ' ' + attrs : ''}>`;
+  if (el.text) out += el.text;
+  for (const c of el.children) out += canonicalShape(c);
+  return out + `</${el.name}>`;
 }
 
 function splitExcluding(entry: XElement): string[] {

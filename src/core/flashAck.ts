@@ -39,6 +39,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { createHash } from 'crypto';
 import { foldPathOnPlatform } from './cproject';
+import { assertContainedMetaFile, ensureMrvcGitignoreEntries, resolveContainedMetaDir } from './outputHistory';
 import type { PowerVoltage } from './flash';
 
 export interface FlashPlanFingerprint {
@@ -124,24 +125,43 @@ export function machineId(): string {
  *  receipt entries are APPENDED — user entries are preserved, no duplicates. */
 const RECEIPT_IGNORE_ENTRIES = ['flash-verified.json', 'power-verified.json'];
 
-function ensureLocalIgnore(root: string): void {
+function ensureLocalIgnore(realMrvcDir: string): void {
+  const ok = ensureMrvcGitignoreEntries(realMrvcDir, RECEIPT_IGNORE_ENTRIES);
+  if (!ok) {
+    throw new Error(
+      'hardware receipt was NOT saved: could not confirm the .vscode/mrvc/.gitignore entry (another MRVC task is updating it) — the hardware operation succeeded; re-run once the other task finishes'
+    );
+  }
+}
+
+const RENAME_SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
+
+function writeAckAtomically(realMrvcDir: string, fileName: string, content: string): void {
+  const info = assertContainedMetaFile(realMrvcDir, fileName, true);
+  const tmp = path.join(realMrvcDir, `${fileName}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`);
   try {
-    const dir = path.join(root, '.vscode', 'mrvc');
-    fs.mkdirSync(dir, { recursive: true });
-    const gi = path.join(dir, '.gitignore');
-    let existing: string[] = [];
-    if (fs.existsSync(gi)) {
-      existing = fs
-        .readFileSync(gi, 'utf-8')
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0);
+    fs.writeFileSync(tmp, content, { encoding: 'utf-8', flag: 'wx' });
+    assertContainedMetaFile(realMrvcDir, fileName, true);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        fs.renameSync(tmp, info.path);
+        break;
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException)?.code;
+        if (attempt < 4 && (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES')) {
+          Atomics.wait(RENAME_SLEEP_BUF, 0, 0, 10);
+          continue;
+        }
+        throw e;
+      }
     }
-    const missing = RECEIPT_IGNORE_ENTRIES.filter((e) => !existing.includes(e));
-    if (!missing.length) return; // fully covered (file exists or was complete)
-    fs.writeFileSync(gi, [...existing, ...missing].join('\n') + '\n', 'utf-8');
-  } catch {
-    // ignore maintenance is best-effort
+  } catch (e) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // ignore temp cleanup failure
+    }
+    throw e;
   }
 }
 
@@ -212,14 +232,15 @@ export function describePlanFingerprint(f: FlashPlanFingerprint): string {
  *  over) */
 export function writeFlashAck(root: string, plan?: FlashPlanFingerprint): FlashAck | null {
   try {
-    ensureLocalIgnore(root);
+    const realMrvcDir = resolveContainedMetaDir(root, ['.vscode', 'mrvc'], true)!;
+    ensureLocalIgnore(realMrvcDir);
     const ack: FlashAck = {
       time: new Date().toISOString(),
       templateHash: templateHashOf(root),
       plan: plan ?? null,
       machine: machineId(),
     };
-    fs.writeFileSync(flashAckPath(root), JSON.stringify(ack, null, 1), 'utf-8');
+    writeAckAtomically(realMrvcDir, 'flash-verified.json', JSON.stringify(ack, null, 1));
     return ack;
   } catch {
     return null;
@@ -246,7 +267,11 @@ function validFlashPlan(p: unknown): p is FlashPlanFingerprint {
 
 export function readFlashAck(root: string): FlashAck | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(flashAckPath(root), 'utf-8')) as FlashAck;
+    const realMrvcDir = resolveContainedMetaDir(root, ['.vscode', 'mrvc'], false);
+    if (!realMrvcDir) return null;
+    const info = assertContainedMetaFile(realMrvcDir, 'flash-verified.json', true);
+    if (!info.exists) return null;
+    const parsed = JSON.parse(fs.readFileSync(info.path, 'utf-8')) as FlashAck;
     if (typeof parsed.time !== 'string') return null;
     // shape check: a present-but-malformed plan is CORRUPT (distinct from
     // legacy) so the caller reports "re-run the manual step", never a
@@ -370,9 +395,10 @@ export function describePowerFingerprint(f: PowerPlanFingerprint): string {
  *  command calls this after both passes passed the verdict) */
 export function writePowerAck(root: string, plan: PowerPlanFingerprint): PowerAck | null {
   try {
-    ensureLocalIgnore(root);
+    const realMrvcDir = resolveContainedMetaDir(root, ['.vscode', 'mrvc'], true)!;
+    ensureLocalIgnore(realMrvcDir);
     const ack: PowerAck = { time: new Date().toISOString(), plan, machine: machineId() };
-    fs.writeFileSync(powerAckPath(root), JSON.stringify(ack, null, 1), 'utf-8');
+    writeAckAtomically(realMrvcDir, 'power-verified.json', JSON.stringify(ack, null, 1));
     return ack;
   } catch {
     return null;
@@ -393,7 +419,11 @@ function validPowerPlan(p: unknown): p is PowerPlanFingerprint {
 
 export function readPowerAck(root: string): PowerAck | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(powerAckPath(root), 'utf-8')) as PowerAck;
+    const realMrvcDir = resolveContainedMetaDir(root, ['.vscode', 'mrvc'], false);
+    if (!realMrvcDir) return null;
+    const info = assertContainedMetaFile(realMrvcDir, 'power-verified.json', true);
+    if (!info.exists) return null;
+    const parsed = JSON.parse(fs.readFileSync(info.path, 'utf-8')) as PowerAck;
     if (typeof parsed.time !== 'string' || !parsed.plan) return null;
     const corrupt = !validPowerPlan(parsed.plan);
     return {

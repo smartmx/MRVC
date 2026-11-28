@@ -19,11 +19,10 @@
  * simply ignored while the nature says C (removing them would throw away
  * settings the project may need again).
  *
- * Known scope: only the FIRST `<cconfiguration>` of a .cproject is modeled, so
- * a multi-configuration project converts its first configuration only. No
- * multi-configuration C project exists in the sampled EVT trees (1,777 C
- * projects, all single-configuration); MRS2's own C++ projects are obj+dbg
- * because MRS2 wrote both from the start.
+ * Known scope note (updated 0.3.8 round27): the conversion now covers EVERY
+ * `<cconfiguration>` of the .cproject — the nature is project-level, so a
+ * partial conversion left the second configuration building C++ with the old
+ * C-only option set (round27 P2-2).
  */
 import { Cproject } from './cproject';
 import { hasLegacyCppNature, setCppNature } from './projectFile';
@@ -49,16 +48,32 @@ import { hasLegacyCppNature, setCppNature } from './projectFile';
  */
 export function setProjectCpp(projectRoot: string, on: boolean): { mirrored: number } {
   setCppNature(projectRoot, on);
-  const cp = Cproject.load(projectRoot);
+  // repairProject:false — the switch must apply ONLY the conversion; the
+  // default repair would ride a stale-link auto-repair of unrelated links on
+  // this load (round27 P2-1, same rule as the other write flows)
+  const cp = Cproject.load(projectRoot, { repairProject: false });
+  // every configuration after the first (multi-config projects: obj+dbg)
+  const laterConfigs = cp.configurationNames.length - 1;
   if (!on) {
     if (cp.removeCppCompilerInputType()) cp.save();
+    for (let i = 1; i <= laterConfigs; i++) {
+      const cfg = Cproject.loadConfigAt(projectRoot, i, { repairProject: false });
+      if (cfg.removeCppCompilerInputType()) cfg.save();
+    }
     return { mirrored: 0 };
   }
-  const mirrored = cp.ensureCppOptionsFromC();
+  let mirrored = cp.ensureCppOptionsFromC();
   // MRS2's C++ projects also carry the C++ compiler's <inputType>; a project
   // converted to C++ must look like one when MRS2 opens it
   const inputTypeAdded = cp.ensureCppCompilerInputType();
-  if (mirrored || inputTypeAdded) cp.save();
+  if (mirrored > 0 || inputTypeAdded) cp.save();
+  for (let i = 1; i <= laterConfigs; i++) {
+    const cfg = Cproject.loadConfigAt(projectRoot, i, { repairProject: false });
+    const opts = cfg.ensureCppOptionsFromC();
+    const it = cfg.ensureCppCompilerInputType();
+    if (opts > 0 || it) cfg.save();
+    mirrored += opts;
+  }
   return { mirrored };
 }
 

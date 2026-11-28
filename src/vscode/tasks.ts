@@ -8,9 +8,10 @@ import * as fs from 'fs';
 import { ProjectStore, MrsProject, MrsSolution, msg, getInstall } from './projects';
 import { nodeLogicPath } from './logicPath';
 import { Cproject, duplicateConfigNames, foldPathOnPlatform } from '../core/cproject';
-import { generateMakefiles, objectTargetFor, singleFileMakeArg } from '../core/makefile';
-import { classifySourceExt, isLogicExcluded } from '../core/scan';
+import { buildOutputFiles, generateMakefiles, imageKeepNames, legacyPrintSizeCleanOverride, objectTargetFor, singleFileMakeArg } from '../core/makefile';
+import { classifySourceExt, isLogicExcluded, isOutputDirLogicPath } from '../core/scan';
 import { clearOutputDir, deleteConfigOutputs, removeOutputDir } from '../core/output';
+import { recordBuildOutputs, snapshotExistingOutputs } from '../core/outputHistory';
 import { t } from '../core/i18n';
 import { buildRecordFile } from '../core/buildLog';
 import { writeBuildTaskWrapper, writeCleanTaskWrapper } from '../core/taskWrapper';
@@ -114,6 +115,18 @@ export function sanitizeParallelJobs(raw: unknown, automatic: number): number {
 
 function parallelJobsSetting(): number {
   return sanitizeParallelJobs(vscode.workspace.getConfiguration('mrvc').get('build.parallelJobs'), defaultJobs());
+}
+
+/** Candidate output paths for post-build write-history tracking only.
+ *  Falls back to [] when a test mock or incomplete cproject lacks model fields;
+ *  deletion commands still call `buildOutputFiles` directly so they fail closed. */
+function candidateBuildOutputs(cp: Cproject): string[] {
+  if (!cp || !Array.isArray(cp.configurationNames) || typeof cp.projectRoot !== 'string') return [];
+  try {
+    return buildOutputFiles(cp);
+  } catch {
+    return [];
+  }
 }
 
 export class BuildManager {
@@ -359,6 +372,8 @@ export class BuildManager {
           return;
         }
         const buildDir = path.join(project.root, cpConfig.configName);
+        const candidateOutputs = candidateBuildOutputs(cpConfig);
+        const preBuildSnap = snapshotExistingOutputs(buildDir, candidateOutputs);
         const wrapper = this.writeBuildWrapper(
           project.root,
           buildDir,
@@ -380,7 +395,12 @@ export class BuildManager {
         );
         task.group = vscode.TaskGroup.Build;
         task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, focus: false, clear: true };
-        const code = await this.executeAndWait(task, 'mrvc-build', this.building.get(buildKey), token);
+        let code: number | undefined;
+        try {
+          code = await this.executeAndWait(task, 'mrvc-build', this.building.get(buildKey), token);
+        } finally {
+          recordBuildOutputs(project.root, buildDir, candidateOutputs, preBuildSnap);
+        }
         if (token?.isCancellationRequested) {
           vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
           return;
@@ -665,12 +685,25 @@ export class BuildManager {
       if (!fs.existsSync(p.buildDir)) {
         return ok(t('noOutputDir'));
       }
+      // (review round7 P1) the claimed output set comes from the build model:
+      // only paths the configuration's build writes are ever deleted, so a
+      // vendor .a linked through USER_OBJS (or any other input stored in the
+      // output directory) survives both deletion modes
+      const claimed = buildOutputFiles(p.cproject);
       if (keepImages) {
-        const n = clearOutputDir(p.root, p.buildDir, [`${p.cproject.targetName}.hex`, `${p.cproject.targetName}.bin`]);
-        return ok(n ? t('entriesRemoved', n) : '');
+        // the generator names images `outputPrefix + targetName` — the keep
+        // list derives from the SAME naming (a prefixed image must survive)
+        const { removed } = clearOutputDir(
+          p.root,
+          p.buildDir,
+          imageKeepNames(p.cproject.targetName, p.cproject.outputPrefix),
+          p.cproject.outputPrefix + p.cproject.targetName,
+          claimed
+        );
+        return ok(removed ? t('entriesRemoved', removed) : '');
       }
-      removeOutputDir(p.root, p.buildDir);
-      return ok(t('outputDirRemoved'));
+      const r = removeOutputDir(p.root, p.buildDir, p.cproject.outputPrefix + p.cproject.targetName, claimed);
+      return ok(r.removed ? t('outputDirRemoved') : t('noOutputDir'));
     } catch (e) {
       return { project: p.projectName, ok: false, detail: msg(e) };
     }
@@ -688,11 +721,18 @@ export class BuildManager {
     try {
       p.reload();
       // the flash images are named after each configuration's own target
-      // name — multi-config projects keep ALL configs' hex/bin
+      // name — multi-config projects keep ALL configs' hex/bin. EVERY spec
+      // carries its target (ownership anchor) and its claimed output set
+      // (round7 P1: file-level deletion) — the batch paths get the same
+      // protection as the active-config entries.
       const specs = p.cproject.configurationNames.map((name, i) => {
-        if (!keepImages) return { dir: path.join(p.root, name) };
-        const target = Cproject.loadConfigAt(p.root, i).targetName;
-        return { dir: path.join(p.root, name), keep: [`${target}.hex`, `${target}.bin`] };
+        const ci = Cproject.loadConfigAt(p.root, i, { repairProject: false });
+        return {
+          dir: path.join(p.root, name),
+          target: ci.outputPrefix + ci.targetName,
+          claimed: buildOutputFiles(ci),
+          keep: keepImages ? imageKeepNames(ci.targetName, ci.outputPrefix) : undefined,
+        };
       });
       const { dirs, files } = deleteConfigOutputs(p.root, specs);
       if (keepImages) return ok(files ? t('entriesRemoved', files) : t('noOutputDir'));
@@ -831,6 +871,8 @@ export class BuildManager {
     // during the batch can offer "Terminate Build" and actually stop it
     const entry: { exec?: vscode.TaskExecution } = {};
     this.building.set(key, entry);
+    const candidateOutputs = candidateBuildOutputs(p.cproject);
+    const preBuildSnap = snapshotExistingOutputs(p.buildDir, candidateOutputs);
     return new Promise<BuildAllResult>((resolve) => {
       let settled = false;
       let exec: vscode.TaskExecution | undefined;
@@ -840,6 +882,7 @@ export class BuildManager {
       const finish = (code: number | undefined): void => {
         settled = true;
         sub.dispose();
+        recordBuildOutputs(p.root, p.buildDir, candidateOutputs, preBuildSnap);
         this.building.delete(key);
         const c = code ?? -1;
         resolve({ project: p.projectName, ok: c === 0, detail: c === 0 ? '' : `make exit ${c}` });
@@ -1062,11 +1105,18 @@ export class BuildManager {
       }
 
       this.store.reloadActiveQuiet();
+      const candidateOutputs = kind !== 'clean' ? candidateBuildOutputs(project.cproject) : [];
+      const preBuildSnap = kind !== 'clean' ? snapshotExistingOutputs(project.buildDir, candidateOutputs) : undefined;
       if (opts?.andDownload) {
         // MRS2 buildAndDownload semantics (buildSuccessCallback): the download
         // runs only after a successful build — a failed or cancelled build
         // stops here.
-        const code = await this.executeBuildTask(buildKey, task, token);
+        let code: number | undefined;
+        try {
+          code = await this.executeBuildTask(buildKey, task, token);
+        } finally {
+          if (preBuildSnap) recordBuildOutputs(project.root, project.buildDir, candidateOutputs, preBuildSnap);
+        }
         if (token?.isCancellationRequested) {
           vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
           return;
@@ -1086,7 +1136,11 @@ export class BuildManager {
       }
       // fire-and-forget build: the guard releases when THIS make process ends,
       // not when run() returns — handled inside executeBuildTask
-      await this.executeBuildTask(buildKey, task, token);
+      try {
+        await this.executeBuildTask(buildKey, task, token);
+      } finally {
+        if (preBuildSnap) recordBuildOutputs(project.root, project.buildDir, candidateOutputs, preBuildSnap);
+      }
       if (token?.isCancellationRequested) {
         vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
       }
@@ -1140,7 +1194,7 @@ export class BuildManager {
       vscode.window.showErrorMessage(t('compileFileOutside', base));
       return;
     }
-    if (isLogicExcluded(project.cproject, logic)) {
+    if (isOutputDirLogicPath(project.cproject, logic) || isLogicExcluded(project.cproject, logic)) {
       vscode.window.showErrorMessage(t('compileFileExcluded', base));
       return;
     }
@@ -1232,7 +1286,14 @@ export class BuildManager {
       );
       task.group = vscode.TaskGroup.Build;
       task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, focus: false, clear: true };
-      const code = await this.executeAndWait(task, 'mrvc-compile-file', this.building.get(buildKey), token);
+      const candidateOutputs = [displayTarget, displayTarget.slice(0, -2) + '.d', displayTarget.slice(0, -2) + '.su'];
+      const preBuildSnap = snapshotExistingOutputs(project.buildDir, candidateOutputs);
+      let code: number | undefined;
+      try {
+        code = await this.executeAndWait(task, 'mrvc-compile-file', this.building.get(buildKey), token);
+      } finally {
+        recordBuildOutputs(project.root, project.buildDir, candidateOutputs, preBuildSnap);
+      }
       if (token?.isCancellationRequested) {
         vscode.window.showInformationMessage(t('buildCancelled', project.projectName));
         return;
@@ -1393,11 +1454,12 @@ export class BuildManager {
    */
   private writeCleanWrapper(projectRoot: string, buildDir: string, makeExe: string, extraArgs: string[] = [], installLabel = ''): string {
     // verbosity flags ride along (concise -s / full --trace) — the caller
-    // passes buildMakeArgs('clean', ...) minus the target
+    // passes buildMakeArgs('clean', ...) minus the target. Append the legacy
+    // print-size guard so pre-fix makefiles do not delete a hand-saved .siz.
     return writeCleanTaskWrapper(projectRoot, {
       buildDir,
       makeExe,
-      args: [...extraArgs, 'clean'],
+      args: [...extraArgs, 'clean', ...legacyPrintSizeCleanOverride(buildDir)],
       label: installLabel,
     });
   }

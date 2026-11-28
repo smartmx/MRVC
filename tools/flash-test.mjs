@@ -31,11 +31,23 @@ const check = (name, cond) => {
 };
 const readCfg = (dir) => fs.readFileSync(path.join(dir, 'mrvc_flash.cfg'), 'utf-8');
 
-fs.rmSync(scratch, { recursive: true, force: true });
-fs.mkdirSync(scratch, { recursive: true });
+// (round3 P1) prepareFlash VALIDATES the firmware — readable, non-empty,
+// Intel HEX records checksummed — so the fixture firmware must be a REAL
+// file inside scratch, re-created after every scratch wipe
+const VALID_HEX = ':0400000021436587AC\n:00000001FF\n';
+const FIRMWARE = path.join(scratch, 'LED.hex');
+const ensureFw = (p = FIRMWARE) => {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, VALID_HEX);
+};
 
-const base = { buildDir: scratch, address: '0x00000000', verify: true, reset: true, boardCfg: 'C:/MRS/wch-riscv.cfg', firmware: 'E:/prj/obj/LED.hex' };
-const bsBase = { ...base, firmware: 'E:' + String.raw`\prj\obj with space\LED.hex` }; // Windows backslashes + a space
+fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
+fs.mkdirSync(scratch, { recursive: true });
+ensureFw();
+
+const base = { buildDir: scratch, address: '0x00000000', verify: true, reset: true, boardCfg: 'C:/MRS/wch-riscv.cfg', firmware: FIRMWARE };
+const bsBase = { ...base, firmware: path.join(scratch, 'obj with space', 'LED.hex') }; // a spaced directory, on disk
 
 // 1. default plan (verify + reset)
 {
@@ -49,16 +61,101 @@ const bsBase = { ...base, firmware: 'E:' + String.raw`\prj\obj with space\LED.he
   const lines = cfg.split('\n').filter((l) => l.trim());
   check('cfg has exactly two lines', lines.length === 2);
   check('address override line first', lines[0] === 'wlink_set_address 0x00000000');
-  check('program line is Tcl-quoted with address+verify+reset+exit', lines[1] === 'program "E:/prj/obj/LED.hex" 0x00000000 verify reset exit');
+  const fwPosix = base.firmware.split(path.sep).join('/');
+  check('program line is Tcl-quoted with address+verify+reset+exit', lines[1] === 'program "' + fwPosix + '" 0x00000000 verify reset exit');
+}
+
+// 1.1 (round3 P1) the firmware gate: an empty BIN, an unreadable file, a
+// garbage "hex" and a bad-checksum record all refuse BEFORE a plan exists —
+// a fresh build dir per case proves NO flash script is ever produced
+{
+  const gateDir = path.join(scratch, 'gateout');
+  const gateBase = { ...base, buildDir: gateDir };
+  const noCfg = () => !fs.existsSync(path.join(gateDir, 'mrvc_flash.cfg'));
+  const zero = path.join(scratch, 'zero.bin');
+  fs.writeFileSync(zero, '');
+  let e0 = '';
+  try {
+    prepareFlash({ ...gateBase, firmware: zero });
+  } catch (err) {
+    e0 = err instanceof Error ? err.message : String(err);
+  }
+  check('gate: a zero-byte BIN refuses (no plan)', /empty or not a regular file/.test(e0) && noCfg(), e0.slice(0, 140));
+
+  const garbage = path.join(scratch, 'garbage.hex');
+  fs.writeFileSync(garbage, 'not a hex file at all\n');
+  let e1 = '';
+  try {
+    prepareFlash({ ...gateBase, firmware: garbage });
+  } catch (err) {
+    e1 = err instanceof Error ? err.message : String(err);
+  }
+  check('gate: an all-garbage "hex" refuses (malformed record)', /malformed record/.test(e1) && noCfg(), e1.slice(0, 140));
+
+  const badsum = path.join(scratch, 'badsum.hex');
+  fs.writeFileSync(badsum, ':0400000021436587FF\n:00000001FF\n');
+  let e2 = '';
+  try {
+    prepareFlash({ ...gateBase, firmware: badsum });
+  } catch (err) {
+    e2 = err instanceof Error ? err.message : String(err);
+  }
+  check('gate: a BAD CHECKSUM record refuses', /bad record checksum/.test(e2) && noCfg(), e2.slice(0, 140));
+
+  // (round5 P2) a data record DECLARING zero bytes (or no data records at
+  // all) sums to zero writable bytes — the bank would be scrubbed with
+  // nothing to write. The length-consistency check also covers short
+  // bodies: `body.length !== 10 + declaredLen*2` refuses.
+  const short = path.join(scratch, 'short.hex');
+  fs.writeFileSync(short, ':0000000000\n:00000001FF\n');
+  let e3 = '';
+  try {
+    prepareFlash({ ...gateBase, firmware: short });
+  } catch (err) {
+    e3 = err instanceof Error ? err.message : String(err);
+  }
+  check('gate: a zero-length data record (nothing to write) refuses', /no data records|does not match/.test(e3) && noCfg(), e3.slice(0, 160));
+
+  // (round6 P2) EOF BEFORE the data: the file checksums correctly and the
+  // data bytes exist, but they follow the EOF terminator — an invalid image
+  // that the old loose parser still accepted (data counted, no record-order
+  // check)
+  const eofFirst = path.join(scratch, 'eof-first.hex');
+  fs.writeFileSync(eofFirst, ':00000001FF\n:0400000021436587AC\n');
+  let e4 = '';
+  try {
+    prepareFlash({ ...gateBase, firmware: eofFirst });
+  } catch (err) {
+    e4 = err instanceof Error ? err.message : String(err);
+  }
+  check('gate: data records AFTER EOF refuse (record order)', /record after EOF/.test(e4) && noCfg(), e4.slice(0, 160));
+
+  // (round6 P2) an extended-address hex still resolves its real base
+  const extAddr = path.join(scratch, 'ext.hex');
+  fs.writeFileSync(extAddr, ':020000040800F2\n:100000006F00407613000000130000001300000092\n:00000001FF\n');
+  const extPlan = prepareFlash({ ...gateBase, firmware: extAddr });
+  check('gate: an extended-linear-address hex yields base 0x08000000', readCfg(gateDir).startsWith('wlink_set_address 0x8000000'), readCfg(gateDir).slice(0, 80));
+
+  // the valid fixture still passes and produces the script
+  let ok = true;
+  try {
+    prepareFlash(gateBase);
+  } catch {
+    ok = false;
+  }
+  check('gate: the valid fixture hex passes and writes the script', ok && fs.existsSync(path.join(gateDir, 'mrvc_flash.cfg')));
 }
 
 // 1.5 Windows backslash path: Jim Tcl eats backslashes in double quotes —
 // the cfg must carry forward slashes (spaces still quoted)
 {
   fs.rmSync(scratch, { recursive: true, force: true });
+  ensureFw();
+  ensureFw(bsBase.firmware); // the spaced path needs its own real file
   prepareFlash(bsBase);
   const cfg = readCfg(scratch);
-  check('backslash firmware path emitted as forward slashes', cfg.includes('program "E:/prj/obj with space/LED.hex"'));
+  const fwPosix = bsBase.firmware.split(path.sep).join('/');
+  check('backslash firmware path emitted as forward slashes', cfg.includes('program "' + fwPosix + '"'));
   check('no backslash remains in the program line', !/program "[^"]*\\/.test(cfg));
   check('backslash case still carries the address offset', cfg.includes('0x00000000 verify reset exit'));
 }
@@ -71,9 +168,11 @@ const bsBase = { ...base, firmware: 'E:' + String.raw`\prj\obj with space\LED.he
 // the line.
 {
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
   prepareFlash({ ...base, sdiPrintf: true });
   check('sdi: plain branch cfg has no sdi_printf line', !readCfg(scratch).includes('sdi_printf'));
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
   prepareFlash({ ...base, sdiPrintf: true, eraseAll: true });
   check('sdi: eraseAll branch cfg has no sdi_printf line', !readCfg(scratch).includes('sdi_printf'));
 }
@@ -84,14 +183,17 @@ const bsBase = { ...base, firmware: 'E:' + String.raw`\prj\obj with space\LED.he
 // session opens (the off pass + delay de-energised it)
 {
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
   prepareFlash({ ...base, powerOn: '3v3' });
   let lines = readCfg(scratch).split('\n').filter((l) => l.trim());
   check('power: rail-ON line first in the plain branch', lines[0] === 'pow3v3 on' && lines[1] === 'wlink_set_address 0x00000000');
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
   prepareFlash({ ...base, powerOn: '5v', eraseAll: true });
   lines = readCfg(scratch).split('\n').filter((l) => l.trim());
   check('power: 5v rail-ON line first in the eraseAll branch', lines[0] === 'pow5v on' && lines[1] === 'wlink_set_address 0x00000000');
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
   prepareFlash(base);
   check('power: no rail line without the option', !readCfg(scratch).includes('pow3v3') && !readCfg(scratch).includes('pow5v'));
 }
@@ -119,14 +221,18 @@ const bsBase = { ...base, firmware: 'E:' + String.raw`\prj\obj with space\LED.he
 // 2. verify/reset combinations
 {
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
   const p = prepareFlash({ ...base, verify: true, reset: false });
-  check('verify only', readCfg(scratch).includes('program "E:/prj/obj/LED.hex" 0x00000000 verify exit'));
+  const fwPosix2 = base.firmware.split(path.sep).join('/');
+  check('verify only', readCfg(scratch).includes(`program "${fwPosix2}" 0x00000000 verify exit`));
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
   const q = prepareFlash({ ...base, verify: false, reset: true });
-  check('reset only', readCfg(scratch).includes('program "E:/prj/obj/LED.hex" 0x00000000 reset exit'));
+  check('reset only', readCfg(scratch).includes(`program "${fwPosix2}" 0x00000000 reset exit`));
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
   const r = prepareFlash({ ...base, verify: false, reset: false });
-  check('neither', readCfg(scratch).includes('program "E:/prj/obj/LED.hex" 0x00000000 exit'));
+  check('neither', readCfg(scratch).includes(`program "${fwPosix2}" 0x00000000 exit`));
   void p; void q; void r;
 }
 
@@ -134,14 +240,17 @@ const bsBase = { ...base, firmware: 'E:' + String.raw`\prj\obj with space\LED.he
 // bank base via wlink_set_address, image offset via program's address arg
 {
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
+  const fwPosix2 = base.firmware.split(path.sep).join('/');
   prepareFlash({ ...base, address: '0x08000000' });
   check('non-zero address override (CH32V3xx/H417)', readCfg(scratch).startsWith('wlink_set_address 0x08000000'));
-  check('program carries the same address as write offset', readCfg(scratch).includes('program "E:/prj/obj/LED.hex" 0x08000000 verify reset exit'));
+  check('program carries the same address as write offset', readCfg(scratch).includes(`program "${fwPosix2}" 0x08000000 verify reset exit`));
 }
 
 // 4. invalid addresses are rejected before any file is written
 {
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
   for (const bad of ['08000000', '0x', '0xG000', 'hello', '']) {
     let threw = false;
     try {
@@ -378,6 +487,8 @@ check('regex rejects bare hex and overflow', !ADDRESS_RE.test('0x00G00000') && !
 // own unconditional `init` forbids prepending an erase to a `program` call
 {
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
+  const fwPosix3 = base.firmware.split(path.sep).join('/');
   prepareFlash({ ...base, eraseAll: true });
   const lines = readCfg(scratch).split('\n').filter((l) => l.trim());
   check('eraseAll: address override stays first (bank base at probe time)', lines[0] === 'wlink_set_address 0x00000000');
@@ -385,12 +496,12 @@ check('regex rejects bare hex and overflow', !ADDRESS_RE.test('0x00G00000') && !
   check('eraseAll: single bank scrubbed to last sector', lines[3] === 'flash erase_sector 0 0 last');
   check(
     'eraseAll: progress echo + write_image erase keeps the offset',
-    lines[4] === 'echo "** Programming Started **"' && lines[5] === 'flash write_image erase "E:/prj/obj/LED.hex" 0x00000000' && lines[6] === 'echo "** Programming Finished **"'
+    lines[4] === 'echo "** Programming Started **"' && lines[5] === `flash write_image erase "${fwPosix3}" 0x00000000` && lines[6] === 'echo "** Programming Finished **"'
   );
   check(
     'eraseAll: verify/reset/shutdown mirror the program proc',
     lines[7] === 'echo "** Verify Started **"' &&
-      lines[8] === 'verify_image "E:/prj/obj/LED.hex" 0x00000000' &&
+      lines[8] === `verify_image "${fwPosix3}" 0x00000000` &&
       lines[9] === 'echo "** Verified OK **"' &&
       lines[10] === 'poll off' &&
       lines[11] === 'echo "** Resetting Target **"' &&
@@ -398,10 +509,12 @@ check('regex rejects bare hex and overflow', !ADDRESS_RE.test('0x00G00000') && !
       lines[13] === 'shutdown'
   );
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
   prepareFlash({ ...base, eraseAll: true, banks: 2 });
   const dual = readCfg(scratch);
   check('eraseAll dual-core: banks 0 and 1 both scrubbed', dual.includes('flash erase_sector 0 0 last') && dual.includes('flash erase_sector 1 0 last'));
   fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
   prepareFlash({ ...base, eraseAll: true, verify: false, reset: false });
   const bare = readCfg(scratch);
   check('eraseAll: verify/reset omitted when disabled', !bare.includes('verify_image') && !bare.includes('reset run') && bare.trimEnd().endsWith('shutdown'));
@@ -423,6 +536,7 @@ check('regex rejects bare hex and overflow', !ADDRESS_RE.test('0x00G00000') && !
 
 // drop the per-run fixture dir
 fs.rmSync(scratch, { recursive: true, force: true });
+ensureFw();
 
 console.log(failures ? `\n${failures} FAILURES` : '\nall flash tests passed');
 process.exit(failures ? 1 : 0);

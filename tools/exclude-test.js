@@ -7,7 +7,7 @@
 const path = require('path');
 const fs = require('fs');
 const { Cproject } = require('../out/core/cproject.js');
-const { scanSources, isLogicExcluded, exclusionFsPaths } = require('../out/core/scan.js');
+const { scanSources, isLogicExcluded, isOutputDirLogicPath, exclusionFsPaths } = require('../out/core/scan.js');
 const { generateMakefiles } = require('../out/core/makefile.js');
 
 // real EVT trees: prefer the local TEST copies, fall back to the F:/ layout
@@ -483,6 +483,77 @@ check('new root entry written with excluding as first attribute', /<entry exclud
   check('decor: ... and that nested file is still scanned (built, not grey)', (scanSources(cp).get('StdPeriphDriver/sub') ?? []).some((f) => f.logicName === 'StdPeriphDriver/sub/deep.c'));
   check("decor: the named entry's direct child is excluded by the engine too", isLogicExcluded(cp, 'StdPeriphDriver/root.c') === true);
   fs.rmSync(base, { recursive: true, force: true });
+}
+
+// ---------- 14. output-dir exclusion boundary (top-level only + named sourceEntry + linked shadow) ----
+{
+  const base = path.join(DEVELOP_DIR, '.scratch', 'excl-outdir');
+  const proj = path.join(base, 'proj');
+  const linkObj = path.join(base, 'ext_lib_obj');
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.mkdirSync(path.join(proj, 'obj'), { recursive: true });
+  fs.mkdirSync(path.join(proj, 'Debug'), { recursive: true });
+  fs.mkdirSync(path.join(proj, 'User', 'obj'), { recursive: true });
+  fs.mkdirSync(path.join(proj, 'User', 'Debug'), { recursive: true });
+  fs.mkdirSync(path.join(linkObj, 'obj'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'obj', 'gen.c'), 'int gen(void){return 0;}\n');
+  fs.writeFileSync(path.join(proj, 'Debug', 'gen_dbg.c'), 'int gendbg(void){return 0;}\n');
+  fs.writeFileSync(path.join(proj, 'User', 'obj', 'nested_obj.c'), 'int no(void){return 1;}\n');
+  fs.writeFileSync(path.join(proj, 'User', 'Debug', 'nested_dbg.c'), 'int nd(void){return 2;}\n');
+  fs.writeFileSync(path.join(linkObj, 'obj', 'linked_sub.c'), 'int lo(void){return 3;}\n');
+  // A (round11): linked folder pointing to ANOTHER project root (has .cproject)
+  // excludes its top-level config output dir (`Lib/obj/math.s`) while sparing
+  // `Lib/Vendor/obj/real.c`, whether or not `.wvproj` exists; B (round11):
+  // root source file matching an inactive config name (`board.c`) is NOT treated
+  // as an output directory
+  const libProjDir = path.join(base, 'lib_proj');
+  fs.mkdirSync(path.join(libProjDir, 'obj'), { recursive: true });
+  fs.mkdirSync(path.join(libProjDir, 'Vendor', 'obj'), { recursive: true });
+  fs.mkdirSync(path.join(libProjDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(libProjDir, 'obj', 'math.s'), '/* save-temps */\n');
+  fs.writeFileSync(path.join(libProjDir, 'Vendor', 'obj', 'real.c'), 'int v_real(void){return 4;}\n');
+  fs.writeFileSync(path.join(libProjDir, 'src', 'math.c'), 'int m_add(void){return 5;}\n');
+  fs.writeFileSync(
+    path.join(libProjDir, '.cproject'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<cproject><cconfiguration id="lc1" name="obj"><folderInfo><toolChain/></folderInfo></cconfiguration></cproject>'
+  );
+  fs.writeFileSync(path.join(proj, 'board.c'), 'int board_init(void){return 6;}\n');
+  fs.writeFileSync(path.join(linkObj, 'board.c'), 'int linked_board(void){return 7;}\n');
+  fs.writeFileSync(
+    path.join(proj, '.project'),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<projectDescription>\n<name>outdir</name>\n<linkedResources>\n` +
+      `<link>\n<name>LinkedLib</name>\n<type>2</type>\n<location>${linkObj}</location>\n</link>\n` +
+      `<link>\n<name>Lib</name>\n<type>2</type>\n<location>${libProjDir}</location>\n</link>\n` +
+      `</linkedResources>\n</projectDescription>`
+  );
+  fs.writeFileSync(
+    path.join(proj, '.cproject'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n' +
+      '<cconfiguration id="c1" name="obj"><folderInfo><toolChain><sourceEntries>' +
+      '<entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>' +
+      '<entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name="obj"/>' +
+      '</sourceEntries></toolChain></folderInfo></cconfiguration>' +
+      '<cconfiguration id="c2" name="Debug"><folderInfo><toolChain><sourceEntries>' +
+      '<entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>' +
+      '</sourceEntries></toolChain></folderInfo></cconfiguration>' +
+      '<cconfiguration id="c3" name="board.c"><folderInfo><toolChain><sourceEntries>' +
+      '<entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>' +
+      '</sourceEntries></toolChain></folderInfo></cconfiguration>' +
+      '</cproject>'
+  );
+  const cpOut = Cproject.load(proj);
+  const scanned = [...scanSources(cpOut).values()].flat().map((f) => f.logicName);
+  check('outdir: top-level active output dir (obj/) excluded even with named entry', !scanned.includes('obj/gen.c'));
+  check('outdir: top-level inactive output dir (Debug/) excluded', !scanned.includes('Debug/gen_dbg.c'));
+  check('outdir: nested User/obj/ NOT falsely excluded', scanned.includes('User/obj/nested_obj.c'));
+  check('outdir: nested User/Debug/ NOT falsely excluded', scanned.includes('User/Debug/nested_dbg.c'));
+  check('outdir: linked non-project LinkedLib/obj/ NOT falsely excluded', scanned.includes('LinkedLib/obj/linked_sub.c'));
+  check('outdir A: linked project Lib/obj/math.s excluded even without .wvproj', !scanned.includes('Lib/obj/math.s') && scanned.includes('Lib/src/math.c'));
+  check('outdir A: linked project nested Lib/Vendor/obj/real.c NOT excluded', scanned.includes('Lib/Vendor/obj/real.c'));
+  check('outdir B: root file colliding with config name (board.c) IS scanned and isOutputDirLogicPath=false', scanned.includes('board.c') && isOutputDirLogicPath(cpOut, 'board.c') === false);
+  check('outdir: isOutputDirLogicPath detects top-level active/inactive dirs and linked-project output', isOutputDirLogicPath(cpOut, 'obj/gen.c') === true && isOutputDirLogicPath(cpOut, 'Debug/gen_dbg.c') === true && isOutputDirLogicPath(cpOut, 'Lib/obj/math.s') === true);
+  check('outdir: isOutputDirLogicPath spares nested & linked non-project/file paths', isOutputDirLogicPath(cpOut, 'User/obj/nested_obj.c') === false && isOutputDirLogicPath(cpOut, 'LinkedLib/obj/linked_sub.c') === false && isOutputDirLogicPath(cpOut, 'Lib/Vendor/obj/real.c') === false && isOutputDirLogicPath(cpOut, 'LinkedLib/board.c') === false);
+  fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 }
 
 console.log(failures ? `\n${failures} FAILURES` : '\nall exclude tests passed');

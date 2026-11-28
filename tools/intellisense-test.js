@@ -796,16 +796,15 @@ if (HAS_LED) {
   const settingsFile = path.join(WS, '.vscode', 'settings.json');
   const read = () => { try { return fs.readFileSync(settingsFile, 'utf-8'); } catch { return null; } };
 
-  // 1. DEFAULTS (path empty, size 5120 = the schema default): a fresh
-  //    workspace gets the size cap written explicitly, and no path key
+  // 1. DEFAULTS (path empty, size 5120 = the schema default): v0.3.8 user
+  //    ruling — cache governance is GATED by cachePath, so with the path
+  //    unset NOTHING is written (the standalone size write was the old bug
+  //    shape: 5120 landed uninvited in every workspace)
   cachePathSetting = '';
   cacheSizeSetting = 5120;
   ensureIntellisenseConfig(store2);
   const s0 = read();
-  check(
-    'cacheSize default: fresh settings.json pins the 5120 cap (no path key)',
-    s0 !== null && parseJsoncSafe(s0)['C_Cpp.intelliSenseCacheSize'] === 5120 && !('C_Cpp.intelliSenseCachePath' in parseJsoncSafe(s0))
-  );
+  check('cachePath gate: no cachePath → nothing is written (size no longer rides alone)', s0 === null);
 
   // 2. path ON: both keys land, and a second run is a no-op
   cachePathSetting = 'F:/mrvc-cache/ipch';
@@ -860,15 +859,16 @@ if (HAS_LED) {
   const settingsFile = path.join(WS, '.vscode', 'settings.json');
   const read = () => { try { return fs.readFileSync(settingsFile, 'utf-8'); } catch { return null; } };
   fs.rmSync(settingsFile, { force: true });
+  // v0.3.8 user ruling: size WITHOUT path writes nothing — the gate lives in
+  // applyCacheOverrides, so this section verifies the skip end to end
   cachePathSetting = '';
   cacheSizeSetting = 2048;
   ensureIntellisenseConfig(store3);
-  const s = read();
-  check('cacheSize only: the size key is written without touching the path key', s !== null && parseJsoncSafe(s)['C_Cpp.intelliSenseCacheSize'] === 2048 && !('C_Cpp.intelliSenseCachePath' in parseJsoncSafe(s)));
-  // a hand edit that turned the size key into a string is respected (never touch)
+  check('cacheSize alone: gated off entirely (no file, no keys)', read() === null);
+  // a hand edit stays untouched — the gated-off pass never reads-to-write
   fs.writeFileSync(settingsFile, '{\n  "C_Cpp.intelliSenseCacheSize": "big"\n}');
   ensureIntellisenseConfig(store3);
-  check('cacheSize only: a string-typed hand edit is left untouched (unreadable)', read() === '{\n  "C_Cpp.intelliSenseCacheSize": "big"\n}');
+  check('cacheSize alone: a gated-off pass leaves hand edits alone', read() === '{\n  "C_Cpp.intelliSenseCacheSize": "big"\n}');
   cacheSizeSetting = 0;
 }
 
@@ -884,17 +884,16 @@ if (HAS_LED) {
   cacheSizeSetting = 2048;
   const rType = applyCacheOverrides();
   check(
-    'cache overrides: a non-string path value is skipped (size still written)',
-    rType.invalidSettings.length === 1 && rType.unreadable.length === 0 && JSON.parse(read())['C_Cpp.intelliSenseCachePath'] === undefined && JSON.parse(read())['C_Cpp.intelliSenseCacheSize'] === 2048
+    'cache overrides: a non-string path value is reported and NOTHING is written (gate)',
+    rType.invalidSettings.length === 1 && rType.unreadable.length === 0 && read() === null
   );
   cacheSizeSetting = 'not-a-number';
   cachePathSetting = 'F:/mrvc-cache/ipch';
   const rSize = applyCacheOverrides();
-  // the size key from the PREVIOUS write stays (MRVC never deletes) — the
-  // new non-number value is simply not written
+  // the path key lands; the non-number size is reported and skipped
   check(
     'cache overrides: a non-number size value is skipped (path still written)',
-    JSON.parse(read())['C_Cpp.intelliSenseCacheSize'] === 2048 && JSON.parse(read())['C_Cpp.intelliSenseCachePath'] === 'F:/mrvc-cache/ipch' && rSize.invalidSettings.length === 1
+    JSON.parse(read())['C_Cpp.intelliSenseCacheSize'] === undefined && JSON.parse(read())['C_Cpp.intelliSenseCachePath'] === 'F:/mrvc-cache/ipch' && rSize.invalidSettings.length === 1
   );
   // round26 §4.1: a fractional MB must not floor to 0 (0 = "no cap" for
   // cpptools) — it is reported and skipped instead
@@ -902,14 +901,14 @@ if (HAS_LED) {
   const rFrac = applyCacheOverrides();
   check(
     'cache overrides: a fractional MB is rejected, not floored to a silent 0',
-    rFrac.invalidSettings.length === 1 && rFrac.invalidSettings[0].includes('0.5') && JSON.parse(read())['C_Cpp.intelliSenseCacheSize'] === 2048
+    rFrac.invalidSettings.length === 1 && rFrac.invalidSettings[0].includes('0.5') && JSON.parse(read())['C_Cpp.intelliSenseCacheSize'] === undefined
   );
   // round28 §3.2: a NEGATIVE value is reported too (0 stays the silent opt-out)
   cacheSizeSetting = -1;
   const rNeg = applyCacheOverrides();
   check(
     'cache overrides: a negative MB is reported, not silently skipped',
-    rNeg.invalidSettings.length === 1 && rNeg.invalidSettings[0].includes('-1') && JSON.parse(read())['C_Cpp.intelliSenseCacheSize'] === 2048
+    rNeg.invalidSettings.length === 1 && rNeg.invalidSettings[0].includes('-1') && JSON.parse(read())['C_Cpp.intelliSenseCacheSize'] === undefined
   );
   // 0 remains the documented opt-out: silently skipped, no error
   cacheSizeSetting = 0;
@@ -937,7 +936,7 @@ if (HAS_LED) {
     linkerC: 'gcc', linkerCpp: 'g++', debugger: 'gdb', objcopy: 'o', objdump: 'o', size: 's', prefix: 'riscv-none-embed-',
   };
   const storeM = { all: [{ root: PROJ, projectName: 'LED', cproject: cpM, toolchain: () => tcM }] };
-  cachePathSetting = '';
+  cachePathSetting = 'F:/mrvc-cache/ipch';
   cacheSizeSetting = 2048; // a size write is pending, so the unreadable settings.json is probed
   fs.writeFileSync(path.join(WS, '.vscode', 'c_cpp_properties.json'), '{ broken props');
   fs.writeFileSync(path.join(WS, '.vscode', 'settings.json'), '{{{ broken settings');
@@ -947,6 +946,103 @@ if (HAS_LED) {
     typeof rM.error === 'string' && rM.error.includes('c_cpp_properties.json') && rM.error.includes('settings.json') && rM.error.includes('\n')
   );
   cacheSizeSetting = 0;
+}
+
+// ---- round39 P3: switchContext containment, atomic write, and temp cleanup ----
+{
+  const { switchContext, dbDir, dbFileName, activeCcFile } = require('../out/vscode/intellisense.js');
+  const ws39 = path.join(WS, 'switch-probe');
+  const proj39 = path.join(ws39, 'DemoProj');
+  const cc39 = dbDir(ws39);
+  fs.mkdirSync(cc39, { recursive: true });
+  fs.mkdirSync(proj39, { recursive: true });
+  const dbPath39 = path.join(cc39, dbFileName(proj39, 'DemoProj'));
+  const sampleDb = JSON.stringify([{ directory: proj39, file: path.join(proj39, 'main.c'), arguments: ['gcc', '-c', 'main.c'] }], null, 2);
+  fs.writeFileSync(dbPath39, sampleDb, 'utf-8');
+  const firstSwitch = switchContext(ws39, proj39, 'DemoProj');
+  const secondSwitch = switchContext(ws39, proj39, 'DemoProj');
+  const activePath = activeCcFile(ws39);
+  const filesAfterSwitch = fs.readdirSync(cc39);
+  check(
+    'round39 switchContext: writes _active.json atomically once and leaves no .tmp files',
+    firstSwitch === true &&
+      secondSwitch === false &&
+      fs.readFileSync(activePath, 'utf-8') === sampleDb &&
+      !filesAfterSwitch.some((n) => n.endsWith('.tmp'))
+  );
+
+  // Hook lstatSync to treat _active.json as a symlink — switchContext must refuse and clean up temp files
+  const origLstat39 = fs.lstatSync;
+  fs.lstatSync = function (p) {
+    const st = origLstat39.call(fs, p);
+    if (path.resolve(String(p)) === path.resolve(activePath)) {
+      return { isSymbolicLink: () => true, isFile: () => false, isDirectory: () => false };
+    }
+    return st;
+  };
+  let symSwitched = true;
+  try {
+    symSwitched = switchContext(ws39, proj39, 'DemoProj');
+  } finally {
+    fs.lstatSync = origLstat39;
+  }
+  const filesAfterSym = fs.readdirSync(cc39);
+  check(
+    'round39 switchContext: symlinked _active.json is refused and leaves no .tmp files',
+    symSwitched === false && !filesAfterSym.some((n) => n.endsWith('.tmp'))
+  );
+
+  // Also confirm a renameSync failure cleans up the temporary file without updating _active.json
+  const updatedDb = JSON.stringify([{ directory: proj39, file: path.join(proj39, 'other.c'), arguments: ['gcc', '-c', 'other.c'] }], null, 2);
+  fs.writeFileSync(dbPath39, updatedDb, 'utf-8');
+  const origRename40 = fs.renameSync;
+  fs.renameSync = function () {
+    const err = new Error('EACCES: blocked rename');
+    err.code = 'EACCES';
+    throw err;
+  };
+  let renameSwitched = true;
+  try {
+    renameSwitched = switchContext(ws39, proj39, 'DemoProj');
+  } finally {
+    fs.renameSync = origRename40;
+  }
+  const filesAfterRenameErr = fs.readdirSync(cc39);
+  check(
+    'round40 switchContext: rename failure cleans up .tmp file and keeps previous _active.json',
+    renameSwitched === false &&
+      fs.readFileSync(activePath, 'utf-8') === sampleDb &&
+      !filesAfterRenameErr.some((n) => n.endsWith('.tmp'))
+  );
+
+  // round11 C: read-only settings.json (0444) is refused instead of replaced via rename, and POSIX mode 0600 is preserved
+  const { writeWorkspaceCacheSettings } = require('../out/vscode/intellisense.js');
+  const roSettings = path.join(ws39, 'ro_settings.json');
+  const origRo = '{\n  "existing": true\n}\n';
+  fs.writeFileSync(roSettings, origRo, 'utf-8');
+  fs.chmodSync(roSettings, 0o444);
+  let roErr = '';
+  try {
+    writeWorkspaceCacheSettings(roSettings, [{ key: 'C_Cpp.intelliSenseCachePath', value: 'D:/cache', kind: 'string' }]);
+  } catch (e) {
+    roErr = String(e.code || e.message || e);
+  } finally {
+    try { fs.chmodSync(roSettings, 0o666); } catch {}
+  }
+  const roDirFiles = fs.readdirSync(ws39);
+  check(
+    'round11 C: read-only (0444) settings.json refuses overwrite, leaves bytes untouched and no .tmp files',
+    roErr.length > 0 && fs.readFileSync(roSettings, 'utf-8') === origRo && !roDirFiles.some((n) => n.endsWith('.tmp')),
+    `roErr=${roErr}`
+  );
+  if (process.platform !== 'win32') {
+    const modeSettings = path.join(ws39, 'mode_settings.json');
+    fs.writeFileSync(modeSettings, origRo, { encoding: 'utf-8', mode: 0o600 });
+    fs.chmodSync(modeSettings, 0o600);
+    const modeRes = writeWorkspaceCacheSettings(modeSettings, [{ key: 'C_Cpp.intelliSenseCachePath', value: 'D:/cache', kind: 'string' }]);
+    const modeAfter = fs.statSync(modeSettings).mode & 0o777;
+    check('round11 C (POSIX): 0600 permissions preserved across atomic write', modeRes === 'written' && modeAfter === 0o600, `mode=${modeAfter.toString(8)}`);
+  }
 }
 
 function parseJsoncSafe(t) {

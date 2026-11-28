@@ -602,6 +602,24 @@ function resolveOutputMacros(cp: Cproject, s: string): string {
   return s.split('${BuildArtifactFileBaseName}').join(cp.targetName).split('${ProjName}').join(cp.projectName);
 }
 
+/**
+ * Resolve the linker `-Wl,-Map` filename for a configuration (`<target>.map`
+ * by default, or the configured `${p}.linker.mapfilename` with CDT/logic-path
+ * macros expanded and `.map` ensured). Shared between `linkerOptionsFor` and
+ * `makefile.buildOutputFiles` so the generator and output cleanup agree on the
+ * exact map file path.
+ */
+export function linkerMapName(cp: Cproject, p: 'c' | 'cpp' = cp.isCpp ? 'cpp' : 'c'): string {
+  const rawMap = cp.optionValue(`${p}.linker.mapfilename`);
+  if (!rawMap) return `${cp.targetName}.map`;
+  const unquoted = rawMap.replace(/^"(.*)"$/, '$1').trim();
+  const linked = cp.linkedFolders ?? new Map<string, string>();
+  const abs = convertLogicToFullPath(cp.projectRoot, cp.projectName, unquoted, linked);
+  let mapName = abs ?? resolveOutputMacros(cp, unquoted);
+  if (!/\.map$/i.test(mapName)) mapName += '.map';
+  return mapName;
+}
+
 function linkerOptionsFor(cp: Cproject, p: 'c' | 'cpp', style: '1x' | '2x' = '1x', configDir?: string): string {
   let t = '';
   for (const s of resolveList(cp, `${p}.linker.scriptfile`, (v) => v, { style })) {
@@ -625,17 +643,7 @@ function linkerOptionsFor(cp: Cproject, p: 'c' | 'cpp', style: '1x' | '2x' = '1x
     if (f) t += ` -Xlinker ${resolveOutputMacros(cp, f)}`;
   }
   // map file name: .cproject may store macros like ${BuildArtifactFileBaseName}.map
-  const rawMap = cp.optionValue(`${p}.linker.mapfilename`);
-  let mapName: string;
-  if (!rawMap) {
-    mapName = `${cp.targetName}.map`;
-  } else {
-    const unquoted = rawMap.replace(/^"(.*)"$/, '$1').trim();
-    const linked = cp.linkedFolders ?? new Map<string, string>();
-    const abs = convertLogicToFullPath(cp.projectRoot, cp.projectName, unquoted, linked);
-    mapName = abs ?? resolveOutputMacros(cp, unquoted);
-    if (!/\.map$/i.test(mapName)) mapName += '.map';
-  }
+  const mapName = linkerMapName(cp, p);
   t += ` -Wl,-Map,"${mapName}"`;
   if (cp.optionBool(`${p}.linker.cref`)) t += ' -Xlinker --cref';
   if (cp.optionBool(`${p}.linker.printmap`)) t += ' -Xlinker --print-map';

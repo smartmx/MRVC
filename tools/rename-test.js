@@ -161,6 +161,37 @@ renameProject(proj, 'NewName');
   fs.rmSync(atomic, { recursive: true, force: true });
 }
 
+// ---------- 6. target collision: a launch already carrying the NEW name is
+// never silently overwritten (round29 P2) — refuse with zero writes ----------
+{
+  const coll = path.join(scratch, 'collision');
+  buildFixture(coll);
+  const userLaunch =
+    '<?xml version="1.0" encoding="UTF-8"?>\n<launchConfiguration type="org.eclipse.cdt.launch.applicationLaunchType">\n' +
+    '<stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="obj/user.elf"/>\n' +
+    '<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="OldName"/>\n' +
+    '<stringAttribute key="marker" value="USER_NEW"/>\n</launchConfiguration>';
+  fs.writeFileSync(path.join(coll, 'NewName.launch'), userLaunch);
+  const before = {
+    oldLaunch: fs.readFileSync(path.join(coll, 'OldName.launch')),
+    userLaunch: fs.readFileSync(path.join(coll, 'NewName.launch')),
+    project: fs.readFileSync(path.join(coll, '.project')),
+    wvproj: fs.readFileSync(path.join(coll, 'OldName.wvproj')),
+  };
+  let threw = '';
+  try {
+    renameProject(coll, 'NewName');
+  } catch (e) {
+    threw = String(e.message || e);
+  }
+  check('collision: rename refused', threw.includes('already exists') && threw.includes('no overwrite'));
+  check('collision: template launch byte-identical', fs.readFileSync(path.join(coll, 'OldName.launch')).equals(before.oldLaunch));
+  check('collision: user NewName.launch byte-identical (no overwrite)', fs.readFileSync(path.join(coll, 'NewName.launch')).equals(before.userLaunch));
+  check('collision: .project byte-identical', fs.readFileSync(path.join(coll, '.project')).equals(before.project));
+  check('collision: .wvproj untouched, no new marker', fs.readFileSync(path.join(coll, 'OldName.wvproj')).equals(before.wvproj) && !fs.existsSync(path.join(coll, 'NewName.wvproj')));
+  fs.rmSync(coll, { recursive: true, force: true });
+}
+
 console.log(failures ? `\n${failures} FAILURES` : '\nall rename tests passed');
 process.exit(failures ? 1 : 0);
 

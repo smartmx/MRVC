@@ -573,7 +573,7 @@ export class ProjectTreeProvider implements vscode.TreeDataProvider<TreeNode> {
           (e) =>
             e.isDirectory() &&
             !e.name.startsWith('.') &&
-            e.name !== proj.cproject.configName &&
+            foldPathOnPlatform(e.name) !== foldPathOnPlatform(proj.cproject.configName) &&
             !linkedNames.has(foldPathOnPlatform(e.name)) &&
             !removedRoot.has(foldPathOnPlatform(e.name))
         )

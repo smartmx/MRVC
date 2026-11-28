@@ -197,10 +197,23 @@ try {
   const cmdAll = pkg.contributes.commands.find((c) => c.command === 'mrvc.searchInAllProjects');
   check('wiring: searchInAllProjects command registered', !!cmdAll);
   const menuAll = pkg.contributes.menus['view/title'].find((m) => m.command === 'mrvc.searchInAllProjects');
+  const menuBuildAll = pkg.contributes.menus['view/title'].find((m) => m.command === 'mrvc.buildAll');
   check(
-    'wiring: title-bar entry gated on mrvc.hasProjects in its own group',
-    !!menuAll && menuAll.when.includes('mrvc.hasProjects') && menuAll.group.startsWith('3_search'),
-    JSON.stringify(menuAll)
+    'wiring: title-bar entry gated on mrvc.hasProjects, in its OWN group ABOVE Build All (user order 0.3.8)',
+    !!menuAll &&
+      menuAll.when.includes('mrvc.hasProjects') &&
+      menuAll.group.startsWith('0_search') &&
+      !!menuBuildAll &&
+      menuAll.group < menuBuildAll.group,
+    JSON.stringify({ menuAll, menuBuildAll: menuBuildAll && menuBuildAll.group })
+  );
+  // the title-menu groups are renumbered gapless (0_new / 0_search /
+  // 1_build / 2_delete / 3_sync / 4_tools / 5_settings — user request 0.3.8)
+  const titleGroups = [...new Set(pkg.contributes.menus['view/title'].map((m) => m.group.split('@')[0]))].filter((g) => g !== 'navigation').sort();
+  check(
+    'wiring: title-menu groups renumbered gapless',
+    JSON.stringify(titleGroups) === JSON.stringify(['0_new', '0_search', '1_build', '2_delete', '3_sync', '4_tools', '5_settings']),
+    JSON.stringify(titleGroups)
   );
   check('wiring: the bundle flattens through allProjectsScope', extSrc.includes('allProjectsScope('));
   check('wiring: empty store errors instead of searching nothing', /searchInAllProjects[\s\S]{0,600}showErrorMessage\(t\(["']noProjectsLoaded["']\)\)/.test(extSrc));
@@ -214,9 +227,13 @@ try {
   //     focus-scoping idea was dropped; Ctrl+H intentionally SHADOWS the
   //     editor's native find/replace while a project is active).
   const kbs = pkg.contributes.keybindings ?? [];
-  check('keybindings: four built-in keys', kbs.length === 4, JSON.stringify(kbs));
+  check('keybindings: five built-in keys', kbs.length === 5, JSON.stringify(kbs));
   const kbByKey = Object.fromEntries(kbs.map((k) => [k.key, k]));
   check('keybindings: ctrl+h opens Search in Project', kbByKey['ctrl+h']?.command === 'mrvc.searchInProject');
+  check(
+    'keybindings: ctrl+shift+h opens Search in All Projects (user request 0.3.8, same gate as Search in Project)',
+    kbByKey['ctrl+shift+h']?.command === 'mrvc.searchInAllProjects'
+  );
   for (const kb of kbs) {
     check(
       `keybindings: ${kb.key} -> ${kb.command} gated on mrvc.hasActiveProject only`,

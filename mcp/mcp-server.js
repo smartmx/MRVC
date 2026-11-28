@@ -3814,8 +3814,8 @@ var require_lib = __commonJS({
 });
 
 // src/mcp/server.ts
-var fs20 = __toESM(require("fs"));
-var path21 = __toESM(require("path"));
+var fs22 = __toESM(require("fs"));
+var path23 = __toESM(require("path"));
 
 // src/core/mcpExport.ts
 var fs5 = __toESM(require("fs"));
@@ -3824,6 +3824,7 @@ var path6 = __toESM(require("path"));
 // src/core/cproject.ts
 var fs3 = __toESM(require("fs"));
 var path4 = __toESM(require("path"));
+var import_crypto = require("crypto");
 
 // src/core/xml.ts
 var XElement = class {
@@ -4329,7 +4330,7 @@ function addLinkedFolder(projectRoot, name, target) {
     );
   }
   assertSafeLinkTarget(projectRoot, target);
-  const p = readProjectFile(projectRoot);
+  const p = readProjectFile(projectRoot, { repair: false });
   const foldN = (s) => process.platform === "win32" ? s.toLowerCase() : s;
   const existing = p.linkedResources.find((l) => foldN(l.name) === foldN(name));
   if (existing) {
@@ -4363,7 +4364,7 @@ function addLinkedFolder(projectRoot, name, target) {
   };
 }
 function removeLinkedFolder(projectRoot, name) {
-  const p = readProjectFile(projectRoot);
+  const p = readProjectFile(projectRoot, { repair: false });
   const pd = p.root.child("projectDescription");
   const lr = pd.child("linkedResources");
   if (!lr) return;
@@ -4378,13 +4379,33 @@ function removeLinkedFolder(projectRoot, name) {
   }
   saveProjectFile(projectRoot, p);
 }
+function changeLinkedFolderTarget(projectRoot, name, newTarget) {
+  var _a;
+  assertSafeLinkTarget(projectRoot, newTarget);
+  const p = readProjectFile(projectRoot, { repair: false });
+  const pd = p.root.child("projectDescription");
+  const lr = pd.child("linkedResources");
+  if (!lr) return void 0;
+  const link = lr.childrenNamed("link").find((l) => {
+    var _a2;
+    return ((_a2 = l.child("name")) == null ? void 0 : _a2.text) === name;
+  });
+  if (!link) return void 0;
+  const locEl = link.child("location") ?? link.child("locationURI");
+  if (!locEl) return void 0;
+  const uri = makeLocationUri(projectRoot, newTarget);
+  locEl.name = "locationURI";
+  locEl.text = uri;
+  saveProjectFile(projectRoot, p);
+  return { name: ((_a = link.child("name")) == null ? void 0 : _a.text) ?? name, type: 2, locationUri: uri, location: resolveLocationUri(projectRoot, uri), element: link };
+}
 function saveProjectFile(projectRoot, p) {
   fs2.writeFileSync(projectRoot + "/.project", serializeXml(p.root), "utf-8");
 }
 function filteredListElement(projectRoot, create) {
   let file;
   try {
-    file = readProjectFile(projectRoot, { repair: create });
+    file = readProjectFile(projectRoot, { repair: false });
   } catch (e) {
     if (!create) return void 0;
     throw e;
@@ -4427,6 +4448,114 @@ function listRemovedResources(projectRoot) {
     });
   }
   return out;
+}
+var NATURE_CXX = "org.eclipse.cdt.core.ccnature";
+var NATURE_CXX_LEGACY = "org.eclipse.cdt.core.cxxnature";
+function setCppNature(projectRoot, on) {
+  var _a;
+  const p = readProjectFile(projectRoot, { repair: false });
+  const natures = (_a = p.root.child("projectDescription")) == null ? void 0 : _a.child("natures");
+  if (!natures) {
+    if (!on) return;
+    throw new Error(".project: <natures> not found");
+  }
+  const items = natures.childrenNamed("nature");
+  const real = items.find((n) => n.text === NATURE_CXX);
+  const legacy = items.find((n) => n.text === NATURE_CXX_LEGACY);
+  if (on && real && !legacy) return;
+  if (!on && !real && !legacy) return;
+  if (on) {
+    if (!real) {
+      const el = new XElement("nature");
+      el.text = NATURE_CXX;
+      const cnature = items.find((n) => n.text === "org.eclipse.cdt.core.cnature");
+      if (cnature) {
+        natures.insertChild(el, natures.children.indexOf(cnature) + 1);
+      } else {
+        natures.append(el);
+      }
+    }
+    if (legacy) natures.removeChild(legacy);
+  } else {
+    if (real) natures.removeChild(real);
+    if (legacy) natures.removeChild(legacy);
+  }
+  saveProjectFile(projectRoot, p);
+}
+function renameProject(projectRoot, newName, opts = {}) {
+  var _a;
+  if (!newName || !newName.trim() || /[\\/:*?"<>|\s]/.test(newName)) {
+    throw new Error(`Invalid project name "${newName}" (no spaces or \\ / : * ? " < > |)`);
+  }
+  const p = readProjectFile(projectRoot, { repair: false });
+  const nameEl = (_a = p.root.child("projectDescription")) == null ? void 0 : _a.child("name");
+  if (!nameEl) {
+    throw new Error(".project: <projectDescription><name> not found");
+  }
+  const oldName = nameEl.text;
+  nameEl.text = newName;
+  const launches = fs2.readdirSync(projectRoot).filter((f) => f.toLowerCase().endsWith(".launch")).sort();
+  const launchEdits = [];
+  for (const f of launches) {
+    const dom = parseXml(fs2.readFileSync(path3.join(projectRoot, f), "utf-8"));
+    for (const attr of dom.findAll((e) => e.name === "stringAttribute")) {
+      const key = attr.attr("key");
+      if (key === "org.eclipse.cdt.launch.PROGRAM_NAME") {
+        const v = attr.attr("value");
+        if (v) {
+          const sep11 = Math.max(v.lastIndexOf("\\"), v.lastIndexOf("/"));
+          const base = v.slice(sep11 + 1);
+          const dot = base.lastIndexOf(".");
+          if (dot > 0) attr.setAttr("value", (sep11 >= 0 ? v.slice(0, sep11 + 1) : "") + newName + base.slice(dot));
+        }
+      } else if (key === "org.eclipse.cdt.launch.PROJECT_ATTR") {
+        attr.setAttr("value", newName);
+      }
+    }
+    for (const list of dom.findAll((e) => e.name === "listAttribute")) {
+      if (list.attr("key") !== "org.eclipse.debug.core.MAPPED_RESOURCE_PATHS") continue;
+      for (const le of list.findAll((e) => e.name === "listEntry")) {
+        const v = le.attr("value");
+        if (v) {
+          const slashed = v.startsWith("/");
+          const body = slashed ? v.slice(1) : v;
+          const slash = body.indexOf("/");
+          const head = slash >= 0 ? body.slice(0, slash) : body;
+          if (head === oldName) {
+            le.setAttr("value", (slashed ? "/" : "") + newName + (slash >= 0 ? body.slice(slash) : ""));
+          }
+        }
+      }
+    }
+    launchEdits.push({ file: f, dom });
+  }
+  const renameLaunch = launches.find((f) => f.toLowerCase() === `${oldName.toLowerCase()}.launch`);
+  if (oldName.toLowerCase() !== newName.toLowerCase() && launches.some((f) => f.toLowerCase() === `${oldName.toLowerCase()}.launch`) && launches.some((f) => f.toLowerCase() === `${newName.toLowerCase()}.launch`)) {
+    throw new Error(`a launch configuration named "${newName}.launch" already exists \u2014 rename or delete it first (no overwrite)`);
+  }
+  for (const e of launchEdits) {
+    fs2.writeFileSync(path3.join(projectRoot, e.file), serializeXml(e.dom), "utf-8");
+  }
+  if (renameLaunch) {
+    fs2.renameSync(path3.join(projectRoot, renameLaunch), path3.join(projectRoot, newName + ".launch"));
+  }
+  saveProjectFile(projectRoot, p);
+  for (const ent of fs2.readdirSync(projectRoot)) {
+    if (ent.toLowerCase().endsWith(".wvproj")) {
+      fs2.rmSync(path3.join(projectRoot, ent), { force: true });
+    }
+  }
+  fs2.writeFileSync(path3.join(projectRoot, newName + ".wvproj"), "", "utf-8");
+  if (!opts.isSlave) {
+    const tpl = readTemplate(projectRoot);
+    const tp = tpl.values["Target Path"];
+    if (tp) {
+      const m = tp.match(/^(.+[\\/]).+?(\.[^\\/]+)$/);
+      if (m) {
+        templateSet(projectRoot, "Target Path", m[1] + newName + m[2]);
+      }
+    }
+  }
 }
 function searchStaleLinkFix(projectRoot, location) {
   const staleSegs = toPosixParts(location);
@@ -4522,11 +4651,11 @@ function configNameProblem(raw) {
   if (raw.length > 255 || Buffer.byteLength(raw, "utf8") > 255) return "is too long for a directory name (max 255 bytes)";
   return void 0;
 }
-function duplicateConfigNames(names, fold2 = foldPathOnPlatform) {
+function duplicateConfigNames(names, fold4 = foldPathOnPlatform) {
   const firstByKey = /* @__PURE__ */ new Map();
   const dupes = [];
   for (const n of names) {
-    const key = fold2(n);
+    const key = fold4(n);
     const first = firstByKey.get(key);
     if (first === void 0) {
       firstByKey.set(key, n);
@@ -4645,6 +4774,37 @@ var Cproject = class _Cproject {
   /** configuration names in file order (same strings as MRS2's list) */
   get configurationNames() {
     return this.configurationElements.map((el) => configurationName(el));
+  }
+  /** stable identity of the ACTIVE configuration — the cconfiguration
+   *  element's id attribute. An EXTERNAL switch (MRS / MCP) reorders the
+   *  file, so index 0 can be a different configuration by the time a
+   *  consumer acts: comparing this id catches the swap even when both
+   *  configurations share a name (review P2 — a stale Properties panel must
+   *  not write its drafts into the new active configuration). */
+  get activeConfigurationId() {
+    var _a;
+    return (_a = this.configurationElements[0]) == null ? void 0 : _a.attr("id");
+  }
+  /**
+   * CONTENT fingerprint of the active configuration — SHA-256 over a
+   * WHITESPACE-CANONICAL shape of the <cconfiguration> subtree (tags,
+   * sorted attributes, decoded text; inter-tag whitespace ignored). Raw
+   * serialization is NOT round-trip stable for a mutated tree (an appended
+   * option's recorded indent differs from the re-parsed file's), so the
+   * fingerprint must ignore layout. This still distinguishes configurations
+   * whose ids are MISSING (hand-imported projects) or DUPLICATED (a clone
+   * whose non-standard ids our rewriter could not touch, review round2 P2).
+   * Two configurations with identical canonical content are semantically
+   * the same config, so a swap between them is undetectable AND harmless.
+   */
+  activeConfigurationFingerprint() {
+    return (0, import_crypto.createHash)("sha256").update(canonicalShape(this.configurationElements[0])).digest("hex");
+  }
+  /** content fingerprints of EVERY configuration, in file order — the
+   *  Manage-dialog staleness resolver matches a rendered row against this
+   *  list (see configView resolveRowIndex). */
+  configurationFingerprints() {
+    return this.configurationElements.map((el) => (0, import_crypto.createHash)("sha256").update(canonicalShape(el)).digest("hex"));
   }
   /** configuration names used by more than one configuration — each once,
    * first-seen order; empty when unique. Duplicate names SHARE one output
@@ -4974,7 +5134,7 @@ var Cproject = class _Cproject {
   setOptionBool(suffix, value, create = false) {
     const opt = this.option(suffix);
     if (!opt) {
-      if (create && value) this.createOption(suffix, "true", "boolean");
+      if (create) this.createOption(suffix, value ? "true" : "false", "boolean");
       return;
     }
     opt.setAttr("value", value ? "true" : "false");
@@ -5048,10 +5208,11 @@ var Cproject = class _Cproject {
     }
     delete opt.attrs["IS_VALUE_EMPTY"];
     delete opt.attrs["IS_BUILTIN_EMPTY"];
+    const quote = !(suffix.endsWith(".libs") || suffix.endsWith(".otherobjs"));
     for (const v of values) {
       const e = new XElement("listOptionValue");
       e.setAttr("builtIn", "false");
-      e.setAttr("value", `"${v}"`);
+      e.setAttr("value", quote ? `"${v}"` : v);
       opt.append(e);
     }
   }
@@ -5177,6 +5338,13 @@ var Cproject = class _Cproject {
     fs3.writeFileSync(this.file, serializeXml(this.root), "utf-8");
   }
 };
+function canonicalShape(el) {
+  const attrs = Object.keys(el.attrs).sort().map((k) => `${k}="${el.attrs[k]}"`).join(" ");
+  let out = `<${el.name}${attrs ? " " + attrs : ""}>`;
+  if (el.text) out += el.text;
+  for (const c of el.children) out += canonicalShape(c);
+  return out + `</${el.name}>`;
+}
 function splitExcluding(entry) {
   return (entry.attr("excluding") ?? "").split("|").map((s) => s.trim()).filter((s) => s.length > 0);
 }
@@ -5654,8 +5822,8 @@ function installFromRecord(rec) {
 }
 
 // src/mcp/tools.ts
-var fs19 = __toESM(require("fs"));
-var path20 = __toESM(require("path"));
+var fs21 = __toESM(require("fs"));
+var path22 = __toESM(require("path"));
 var import_child_process2 = require("child_process");
 
 // src/core/discover.ts
@@ -5707,8 +5875,8 @@ function isProjectRoot(entries) {
 }
 
 // src/core/makefile.ts
-var fs9 = __toESM(require("fs"));
-var path10 = __toESM(require("path"));
+var fs10 = __toESM(require("fs"));
+var path11 = __toESM(require("path"));
 
 // src/core/platformEncoding.ts
 var cp = __toESM(require("child_process"));
@@ -5753,6 +5921,440 @@ function encodeArtifact(text) {
     );
   }
   return buf;
+}
+function decodeArtifact(bytes, enc = ansiArtifactEncoding()) {
+  return enc === "utf-8" ? bytes.toString("utf8") : iconv.decode(bytes, enc);
+}
+
+// src/core/outputHistory.ts
+var fs7 = __toESM(require("fs"));
+var path8 = __toESM(require("path"));
+var import_crypto2 = require("crypto");
+var CASE_FOLD = process.platform === "win32";
+var fold = (s) => CASE_FOLD ? s.toLowerCase() : s;
+var toPosix2 = (s) => s.split(path8.sep).join("/");
+function updateHistory(previous, writes) {
+  const next = new Map(previous);
+  for (const { rel, sha256 } of writes) {
+    next.set(fold(rel), sha256);
+  }
+  return next;
+}
+function mayReclaim(rel, currentSha, history) {
+  return history.get(fold(rel)) === currentSha;
+}
+function sha256File(absPath) {
+  try {
+    const st = fs7.lstatSync(absPath);
+    if (st.isSymbolicLink() || !st.isFile()) return void 0;
+    return (0, import_crypto2.createHash)("sha256").update(fs7.readFileSync(absPath)).digest("hex");
+  } catch {
+    return void 0;
+  }
+}
+function resolveSafeChildDir(parentReal, childName, create) {
+  const target = path8.join(parentReal, childName);
+  let st;
+  try {
+    st = fs7.lstatSync(target);
+  } catch (e) {
+    if ((e == null ? void 0 : e.code) === "ENOENT") {
+      if (!create) return void 0;
+      fs7.mkdirSync(target);
+      st = fs7.lstatSync(target);
+    } else {
+      throw e;
+    }
+  }
+  if (st.isSymbolicLink() || !st.isDirectory()) {
+    throw new Error(`refusing to use linked or non-directory metadata path: ${target}`);
+  }
+  const realTarget = fs7.realpathSync.native(target);
+  const parentPrefix = parentReal.endsWith(path8.sep) ? parentReal : parentReal + path8.sep;
+  if (fold(realTarget) === fold(parentReal) || !fold(realTarget).startsWith(fold(parentPrefix))) {
+    throw new Error(`refusing to use metadata path outside project root: ${target} -> ${realTarget}`);
+  }
+  return realTarget;
+}
+function resolveContainedMetaDir(root, segments, create) {
+  const absRoot = path8.resolve(root);
+  let curReal;
+  try {
+    curReal = fs7.realpathSync.native(absRoot);
+  } catch (e) {
+    if ((e == null ? void 0 : e.code) === "ENOENT") {
+      if (!create) return void 0;
+      fs7.mkdirSync(absRoot, { recursive: true });
+      curReal = fs7.realpathSync.native(absRoot);
+    } else {
+      throw e;
+    }
+  }
+  for (const seg of segments) {
+    const next = resolveSafeChildDir(curReal, seg, create);
+    if (!next) return void 0;
+    curReal = next;
+  }
+  return curReal;
+}
+function assertContainedMetaFile(realDir, fileName, allowMissing = true) {
+  const p = path8.join(realDir, fileName);
+  let st;
+  try {
+    st = fs7.lstatSync(p);
+  } catch (e) {
+    if ((e == null ? void 0 : e.code) === "ENOENT" && allowMissing) {
+      return { path: p, exists: false };
+    }
+    throw e;
+  }
+  if (st.isSymbolicLink() || !st.isFile()) {
+    throw new Error(`refusing to access linked or non-regular metadata file: ${p}`);
+  }
+  const realFile = fs7.realpathSync.native(p);
+  const dirPrefix = realDir.endsWith(path8.sep) ? realDir : realDir + path8.sep;
+  if (!fold(realFile).startsWith(fold(dirPrefix))) {
+    throw new Error(`refusing to access metadata file outside history directory: ${p} -> ${realFile}`);
+  }
+  return { path: p, exists: true };
+}
+function resolveSafeHistoryDir(projectRoot, create) {
+  return resolveContainedMetaDir(projectRoot, [".vscode", "mrvc"], create);
+}
+var HISTORY_LOCK_NAME = "output-history.lock";
+var HISTORY_LOCK_STALE_MS = 15e3;
+var HISTORY_IGNORE_ENTRIES = ["output-history.json", HISTORY_LOCK_NAME, `${HISTORY_LOCK_NAME}.stale.*`];
+var LOCK_SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
+function sleepSync(ms) {
+  Atomics.wait(LOCK_SLEEP_BUF, 0, 0, ms);
+}
+function withHistoryLock(realMrvcDir, fn, timeoutMs = 1e3) {
+  const lockPath = path8.join(realMrvcDir, HISTORY_LOCK_NAME);
+  const ownerToken = `${process.pid}:${Date.now()}:${(0, import_crypto2.randomBytes)(8).toString("hex")}`;
+  const deadline = Date.now() + timeoutMs;
+  for (; ; ) {
+    try {
+      const fd = fs7.openSync(lockPath, "wx");
+      try {
+        fs7.writeFileSync(fd, `${ownerToken}
+`, "utf-8");
+      } finally {
+        fs7.closeSync(fd);
+      }
+      break;
+    } catch (e) {
+      if ((e == null ? void 0 : e.code) !== "EEXIST") throw e;
+      try {
+        const st = fs7.lstatSync(lockPath);
+        if (st.isSymbolicLink() || !st.isFile()) {
+          throw new Error(`refusing linked or non-regular lock file: ${lockPath}`);
+        }
+        if (Date.now() - st.mtimeMs > HISTORY_LOCK_STALE_MS) {
+          const claimPath = path8.join(realMrvcDir, `${HISTORY_LOCK_NAME}.stale.${process.pid}.${(0, import_crypto2.randomBytes)(4).toString("hex")}`);
+          let claimed = false;
+          try {
+            fs7.renameSync(lockPath, claimPath);
+            claimed = true;
+          } catch (renErr) {
+            const code = renErr == null ? void 0 : renErr.code;
+            if (code === "ENOENT") continue;
+            if (code !== "EACCES" && code !== "EPERM" && code !== "EBUSY") throw renErr;
+          }
+          if (claimed) {
+            try {
+              const claimSt = fs7.lstatSync(claimPath);
+              if (!claimSt.isSymbolicLink() && claimSt.isFile() && Date.now() - claimSt.mtimeMs > HISTORY_LOCK_STALE_MS) {
+                fs7.unlinkSync(claimPath);
+                continue;
+              }
+              try {
+                fs7.linkSync(claimPath, lockPath);
+              } catch {
+              }
+            } finally {
+              try {
+                fs7.unlinkSync(claimPath);
+              } catch {
+              }
+            }
+          }
+        }
+      } catch (statErr) {
+        if ((statErr == null ? void 0 : statErr.code) === "ENOENT") continue;
+        throw statErr;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`timed out waiting for output-history lock: ${lockPath}`);
+      }
+      sleepSync(15);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      const info = assertContainedMetaFile(realMrvcDir, HISTORY_LOCK_NAME, true);
+      if (info.exists && fs7.readFileSync(info.path, "utf-8").trim() === ownerToken) {
+        fs7.unlinkSync(info.path);
+      }
+    } catch {
+    }
+  }
+}
+function validateHistoryStore(raw, file) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`corrupted output history "${file}": expected a JSON object \u2014 inspect or remove it and rebuild`);
+  }
+  const obj = raw;
+  if (obj.version !== 1) {
+    throw new Error(`unsupported output history version in "${file}": ${String(obj.version)} \u2014 inspect or remove it and rebuild`);
+  }
+  if (!obj.dirs || typeof obj.dirs !== "object" || Array.isArray(obj.dirs)) {
+    throw new Error(`corrupted output history "${file}": missing "dirs" object \u2014 inspect or remove it and rebuild`);
+  }
+  const dirs = {};
+  for (const [k, v] of Object.entries(obj.dirs)) {
+    if (!v || typeof v !== "object" || Array.isArray(v)) {
+      throw new Error(`corrupted output history "${file}": invalid directory entry for "${k}"`);
+    }
+    const entry = v;
+    if (!entry.files || typeof entry.files !== "object" || Array.isArray(entry.files)) {
+      throw new Error(`corrupted output history "${file}": invalid files map for "${k}"`);
+    }
+    if (entry.encoding !== void 0 && typeof entry.encoding !== "string") {
+      throw new Error(`corrupted output history "${file}": invalid encoding for "${k}"`);
+    }
+    const cleanFiles = {};
+    for (const [fk, fv] of Object.entries(entry.files)) {
+      if (typeof fv !== "string" || !fv) {
+        throw new Error(`corrupted output history "${file}": invalid hash entry "${fk}" for "${k}"`);
+      }
+      cleanFiles[fk] = fv;
+    }
+    dirs[k] = {
+      files: cleanFiles,
+      ...typeof entry.encoding === "string" ? { encoding: entry.encoding } : {}
+    };
+  }
+  return { version: 1, dirs };
+}
+function readHistoryStore(projectRoot) {
+  const realMrvcDir = resolveSafeHistoryDir(projectRoot, false);
+  if (!realMrvcDir) return { version: 1, dirs: {} };
+  const fileInfo = assertContainedMetaFile(realMrvcDir, "output-history.json", true);
+  if (!fileInfo.exists) return { version: 1, dirs: {} };
+  let parsed;
+  try {
+    parsed = JSON.parse(fs7.readFileSync(fileInfo.path, "utf-8"));
+  } catch (e) {
+    throw new Error(
+      `unreadable or corrupted output history "${fileInfo.path}" (${e instanceof Error ? e.message : String(e)}) \u2014 refusing unverified deletion; inspect or remove the file and rebuild`
+    );
+  }
+  return validateHistoryStore(parsed, fileInfo.path);
+}
+function appendGitignoreEntriesUnlocked(realMrvcDir, entries) {
+  const info = assertContainedMetaFile(realMrvcDir, ".gitignore", true);
+  if (!info.exists) {
+    fs7.writeFileSync(info.path, entries.join("\n") + "\n", { encoding: "utf-8", flag: "wx" });
+    return;
+  }
+  const raw = fs7.readFileSync(info.path, "utf-8");
+  const lines = raw.split(/\r?\n/);
+  const existing = new Set(lines.map((l) => l.trim()).filter((l) => l.length > 0));
+  const missing = entries.filter((e) => !existing.has(e) && !existing.has("/" + e));
+  if (!missing.length) return;
+  const prefix = raw.length === 0 || raw.endsWith("\n") ? "" : "\n";
+  fs7.appendFileSync(info.path, `${prefix}${missing.join("\n")}
+`, "utf-8");
+}
+function ensureMrvcGitignoreEntries(mrvcDir, entries, opts) {
+  try {
+    if (!entries.length) return true;
+    const realMrvcDir = fs7.realpathSync.native(mrvcDir);
+    if (opts == null ? void 0 : opts.alreadyLocked) {
+      appendGitignoreEntriesUnlocked(realMrvcDir, entries);
+    } else {
+      withHistoryLock(realMrvcDir, () => appendGitignoreEntriesUnlocked(realMrvcDir, entries));
+    }
+    const info = assertContainedMetaFile(realMrvcDir, ".gitignore", true);
+    if (!info.exists) return false;
+    const lines = fs7.readFileSync(info.path, "utf-8").split(/\r?\n/).map((l) => l.trim());
+    return entries.every((e) => lines.includes(e) || lines.includes("/" + e));
+  } catch {
+    return false;
+  }
+}
+function ensureHistoryIgnore(realMrvcDir) {
+  return ensureMrvcGitignoreEntries(realMrvcDir, HISTORY_IGNORE_ENTRIES, { alreadyLocked: true });
+}
+function writeHistoryStore(projectRoot, store) {
+  const realMrvcDir = resolveSafeHistoryDir(projectRoot, true);
+  const fileInfo = assertContainedMetaFile(realMrvcDir, "output-history.json", true);
+  if (!ensureHistoryIgnore(realMrvcDir)) {
+    throw new Error("refusing to write output-history.json: .gitignore entries could not be confirmed");
+  }
+  const tmp = path8.join(realMrvcDir, `output-history.json.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`);
+  try {
+    fs7.writeFileSync(tmp, JSON.stringify(store, null, 2) + "\n", { encoding: "utf-8", flag: "wx" });
+    assertContainedMetaFile(realMrvcDir, "output-history.json", true);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        fs7.renameSync(tmp, fileInfo.path);
+        break;
+      } catch (e) {
+        const code = e == null ? void 0 : e.code;
+        if (attempt < 4 && (code === "EPERM" || code === "EBUSY" || code === "EACCES")) {
+          sleepSync(10);
+          continue;
+        }
+        throw e;
+      }
+    }
+  } catch (e) {
+    try {
+      fs7.unlinkSync(tmp);
+    } catch {
+    }
+    throw e;
+  }
+}
+function resolveContainedRealDir(projectRoot, buildDir) {
+  const root = path8.resolve(projectRoot);
+  const d = path8.resolve(root, buildDir);
+  try {
+    const lst = fs7.lstatSync(d);
+    if (lst.isSymbolicLink() || !lst.isDirectory()) return void 0;
+    const realR = fs7.realpathSync.native(root);
+    const realD = fs7.realpathSync.native(d);
+    const realPrefix = realR.endsWith(path8.sep) ? realR : realR + path8.sep;
+    if (fold(realD) === fold(realR) || !fold(realD).startsWith(fold(realPrefix))) return void 0;
+    return realD;
+  } catch {
+    return void 0;
+  }
+}
+function safeChildPath(realDir, rel) {
+  const normRel = toPosix2(rel).replace(/^\/+/, "");
+  if (!normRel || normRel === "." || normRel === ".." || normRel.startsWith("../")) return void 0;
+  const abs = path8.resolve(realDir, normRel);
+  const prefix = realDir.endsWith(path8.sep) ? realDir : realDir + path8.sep;
+  if (!fold(abs).startsWith(fold(prefix))) return void 0;
+  return { normRel, abs };
+}
+function loadDirHistory(projectRoot, realDir) {
+  const store = readHistoryStore(projectRoot);
+  const entry = store.dirs[fold(realDir)];
+  if (!entry) return { files: /* @__PURE__ */ new Map() };
+  return {
+    files: new Map(Object.entries(entry.files)),
+    encoding: entry.encoding
+  };
+}
+function recordWrittenFiles(projectRoot, buildDir, relPaths, encoding) {
+  try {
+    const realD = resolveContainedRealDir(projectRoot, buildDir);
+    if (!realD) return;
+    const writes = [];
+    for (const rawRel of relPaths) {
+      const target = safeChildPath(realD, rawRel);
+      if (!target) continue;
+      const sha256 = sha256File(target.abs);
+      if (sha256) writes.push({ rel: target.normRel, sha256 });
+    }
+    if (!writes.length && !encoding) return;
+    const realMrvcDir = resolveSafeHistoryDir(projectRoot, true);
+    withHistoryLock(realMrvcDir, () => {
+      const store = readHistoryStore(projectRoot);
+      const dirKey = fold(realD);
+      const prevEntry = store.dirs[dirKey];
+      const prevMap = new Map(prevEntry ? Object.entries(prevEntry.files) : []);
+      const nextMap = updateHistory(prevMap, writes);
+      const filesObj = {};
+      for (const [k, v] of nextMap) filesObj[k] = v;
+      store.dirs[dirKey] = {
+        files: filesObj,
+        encoding: encoding ?? (prevEntry == null ? void 0 : prevEntry.encoding)
+      };
+      writeHistoryStore(projectRoot, store);
+    });
+  } catch {
+  }
+}
+function snapshotExistingOutputs(buildDir, relPaths) {
+  const snap = /* @__PURE__ */ new Map();
+  try {
+    const lstDir = fs7.lstatSync(buildDir);
+    if (lstDir.isSymbolicLink() || !lstDir.isDirectory()) return snap;
+    const realD = fs7.realpathSync.native(buildDir);
+    for (const rawRel of relPaths) {
+      const target = safeChildPath(realD, rawRel);
+      if (!target) continue;
+      try {
+        const st = fs7.lstatSync(target.abs);
+        if (st.isSymbolicLink() || !st.isFile()) continue;
+        const sha256 = (0, import_crypto2.createHash)("sha256").update(fs7.readFileSync(target.abs)).digest("hex");
+        snap.set(fold(target.normRel), { mtimeMs: st.mtimeMs, size: st.size, sha256 });
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return snap;
+}
+function recordBuildOutputs(projectRoot, buildDir, relPaths, before) {
+  try {
+    const realD = resolveContainedRealDir(projectRoot, buildDir);
+    if (!realD) return;
+    const touched = [];
+    for (const rawRel of relPaths) {
+      const target = safeChildPath(realD, rawRel);
+      if (!target) continue;
+      try {
+        const st = fs7.lstatSync(target.abs);
+        if (st.isSymbolicLink() || !st.isFile()) continue;
+        const prev = before.get(fold(target.normRel));
+        if (!prev) {
+          touched.push(target.normRel);
+          continue;
+        }
+        const sha = (0, import_crypto2.createHash)("sha256").update(fs7.readFileSync(target.abs)).digest("hex");
+        if (st.mtimeMs !== prev.mtimeMs || st.size !== prev.size || sha !== prev.sha256) {
+          touched.push(target.normRel);
+        }
+      } catch {
+      }
+    }
+    if (touched.length) recordWrittenFiles(projectRoot, buildDir, touched);
+  } catch {
+  }
+}
+function pruneDeletedHistory(projectRoot, realDir, deletedRels) {
+  if (!deletedRels.length) return;
+  try {
+    const realMrvcDir = resolveSafeHistoryDir(projectRoot, false);
+    if (!realMrvcDir) return;
+    withHistoryLock(realMrvcDir, () => {
+      const store = readHistoryStore(projectRoot);
+      const dirKey = fold(realDir);
+      const entry = store.dirs[dirKey];
+      if (!entry) return;
+      let changed = false;
+      for (const rel of deletedRels) {
+        const k = fold(rel);
+        if (k in entry.files) {
+          delete entry.files[k];
+          changed = true;
+        }
+      }
+      if (!changed) return;
+      if (Object.keys(entry.files).length === 0) {
+        delete store.dirs[dirKey];
+      }
+      writeHistoryStore(projectRoot, store);
+    });
+  } catch {
+  }
 }
 
 // src/core/analysis.ts
@@ -5841,8 +6443,8 @@ function analysisFlags() {
 }
 
 // src/core/scan.ts
-var fs7 = __toESM(require("fs"));
-var path8 = __toESM(require("path"));
+var fs8 = __toESM(require("fs"));
+var path9 = __toESM(require("path"));
 var C_SOURCE_EXTS = ["c", "s", "S"];
 var CPP_SOURCE_EXTS = ["c", "s", "S", "cpp", "C", "cc", "cxx"];
 var SOURCE_WATCHER_GLOB = `**/*.{${[
@@ -5859,7 +6461,7 @@ var SOURCE_WATCHER_GLOB = `**/*.{${[
 ].join(",")}}`;
 var SKIP_DIRS = /* @__PURE__ */ new Set([".settings", ".vscode", ".mrs", "CMakeFiles"]);
 function classifySourceExt(name) {
-  const base = path8.posix.basename(name);
+  const base = path9.posix.basename(name);
   const dot = base.lastIndexOf(".");
   const ext = dot < 0 ? "" : base.slice(dot + 1);
   if (!ext) return void 0;
@@ -5874,14 +6476,14 @@ function classifySourceExt(name) {
 }
 function assertScannableLinkedFolders(cp2) {
   const rootEntry = cp2.sourceEntries.find((e) => e.name === "");
-  const excluded = new Set(((rootEntry == null ? void 0 : rootEntry.excluding) ?? []).map((t) => fold(t)));
-  const named = new Set(cp2.sourceEntries.filter((e) => e.name !== "").map((e) => fold(e.name)));
+  const excluded = new Set(((rootEntry == null ? void 0 : rootEntry.excluding) ?? []).map((t) => fold2(t)));
+  const named = new Set(cp2.sourceEntries.filter((e) => e.name !== "").map((e) => fold2(e.name)));
   const removedFolders = new Set(
-    listRemovedResources(cp2.projectRoot).filter((r) => r.isFolder).map((r) => fold((r.parentLogic ? toPosix(r.parentLogic) + "/" : "") + r.name))
+    listRemovedResources(cp2.projectRoot).filter((r) => r.isFolder).map((r) => fold2((r.parentLogic ? toPosix(r.parentLogic) + "/" : "") + r.name))
   );
   const problems = [];
   for (const [name, target] of cp2.linkedFolders) {
-    if (excluded.has(fold(name)) && !named.has(fold(name)) || removedFolders.has(fold(name))) continue;
+    if (excluded.has(fold2(name)) && !named.has(fold2(name)) || removedFolders.has(fold2(name))) continue;
     if (unscannableLinkedTarget(target)) problems.push(`"${name}" -> ${target}`);
   }
   let rawLinks = [];
@@ -5890,12 +6492,12 @@ function assertScannableLinkedFolders(cp2) {
   } catch {
     rawLinks = [];
   }
-  const normLoc = (s) => fold(path8.resolve(s));
+  const normLoc = (s) => fold2(path9.resolve(s));
   const rawSeenNames = /* @__PURE__ */ new Map();
   const seenRealTargets = /* @__PURE__ */ new Map();
   for (const l of rawLinks) {
     if (l.type !== 2) continue;
-    const k = fold(l.name);
+    const k = fold2(l.name);
     if (excluded.has(k) && !named.has(k) || removedFolders.has(k)) continue;
     const prev = rawSeenNames.get(k);
     if (prev && normLoc(prev.location) !== normLoc(l.location)) {
@@ -5906,9 +6508,9 @@ function assertScannableLinkedFolders(cp2) {
     if (!prev) rawSeenNames.set(k, { name: l.name, location: l.location });
     if (unscannableLinkedTarget(l.location)) continue;
     try {
-      const real = normLoc(fs7.realpathSync.native(l.location));
+      const real = normLoc(fs8.realpathSync.native(l.location));
       const first = seenRealTargets.get(real);
-      if (first !== void 0 && fold(first) !== fold(l.name)) {
+      if (first !== void 0 && fold2(first) !== fold2(l.name)) {
         problems.push(`"${first}" and "${l.name}" point at the same directory (${l.location}) \u2014 one physical tree scanned under two logic names`);
       } else if (first === void 0) {
         seenRealTargets.set(real, l.name);
@@ -5928,16 +6530,16 @@ function assertScannableLinkedFolders(cp2) {
   }
 }
 function danglingSourceEntries(cp2) {
-  const linked = new Set([...cp2.linkedFolders.keys()].map((n) => fold(n)));
+  const linked = new Set([...cp2.linkedFolders.keys()].map((n) => fold2(n)));
   const removedFolders = new Set(
-    listRemovedResources(cp2.projectRoot).filter((r) => r.isFolder).map((r) => fold((r.parentLogic ? toPosix(r.parentLogic) + "/" : "") + r.name))
+    listRemovedResources(cp2.projectRoot).filter((r) => r.isFolder).map((r) => fold2((r.parentLogic ? toPosix(r.parentLogic) + "/" : "") + r.name))
   );
   const out = [];
   for (const entry of cp2.sourceEntries) {
     if (entry.name === "") continue;
-    if (linked.has(fold(entry.name))) continue;
-    if (removedFolders.has(fold(entry.name))) continue;
-    const dir = path8.join(cp2.projectRoot, entry.name);
+    if (linked.has(fold2(entry.name))) continue;
+    if (removedFolders.has(fold2(entry.name))) continue;
+    const dir = path9.join(cp2.projectRoot, entry.name);
     if (unscannableLinkedTarget(dir)) out.push({ name: entry.name, dir });
   }
   return out;
@@ -5955,18 +6557,18 @@ function scanSources(cp2, opts) {
   const includeExcluded = (opts == null ? void 0 : opts.includeExcluded) === true;
   const isCpp = cp2.isCpp;
   const result = /* @__PURE__ */ new Map();
-  const configNames = new Set(cp2.configurationNames.map((n) => fold(n)));
+  const configNames = new Set(cp2.configurationNames.map((n) => fold2(n)));
   const { rootTokens, dirTokens } = exclusionTokens(cp2);
   const scanErrors = [];
   const removedExact = /* @__PURE__ */ new Set();
   const removedDirPrefixes = /* @__PURE__ */ new Set();
   for (const r of listRemovedResources(cp2.projectRoot)) {
     const logic = (r.parentLogic ? toPosix(r.parentLogic) + "/" : "") + r.name;
-    if (r.isFolder) removedDirPrefixes.add(fold(toPosix(logic)) + "/");
-    else removedExact.add(fold(toPosix(logic)));
+    if (r.isFolder) removedDirPrefixes.add(fold2(toPosix(logic)) + "/");
+    else removedExact.add(fold2(toPosix(logic)));
   }
   const isRemoved = (logicName) => {
-    const f = fold(toPosix(logicName));
+    const f = fold2(toPosix(logicName));
     if (removedExact.has(f) || removedDirPrefixes.has(f + "/")) return true;
     for (const p of removedDirPrefixes) if (f.startsWith(p)) return true;
     return false;
@@ -5975,9 +6577,9 @@ function scanSources(cp2, opts) {
   let inLinkedWalk = false;
   const physicalKey = (fullpath) => {
     try {
-      return fold(fs7.realpathSync.native(fullpath));
+      return fold2(fs8.realpathSync.native(fullpath));
     } catch {
-      return fold(toPosix(fullpath));
+      return fold2(toPosix(fullpath));
     }
   };
   const addFile = (logicName, fullpath) => {
@@ -5985,13 +6587,13 @@ function scanSources(cp2, opts) {
     const l = toPosix(logicName);
     if (isRemoved(l)) return;
     const realKey = physicalKey(fullpath);
-    const dir = path8.posix.dirname(l);
+    const dir = path9.posix.dirname(l);
     const key = dir === "." ? "" : dir;
     const prev = seenPhysical.get(realKey);
     if (prev && inLinkedWalk) {
       const oldArr = result.get(prev.dir);
       if (oldArr) {
-        const idx = oldArr.findIndex((f) => fold(f.logicName) === fold(prev.logicName));
+        const idx = oldArr.findIndex((f) => fold2(f.logicName) === fold2(prev.logicName));
         if (idx >= 0) oldArr.splice(idx, 1);
         if (!oldArr.length) result.delete(prev.dir);
       }
@@ -6003,7 +6605,7 @@ function scanSources(cp2, opts) {
     }
     if (!result.has(key)) result.set(key, []);
     const arr = result.get(key);
-    if (arr.some((f) => fold(f.logicName) === fold(l))) return;
+    if (arr.some((f) => fold2(f.logicName) === fold2(l))) return;
     arr.push({
       logicName: l,
       fullpath: toPosix(fullpath),
@@ -6012,24 +6614,25 @@ function scanSources(cp2, opts) {
   };
   const logicBases = [];
   for (const [dirName, toks] of dirTokens) {
-    if (!cp2.linkedFolders.has(dirName) && fs7.existsSync(path8.join(cp2.projectRoot, dirName))) {
+    if (!cp2.linkedFolders.has(dirName) && fs8.existsSync(path9.join(cp2.projectRoot, dirName))) {
       logicBases.push([dirName + "/", toks]);
     }
   }
   walk(cp2.projectRoot, cp2.projectRoot, "", rootTokens, configNames, isCpp, addFile, logicBases, includeExcluded, scanErrors, isRemoved);
   for (const entry of cp2.sourceEntries) {
     if (entry.name === "" || cp2.linkedFolders.has(entry.name)) continue;
-    const dir = path8.join(cp2.projectRoot, entry.name);
-    if (!fs7.existsSync(dir)) continue;
+    const dir = path9.join(cp2.projectRoot, entry.name);
+    if (!fs8.existsSync(dir)) continue;
     const segs = entry.name.split("/");
     let base = entry.name;
     try {
-      const hit = fs7.readdirSync(cp2.projectRoot, { withFileTypes: true }).find((d) => d.isDirectory() && fold(d.name) === fold(segs[0]));
+      const hit = fs8.readdirSync(cp2.projectRoot, { withFileTypes: true }).find((d) => d.isDirectory() && fold2(d.name) === fold2(segs[0]));
       if (hit) base = [hit.name, ...segs.slice(1)].join("/");
     } catch {
     }
+    if (configNames.has(fold2(segs[0]))) continue;
     if (isRemoved(base)) continue;
-    walk(dir, dir, base, entry.excluding, configNames, isCpp, addFile, [], includeExcluded, scanErrors, isRemoved);
+    walk(dir, dir, base, entry.excluding, /* @__PURE__ */ new Set(), isCpp, addFile, [], includeExcluded, scanErrors, isRemoved);
   }
   const named = namedEntryNames(cp2);
   inLinkedWalk = true;
@@ -6042,11 +6645,11 @@ function scanSources(cp2, opts) {
       linkedTokens = [...direct];
     } else {
       for (const [k, v] of dirTokens) {
-        if (fold(k) === fold(name)) linkedTokens.push(...v);
+        if (fold2(k) === fold2(name)) linkedTokens.push(...v);
       }
     }
-    const tokens = [...rootTokens.filter((t) => !(fold(t) === fold(name) && named.has(fold(name)))), ...linkedTokens];
-    walk(target, target, name, tokens, configNames, isCpp, addFile, [], includeExcluded, scanErrors, isRemoved);
+    const tokens = [...rootTokens.filter((t) => !(fold2(t) === fold2(name) && named.has(fold2(name)))), ...linkedTokens];
+    walk(target, target, name, tokens, linkedOutputNames(target), isCpp, addFile, [], includeExcluded, scanErrors, isRemoved);
   }
   inLinkedWalk = false;
   if (scanErrors.length) {
@@ -6060,19 +6663,19 @@ function scanSources(cp2, opts) {
 function walk(fsRoot, dir, logicPrefix, excluded, configNames, isCpp, add, logicBases = [], includeExcluded = false, errors = [], skipSubtree) {
   let entries;
   try {
-    entries = fs7.readdirSync(dir, { withFileTypes: true });
+    entries = fs8.readdirSync(dir, { withFileTypes: true });
   } catch (e) {
     errors.push({ dir, message: e instanceof Error ? e.message : String(e) });
     return;
   }
   for (const ent of entries) {
-    const full = path8.join(dir, ent.name);
+    const full = path9.join(dir, ent.name);
     const logic = logicPrefix ? `${logicPrefix}/${ent.name}` : ent.name;
-    const relPosix = toPosix(path8.relative(fsRoot, full));
+    const relPosix = toPosix(path9.relative(fsRoot, full));
     let excludedHere = isExcluded(relPosix, excluded) || isExcluded(logic, excluded);
     if (!excludedHere) {
       for (const [base, toks] of logicBases) {
-        if (fold(logic + "/").startsWith(fold(base)) && isExcluded(logic.slice(base.length), toks)) {
+        if (fold2(logic + "/").startsWith(fold2(base)) && isExcluded(logic.slice(base.length), toks)) {
           excludedHere = true;
           break;
         }
@@ -6080,7 +6683,7 @@ function walk(fsRoot, dir, logicPrefix, excluded, configNames, isCpp, add, logic
     }
     if (excludedHere && !includeExcluded) continue;
     if (ent.isDirectory()) {
-      if (ent.name.startsWith(".") || SKIP_DIRS.has(ent.name) || configNames.has(fold(ent.name))) continue;
+      if (ent.name.startsWith(".") || SKIP_DIRS.has(ent.name) || dir === fsRoot && configNames.has(fold2(ent.name))) continue;
       if (skipSubtree == null ? void 0 : skipSubtree(logic)) continue;
       walk(fsRoot, full, logic, excluded, configNames, isCpp, add, logicBases, includeExcluded, errors, skipSubtree);
     } else if (ent.isFile()) {
@@ -6091,20 +6694,26 @@ function walk(fsRoot, dir, logicPrefix, excluded, configNames, isCpp, add, logic
     }
   }
 }
-var CASE_FOLD = process.platform === "win32";
-var fold = (s) => CASE_FOLD ? s.toLowerCase() : s;
+var CASE_FOLD2 = process.platform === "win32";
+var fold2 = (s) => CASE_FOLD2 ? s.toLowerCase() : s;
+function findLink(cp2, name) {
+  for (const [key, loc] of cp2.linkedFolders) {
+    if (fold2(key) === fold2(name)) return loc;
+  }
+  return void 0;
+}
 function namedEntryNames(cp2) {
   const names = /* @__PURE__ */ new Set();
   for (const entry of cp2.sourceEntries) {
-    if (entry.name !== "") names.add(fold(entry.name));
+    if (entry.name !== "") names.add(fold2(entry.name));
   }
   return names;
 }
 function isExcluded(relPosix, tokens) {
-  const hay = fold(relPosix);
+  const hay = fold2(relPosix);
   for (const t of tokens) {
     if (!t) continue;
-    const tok = fold(t);
+    const tok = fold2(t);
     if (hay === tok || hay.startsWith(tok + "/")) return true;
   }
   return false;
@@ -6122,6 +6731,66 @@ function exclusionTokens(cp2) {
     }
   }
   return { rootTokens, dirTokens };
+}
+function linkedOutputNames(target) {
+  if (!fs8.existsSync(path9.join(target, ".cproject"))) return /* @__PURE__ */ new Set();
+  try {
+    return new Set(Cproject.load(target, { repairProject: false }).configurationNames.map((n) => fold2(n)));
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
+}
+function isOutputDirLogicPath(cp2, logic) {
+  const norm = toPosix(logic).replace(/^\/+/, "");
+  if (!norm) return false;
+  const top = norm.includes("/") ? norm.slice(0, norm.indexOf("/")) : norm;
+  const target = findLink(cp2, top);
+  if (target) {
+    const child = norm.includes("/") ? norm.slice(top.length + 1).split("/")[0] : "";
+    if (!child || !linkedOutputNames(target).has(fold2(child))) return false;
+    try {
+      return fs8.lstatSync(path9.join(target, child)).isDirectory();
+    } catch {
+      return true;
+    }
+  }
+  if (!cp2.configurationNames.some((n) => fold2(n) === fold2(top))) return false;
+  try {
+    return fs8.lstatSync(path9.join(cp2.projectRoot, top)).isDirectory();
+  } catch {
+    return true;
+  }
+}
+function isLogicExcluded(cp2, logic) {
+  const { rootTokens, dirTokens } = exclusionTokens(cp2);
+  const named = namedEntryNames(cp2);
+  const dirTokensFor = (top2) => {
+    const direct = dirTokens.get(top2);
+    if (direct) return direct;
+    for (const [k, v] of dirTokens) {
+      if (fold2(k) === fold2(top2)) return v;
+    }
+    return [];
+  };
+  const top = logic.includes("/") ? logic.slice(0, logic.indexOf("/")) : logic;
+  if (logic === top) {
+    if (named.has(fold2(top))) return false;
+    if (findLink(cp2, top)) {
+      return rootTokens.some((t) => fold2(t) === fold2(top));
+    }
+    return isExcluded(logic, rootTokens);
+  }
+  const rel = logic.slice(top.length + 1);
+  if (findLink(cp2, top)) {
+    if (!named.has(fold2(top)) && rootTokens.some((t) => fold2(t) === fold2(top))) return true;
+    const tokens = [...rootTokens.filter((t) => fold2(t) !== fold2(top)), ...dirTokensFor(top)];
+    return isExcluded(rel, tokens) || isExcluded(logic, tokens);
+  }
+  if (named.has(fold2(top)) && fs8.existsSync(path9.join(cp2.projectRoot, top))) {
+    const toks = dirTokensFor(top);
+    return isExcluded(rel, toks) || isExcluded(logic, toks);
+  }
+  return isExcluded(logic, rootTokens);
 }
 function extGroups(isCpp) {
   const exts = isCpp ? CPP_SOURCE_EXTS : C_SOURCE_EXTS;
@@ -6168,8 +6837,8 @@ function dirGroups(files, isCpp) {
 }
 
 // src/core/flags.ts
-var fs8 = __toESM(require("fs"));
-var path9 = __toESM(require("path"));
+var fs9 = __toESM(require("fs"));
+var path10 = __toESM(require("path"));
 function posixLowerDrive(p) {
   return toPosix(p).replace(/^([A-Za-z]):/, (m) => m.toLowerCase());
 }
@@ -6418,19 +7087,19 @@ function resolveList(cp2, suffix, quotedKeep, choice = { dropUnresolved: false }
   for (const raw of cp2.listOption(suffix).values) {
     const abs = convertLogicToFullPath(cp2.projectRoot, cp2.projectName, raw, linked);
     if (abs) {
-      if (choice.dropMissing && !fs8.existsSync(abs)) {
+      if (choice.dropMissing && !fs9.existsSync(abs)) {
         continue;
       }
       out.push(quotedKeep(choice.style === "2x" ? posixLowerDrive(abs) : toNative(abs)));
       continue;
     }
-    if (path9.isAbsolute(raw)) {
-      out.push(quotedKeep(choice.style === "2x" ? posixLowerDrive(path9.normalize(raw)) : toNative(path9.normalize(raw))));
+    if (path10.isAbsolute(raw)) {
+      out.push(quotedKeep(choice.style === "2x" ? posixLowerDrive(path10.normalize(raw)) : toNative(path10.normalize(raw))));
       continue;
     }
     if (!choice.dropUnresolved || !raw.includes("${")) {
       if (choice.style === "2x" && choice.absRelativeTo !== void 0 && !raw.includes("${")) {
-        out.push(quotedKeep(lowerDrive(toNative(path9.resolve(choice.absRelativeTo, raw)))));
+        out.push(quotedKeep(lowerDrive(toNative(path10.resolve(choice.absRelativeTo, raw)))));
       } else {
         out.push(quotedKeep(raw));
       }
@@ -6640,6 +7309,16 @@ function assemblerOptions(cp2, skipIncludes = false, style = "1x") {
 function resolveOutputMacros(cp2, s) {
   return s.split("${BuildArtifactFileBaseName}").join(cp2.targetName).split("${ProjName}").join(cp2.projectName);
 }
+function linkerMapName(cp2, p = cp2.isCpp ? "cpp" : "c") {
+  const rawMap = cp2.optionValue(`${p}.linker.mapfilename`);
+  if (!rawMap) return `${cp2.targetName}.map`;
+  const unquoted = rawMap.replace(/^"(.*)"$/, "$1").trim();
+  const linked = cp2.linkedFolders ?? /* @__PURE__ */ new Map();
+  const abs = convertLogicToFullPath(cp2.projectRoot, cp2.projectName, unquoted, linked);
+  let mapName = abs ?? resolveOutputMacros(cp2, unquoted);
+  if (!/\.map$/i.test(mapName)) mapName += ".map";
+  return mapName;
+}
 function linkerOptionsFor(cp2, p, style = "1x", configDir) {
   let t = "";
   for (const s of resolveList(cp2, `${p}.linker.scriptfile`, (v) => v, { style })) {
@@ -6657,17 +7336,7 @@ function linkerOptionsFor(cp2, p, style = "1x", configDir) {
   for (const f of cp2.listOption(`${p}.linker.flags`).values) {
     if (f) t += ` -Xlinker ${resolveOutputMacros(cp2, f)}`;
   }
-  const rawMap = cp2.optionValue(`${p}.linker.mapfilename`);
-  let mapName;
-  if (!rawMap) {
-    mapName = `${cp2.targetName}.map`;
-  } else {
-    const unquoted = rawMap.replace(/^"(.*)"$/, "$1").trim();
-    const linked = cp2.linkedFolders ?? /* @__PURE__ */ new Map();
-    const abs = convertLogicToFullPath(cp2.projectRoot, cp2.projectName, unquoted, linked);
-    mapName = abs ?? resolveOutputMacros(cp2, unquoted);
-    if (!/\.map$/i.test(mapName)) mapName += ".map";
-  }
+  const mapName = linkerMapName(cp2, p);
   t += ` -Wl,-Map,"${mapName}"`;
   if (cp2.optionBool(`${p}.linker.cref`)) t += " -Xlinker --cref";
   if (cp2.optionBool(`${p}.linker.printmap`)) t += " -Xlinker --print-map";
@@ -6709,10 +7378,10 @@ function userObjects(cp2) {
   const out = [];
   for (const raw of cp2.listOption(`${prefix}.linker.otherobjs`).values) {
     const abs = convertLogicToFullPath(cp2.projectRoot, cp2.projectName, raw, linked);
-    if (abs && fs8.existsSync(abs)) {
+    if (abs && fs9.existsSync(abs)) {
       out.push(toNative(abs));
-    } else if (path9.isAbsolute(raw) && fs8.existsSync(raw)) {
-      out.push(toNative(path9.normalize(raw)));
+    } else if (path10.isAbsolute(raw) && fs9.existsSync(raw)) {
+      out.push(toNative(path10.normalize(raw)));
     }
   }
   return out;
@@ -6782,8 +7451,8 @@ function varBlock(name, entries, crlfValues = false) {
 }
 function generateMakefiles(cp2, tc, opts = {}) {
   var _a;
-  const buildDir = path10.join(cp2.projectRoot, cp2.configName);
-  fs9.mkdirSync(buildDir, { recursive: true });
+  const buildDir = path11.join(cp2.projectRoot, cp2.configName);
+  fs10.mkdirSync(buildDir, { recursive: true });
   const linkedHostile = /[;#`]/;
   const rootHostile = /[`]/;
   const checkHostile = (p, linked) => {
@@ -6805,19 +7474,20 @@ function generateMakefiles(cp2, tc, opts = {}) {
   const headerTool = opts.headerTool ?? "Generated by mrvc";
   const mrs2Style = opts.mrs2Style ?? true;
   const autoMathLib = opts.autoMathLib ?? true;
+  const goldenSizTarget = opts.goldenSizTarget ?? false;
   const isCpp = cp2.isCpp;
   assertScannableLinkedFolders(cp2);
   const map = scanSources(cp2);
   const dirsDesc = [...map.keys()].sort((a, b) => a > b ? -1 : 1);
   const dirsAsc = [...map.keys()].sort((a, b) => a > b ? 1 : -1);
   const target = cp2.outputPrefix + cp2.targetName;
-  const compilerC = path10.basename(tc.compilerC);
-  const compilerCpp = path10.basename(tc.compilerCpp);
-  const linker = isCpp ? path10.basename(tc.linkerCpp) : path10.basename(tc.linkerC);
+  const compilerC = path11.basename(tc.compilerC);
+  const compilerCpp = path11.basename(tc.compilerCpp);
+  const linker = isCpp ? path11.basename(tc.linkerCpp) : path11.basename(tc.linkerC);
   const ar = tc.prefix + "ar";
-  const objcopy = path10.basename(tc.objcopy);
-  const objdump = path10.basename(tc.objdump);
-  const sizeTool = path10.basename(tc.size);
+  const objcopy = path11.basename(tc.objcopy);
+  const objdump = path11.basename(tc.objdump);
+  const sizeTool = path11.basename(tc.size);
   const style = mrs2Style ? "2x" : "1x";
   const escMakeDollars = escapeMakeDollars;
   const analysisAll = opts.analysis ? analysisFlags() : [];
@@ -6853,11 +7523,12 @@ function generateMakefiles(cp2, tc, opts = {}) {
   }
   const wchLibs = wchLibsOptions(cp2, tc.name);
   const written = [];
+  const writtenRels = [];
   let sourceCount = 0;
   const writeMk = (rel, content) => {
-    const base = path10.resolve(buildDir);
-    const file = path10.resolve(base, rel);
-    if (file !== base && !file.startsWith(base + path10.sep)) {
+    const base = path11.resolve(buildDir);
+    const file = path11.resolve(base, rel);
+    if (file !== base && !file.startsWith(base + path11.sep)) {
       throw new Error(`refusing to write outside build dir: ${file}`);
     }
     if (content.includes("`")) {
@@ -6865,11 +7536,12 @@ function generateMakefiles(cp2, tc, opts = {}) {
         `The generated makefile (${rel}) would contain a backtick \u2014 via a library name, build option or file name \u2014 and recipes run through the make bundle's sh, which command-substitutes backticks even inside double quotes. Rename the offending path, library or option.`
       );
     }
-    fs9.mkdirSync(path10.dirname(file), { recursive: true });
+    fs10.mkdirSync(path11.dirname(file), { recursive: true });
     const lowerDrives = (s) => s.replace(/(^|[\s"'=])([A-Za-z]):/g, (_m, pre, drv) => pre + drv.toLowerCase() + ":");
     const native = mrs2Style ? lowerDrives(content).replace(/\n/g, "\r\n") : content.replace(/\n/g, "\r\n").replace(/\\\r\n/g, "\\\n");
-    fs9.writeFileSync(file, encodeArtifact(native));
+    fs10.writeFileSync(file, encodeArtifact(native));
     written.push(file);
+    writtenRels.push(toPosix(rel));
   };
   const canonicalGroups = extGroups(isCpp);
   const recipeFor = (g) => {
@@ -6888,14 +7560,14 @@ function generateMakefiles(cp2, tc, opts = {}) {
     sourceCount += files.length;
     const groups = dirGroups(files, isCpp);
     const projPosix = toPosix(cp2.projectRoot);
-    const isExternal = files.some((f) => !(path10.posix.dirname(f.fullpath) + "/").startsWith(projPosix + "/"));
+    const isExternal = files.some((f) => !(path11.posix.dirname(f.fullpath) + "/").startsWith(projPosix + "/"));
     let body = HEADER(headerTool) + "\n# Add inputs and outputs from these tool invocations to the build variables \n";
     let vars = "";
     if (mrs2Style) {
       for (const g of groups) {
         const group = g.files;
         if (!group.length) continue;
-        const srcs = group.map((f) => ESC(isExternal ? f.fullpath : path10.posix.join("..", f.logicName)));
+        const srcs = group.map((f) => ESC(isExternal ? f.fullpath : path11.posix.join("..", f.logicName)));
         vars += varBlock(`${g.variable}_SRCS`, srcs);
         vars += varBlock(
           `${g.variable}_DEPS`,
@@ -6910,7 +7582,7 @@ function generateMakefiles(cp2, tc, opts = {}) {
       for (const g of groups) {
         const group = g.files;
         if (!group.length) continue;
-        const srcs = group.map((f) => ESC(isExternal ? f.fullpath : path10.posix.join("..", f.logicName)));
+        const srcs = group.map((f) => ESC(isExternal ? f.fullpath : path11.posix.join("..", f.logicName)));
         vars += varBlock(`${g.variable}_SRCS`, srcs);
       }
       vars += varBlock(
@@ -6932,19 +7604,19 @@ function generateMakefiles(cp2, tc, opts = {}) {
       if (!group.length) continue;
       if (isExternal) {
         for (const f of group) {
-          const base = path10.posix.basename(stripExt(f.logicName));
+          const base = path11.posix.basename(stripExt(f.logicName));
           const obj = dir ? `${dir}/${base}.o` : `${base}.o`;
           rules += `${ESC(obj)}: ${ESC(f.fullpath)}
 ${recipeFor(g)}`;
         }
       } else {
-        const prereqDir = ESC(path10.posix.normalize(path10.posix.join("..", dir)));
+        const prereqDir = ESC(path11.posix.normalize(path11.posix.join("..", dir)));
         const pat = dir ? `${dir}/%.o: ${prereqDir}/%.${g.ext}` : `%.o: ${prereqDir}/%.${g.ext}`;
         rules += `${pat}
 ${recipeFor(g)}`;
         for (const f of group) {
           if (f.logicName.includes(" ")) {
-            rules += `${ESC(stripExt(f.logicName))}.o: ${ESC(path10.posix.join("..", f.logicName))}
+            rules += `${ESC(stripExt(f.logicName))}.o: ${ESC(path11.posix.join("..", f.logicName))}
 ${recipeFor(g)}`;
           }
         }
@@ -6954,7 +7626,7 @@ ${recipeFor(g)}`;
       if (!mrs2Style || isExternal) rules += "\n";
     }
     body += vars + (mrs2Style ? "\n\n" : "\n") + "# Each subdirectory must supply rules for building sources it contributes\n" + rules;
-    writeMk(path10.posix.join(dir, "subdir.mk"), body);
+    writeMk(path11.posix.join(dir, "subdir.mk"), body);
   }
   {
     let t = HEADER(headerTool) + (mrs2Style ? "" : "\n");
@@ -7078,12 +7750,16 @@ endif
 ${target}.lst \\
 
 `;
-      if (sizeVar) t += `SECONDARY_SIZE += \\
+      if (sizeVar) {
+        t += goldenSizTarget ? `SECONDARY_SIZE += \\
 ${target}.siz \\
 
+` : `SECONDARY_SIZE += mrvc-print-size
+
 `;
+      }
     }
-    const elfExt = cp2.artifactExtension || "elf";
+    const elfExt = isExe ? cp2.artifactExtension || "elf" : "a";
     const elfTarget = `${target}.${elfExt}`;
     const pre = cp2.prebuildStep.trim();
     const post = cp2.postbuildStep.trim();
@@ -7151,32 +7827,44 @@ all: ${elfTarget}${hasSecondaries ? " secondary-outputs" : ""}
         if (cp2.optionBool("printsize.totals")) szFlags += " --totals";
         const szOther = (_a = cp2.optionValue("printsize.other")) == null ? void 0 : _a.trim();
         if (szOther) szFlags += ` ${szOther}`;
-        t += `${target}.siz: ${elfTarget}
+        if (goldenSizTarget) {
+          t += `${target}.siz: ${elfTarget}
 `;
-        if (mrs2Style) {
-          t += `	${sizeTool} ${szFlags} "${elfTarget}"
+          if (mrs2Style) {
+            t += `	${sizeTool} ${szFlags} "${elfTarget}"
 
 `;
-        } else {
-          t += `	@	${sizeTool} ${szFlags} "${elfTarget}"
+          } else {
+            t += `	@	${sizeTool} ${szFlags} "${elfTarget}"
 `;
-          t += `	@	@
+            t += `	@	@
+`;
+          }
+        } else {
+          t += `.PHONY: mrvc-print-size
+mrvc-print-size: ${elfTarget}
+`;
+          t += mrs2Style ? `	${sizeTool} ${szFlags} "${elfTarget}"
+
+` : `	@	${sizeTool} ${szFlags} "${elfTarget}"
+	@	@
 `;
         }
       }
     } else {
-      t += `${target}.a: $(OBJS) $(USER_OBJS)
+      t += `${elfTarget}: $(OBJS) $(USER_OBJS)
 `;
-      t += `	@	@	${ar} -cr "${target}.a" $(OBJS) $(USER_OBJS)
+      t += `	@	@	${ar} -cr "${elfTarget}" $(OBJS) $(USER_OBJS)
 `;
       t += `	@	@
 `;
     }
     const extraCleanVars = extraDepVars.map((v) => `$(${v})`).join("");
     const cleanVars = (isCpp ? mrs2Style ? "$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(S_DEPS)$(S_UPPER_DEPS)$(ASM_DEPS)$(ASM_UPPER_DEPS)$(C_DEPS)$(C_UPPER_DEPS)$(CPP_DEPS)$(CXX_DEPS)$(CC_DEPS)$(C++_DEPS)" : "$(ASM_UPPER_DEPS)$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(ASM_DEPS)$(S_DEPS)$(S_UPPER_DEPS)$(C_DEPS)$(C_UPPER_DEPS)$(CPP_DEPS)$(CXX_DEPS)$(CC_DEPS)$(C++_DEPS)" : mrs2Style ? "$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(S_DEPS)$(S_UPPER_DEPS)$(ASM_DEPS)$(ASM_UPPER_DEPS)$(C_DEPS)" : "$(ASM_UPPER_DEPS)$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(ASM_DEPS)$(S_DEPS)$(S_UPPER_DEPS)$(C_DEPS)") + extraCleanVars;
+    const cleanFileVars = goldenSizTarget ? cleanVars : cleanVars.replace(/\$\(SECONDARY_SIZE\)/g, "");
     t += `# Other Targets
 clean:
-	-$(RM) ${cleanVars} ${target}.${isExe ? elfExt : "a"}
+	-$(RM) ${cleanFileVars} ${elfTarget}
 `;
     t += mrs2Style ? `
 ` : `	-@
@@ -7197,6 +7885,7 @@ clean:
     if (!mrs2Style) t += "\n";
     writeMk("makefile", t);
   }
+  recordWrittenFiles(cp2.projectRoot, buildDir, writtenRels, ansiArtifactEncoding());
   return { files: written, dirs: dirsAsc, sourceCount };
 }
 function stripExt(logicName) {
@@ -7205,10 +7894,93 @@ function stripExt(logicName) {
   if (dot > slash) return logicName.slice(0, dot);
   return logicName;
 }
+function objectTargetFor(logicName) {
+  const posixPath = toPosix(logicName);
+  const dir = path11.posix.dirname(posixPath);
+  const base = stripExt(path11.posix.basename(posixPath));
+  return (dir === "." ? base : `${dir}/${base}`) + ".o";
+}
+function imageKeepNames(targetName, outputPrefix) {
+  const stem = `${outputPrefix}${targetName}`;
+  return [`${stem}.hex`, `${stem}.bin`, `${targetName}.hex`, `${targetName}.bin`];
+}
+function imageCandidates(targetName, outputPrefix, flashFormat) {
+  const ext = flashFormat === "binary" ? "bin" : "hex";
+  const out = [`${outputPrefix}${targetName}.${ext}`];
+  if (outputPrefix) out.push(`${targetName}.${ext}`);
+  return out;
+}
+function primaryProduct(cp2) {
+  const ext = cp2.artifactType === "staticLib" ? "a" : cp2.artifactExtension || "elf";
+  return `${cp2.outputPrefix}${cp2.targetName}.${ext}`;
+}
+function productsFor(cp2, buildDir, flashExts = []) {
+  const dir = path11.resolve(buildDir);
+  const names = [primaryProduct(cp2)];
+  if (cp2.artifactType === "exe") {
+    if (cp2.createFlash) for (const ext of flashExts) names.push(`${cp2.outputPrefix}${cp2.targetName}.${ext}`);
+    if (cp2.createListing) names.push(`${cp2.outputPrefix}${cp2.targetName}.lst`);
+  }
+  const out = [];
+  for (const cand of names) {
+    const f = path11.resolve(dir, cand);
+    if (f !== dir && !f.startsWith(dir + path11.sep)) throw new Error(`artifact path escapes the build directory: ${cand}`);
+    out.push({ file: f, size: fs10.existsSync(f) ? fs10.statSync(f).size : null });
+  }
+  return out;
+}
+function buildOutputFiles(cp2) {
+  const map = scanSources(cp2);
+  const rels = /* @__PURE__ */ new Set(["makefile", "sources.mk", "objects.mk"]);
+  for (const [dir, files] of map) {
+    rels.add(dir ? `${toPosix(dir)}/subdir.mk` : "subdir.mk");
+    for (const f of files) {
+      const obj = objectTargetFor(f.logicName);
+      rels.add(obj);
+      rels.add(obj.slice(0, -2) + ".d");
+      rels.add(obj.slice(0, -2) + ".su");
+    }
+  }
+  const target = cp2.outputPrefix + cp2.targetName;
+  if (cp2.artifactType === "exe") {
+    if (cp2.createFlash) for (const ext of flashExtensions(cp2)) rels.add(`${target}.${ext}`);
+    if (cp2.createListing) rels.add(`${target}.lst`);
+    const buildDir = path11.resolve(cp2.projectRoot, cp2.configName);
+    const mapAbs = path11.resolve(buildDir, linkerMapName(cp2));
+    const mapRel = path11.relative(buildDir, mapAbs);
+    if (mapRel && !path11.isAbsolute(mapRel) && mapRel !== ".." && !mapRel.startsWith(".." + path11.sep)) {
+      rels.add(toPosix(mapRel));
+    }
+  }
+  rels.add(primaryProduct(cp2));
+  rels.add("mrvc_flash.cfg");
+  rels.add("mrs2_flash.cfg");
+  return [...rels];
+}
+function legacyPrintSizeCleanOverride(buildDir) {
+  try {
+    const text = decodeArtifact(fs10.readFileSync(path11.join(buildDir, "makefile")));
+    if (!text.includes("Automatically-generated file. Do not edit!")) return [];
+    if (!/SECONDARY_SIZE\s*\+=\s*(?:\\\r?\n)?[^\r\n]*\.siz\b/.test(text)) return [];
+    const rule = text.match(/^[^\r\n#]*\.siz\s*:[^\r\n]*\r?\n([ \t]+[^\r\n]*)/m);
+    if (!rule || rule[1].includes(">")) return [];
+    return ["SECONDARY_SIZE="];
+  } catch {
+    return [];
+  }
+}
+function singleFileMakeArg(target, platform = process.platform) {
+  if (platform === "win32") {
+    if (/["\r\n]/.test(target)) return { error: "quote" };
+    return { arg: `"${target.replace(/%/g, "%%")}"` };
+  }
+  if (/[\r\n]/.test(target)) return { error: "quote" };
+  return { arg: "'" + target.replace(/'/g, `'\\''`) + "'" };
+}
 
 // src/core/flash.ts
-var fs10 = __toESM(require("fs"));
-var path11 = __toESM(require("path"));
+var fs11 = __toESM(require("fs"));
+var path12 = __toESM(require("path"));
 var ADDRESS_RE = /^0x[0-9a-fA-F]{1,8}$/;
 function inferFlashAddress(sourcePaths) {
   for (const p of sourcePaths) {
@@ -7222,22 +7994,33 @@ function inferFlashAddress(sourcePaths) {
   }
   return void 0;
 }
-function hexBaseAddress(content) {
+function checkedHexBase(text) {
+  let eof = false;
   let upper = 0;
   let base;
-  for (const raw of content.split(/\r?\n/)) {
+  const fixedLength = { 1: 0, 2: 2, 3: 4, 4: 2, 5: 4 };
+  for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
-    if (!line.startsWith(":")) continue;
-    if (line.length < 11) continue;
-    const type = parseInt(line.slice(7, 9), 16);
-    if (type === 1) break;
-    if (type === 4) {
-      upper = parseInt(line.slice(9, 13), 16) << 16;
-    } else if (type === 0) {
-      const addr = upper + parseInt(line.slice(3, 7), 16);
-      if (base === void 0 || addr < base) base = addr;
+    if (!line) continue;
+    if (eof) throw new Error("Intel HEX: record after EOF \u2014 rebuild the project first");
+    if (!/^:(?:[0-9a-fA-F]{2}){5,}$/.test(line)) throw new Error("Intel HEX: malformed record \u2014 rebuild the project first");
+    const b = Buffer.from(line.slice(1), "hex");
+    const n = b[0];
+    const addr = b.readUInt16BE(1);
+    const type = b[3];
+    if (b.length !== n + 5) throw new Error("Intel HEX: record length field does not match its content \u2014 rebuild the project first");
+    if ((b.reduce((sum, v) => sum + v, 0) & 255) !== 0) throw new Error("Intel HEX: bad record checksum \u2014 rebuild the project first");
+    if (type === 0) {
+      if (n > 0 && base === void 0) base = upper + addr;
+      else if (n > 0) base = Math.min(base ?? Infinity, upper + addr);
+      continue;
     }
+    if (fixedLength[type] !== n || addr !== 0) throw new Error("Intel HEX: malformed control record \u2014 rebuild the project first");
+    if (type === 1) eof = true;
+    if (type === 2) upper = b.readUInt16BE(4) * 16;
+    if (type === 4) upper = b.readUInt16BE(4) * 65536;
   }
+  if (!eof || base === void 0) throw new Error("Intel HEX: missing EOF record or no data records \u2014 rebuild the project first");
   return base;
 }
 function openocdLogArgs(logPath) {
@@ -7251,25 +8034,42 @@ function prepareFlash(opts) {
   if (!ADDRESS_RE.test(opts.address)) {
     throw new Error(`Invalid flash address "${opts.address}" (expected form 0x00000000)`);
   }
-  let bank = opts.address;
-  let offset = opts.address;
-  if (/\.hex$/i.test(opts.firmware)) {
-    try {
-      const base = hexBaseAddress(fs10.readFileSync(opts.firmware, "utf-8"));
-      const addr = parseInt(opts.address, 16);
-      if (base !== void 0 && base > 0) {
-        if (addr >= base) {
-          offset = "0x" + (addr - base).toString(16);
-        } else {
-          bank = "0x" + base.toString(16);
-          offset = "0x0";
-        }
-      }
-    } catch {
-    }
-  }
   if (/[\r\n]/.test(opts.firmware)) {
     throw new Error("invalid firmware path (line break): " + opts.firmware);
+  }
+  let fwStat;
+  try {
+    fwStat = fs11.statSync(opts.firmware);
+  } catch {
+    throw new Error(`firmware image not found: ${opts.firmware} \u2014 build the project first`);
+  }
+  if (!fwStat.isFile() || fwStat.size === 0) {
+    throw new Error(`firmware image is empty or not a regular file: ${opts.firmware} \u2014 build the project first`);
+  }
+  try {
+    const fd = fs11.openSync(opts.firmware, "r");
+    fs11.readSync(fd, Buffer.alloc(1), 0, 1, 0);
+    fs11.closeSync(fd);
+  } catch (e) {
+    throw new Error(`firmware image is not readable: ${opts.firmware} (${e instanceof Error ? e.message : String(e)})`);
+  }
+  let hexBase;
+  if (/\.hex$/i.test(opts.firmware)) {
+    const hexText = fs11.readFileSync(opts.firmware, "utf-8");
+    hexBase = checkedHexBase(hexText);
+  }
+  let bank = opts.address;
+  let offset = opts.address;
+  if (hexBase !== void 0) {
+    const addr = parseInt(opts.address, 16);
+    if (hexBase > 0) {
+      if (addr >= hexBase) {
+        offset = "0x" + (addr - hexBase).toString(16);
+      } else {
+        bank = "0x" + hexBase.toString(16);
+        offset = "0x0";
+      }
+    }
   }
   const fwPosix = opts.firmware.replace(/\\/g, "/").replace(/(["$\\[\]])/g, "\\$1");
   const steps = [];
@@ -7302,19 +8102,19 @@ function prepareFlash(opts) {
     prog.push("exit");
     steps.push(prog.join(" "));
   }
-  const scriptPath = path11.join(opts.buildDir, "mrvc_flash.cfg");
+  const scriptPath = path12.join(opts.buildDir, "mrvc_flash.cfg");
   try {
-    fs10.rmSync(path11.join(opts.buildDir, "mrs2_flash.cfg"), { force: true });
+    fs11.rmSync(path12.join(opts.buildDir, "mrs2_flash.cfg"), { force: true });
   } catch {
   }
-  fs10.mkdirSync(path11.dirname(scriptPath), { recursive: true });
-  fs10.writeFileSync(scriptPath, encodeArtifact(steps.join("\n") + "\n"));
+  fs11.mkdirSync(path12.dirname(scriptPath), { recursive: true });
+  fs11.writeFileSync(scriptPath, encodeArtifact(steps.join("\n") + "\n"));
   return { scriptPath, args: ["-f", opts.boardCfg, "-f", scriptPath] };
 }
 
 // src/core/powerCycle.ts
-var fs11 = __toESM(require("fs"));
-var path12 = __toESM(require("path"));
+var fs12 = __toESM(require("fs"));
+var path13 = __toESM(require("path"));
 function preparePowerPass(opts) {
   const rail = opts.voltage === "5v" ? "pow5v" : "pow3v3";
   const args = [
@@ -7340,19 +8140,19 @@ function clampPowerOffDelay(ms) {
   return Math.min(1e4, Math.max(0, Math.round(ms)));
 }
 function freshLogPath(root, buildDir, base, attempt) {
-  const rootAbs = path12.resolve(root);
-  const dir = path12.resolve(buildDir);
-  if (dir !== rootAbs && !dir.startsWith(rootAbs + path12.sep)) throw new Error("power log path escaped the project root");
+  const rootAbs = path13.resolve(root);
+  const dir = path13.resolve(buildDir);
+  if (dir !== rootAbs && !dir.startsWith(rootAbs + path13.sep)) throw new Error("power log path escaped the project root");
   try {
-    fs11.mkdirSync(dir, { recursive: true });
+    fs12.mkdirSync(dir, { recursive: true });
   } catch {
   }
-  const primary = path12.join(dir, `${base}.log`);
+  const primary = path13.join(dir, `${base}.log`);
   try {
-    fs11.rmSync(primary, { force: true });
+    fs12.rmSync(primary, { force: true });
     return primary;
   } catch {
-    return path12.join(dir, `${base}.${process.pid}-${attempt}-${Date.now().toString(36)}.log`);
+    return path13.join(dir, `${base}.${process.pid}-${attempt}-${Date.now().toString(36)}.log`);
   }
 }
 function powerPassVerdict(state, exitCode, logText, attempt) {
@@ -7364,22 +8164,22 @@ function powerPassVerdict(state, exitCode, logText, attempt) {
 }
 
 // src/core/wlink.ts
-var fs12 = __toESM(require("fs"));
+var fs13 = __toESM(require("fs"));
 var os = __toESM(require("os"));
-var path13 = __toESM(require("path"));
+var path14 = __toESM(require("path"));
 var import_child_process = require("child_process");
 var systemRoot = process.env.SystemRoot ?? "C:\\Windows";
-var POWERSHELL_X86 = path13.join(systemRoot, "SysWOW64", "WindowsPowerShell", "v1.0", "powershell.exe");
-var POWERSHELL_X64 = path13.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+var POWERSHELL_X86 = path14.join(systemRoot, "SysWOW64", "WindowsPowerShell", "v1.0", "powershell.exe");
+var POWERSHELL_X64 = path14.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 function peMachine(file) {
   let fd;
   try {
-    fd = fs12.openSync(file, "r");
+    fd = fs13.openSync(file, "r");
     const dos = Buffer.alloc(4);
-    if (fs12.readSync(fd, dos, 0, 4, 60) !== 4) return null;
+    if (fs13.readSync(fd, dos, 0, 4, 60) !== 4) return null;
     const lfanew = dos.readUInt32LE(0);
     const head = Buffer.alloc(6);
-    if (fs12.readSync(fd, head, 0, 6, lfanew) !== 6) return null;
+    if (fs13.readSync(fd, head, 0, 6, lfanew) !== 6) return null;
     if (head.readUInt32LE(0) !== 17744) return null;
     return head.readUInt16LE(4);
   } catch {
@@ -7387,7 +8187,7 @@ function peMachine(file) {
   } finally {
     if (fd !== void 0) {
       try {
-        fs12.closeSync(fd);
+        fs13.closeSync(fd);
       } catch {
       }
     }
@@ -7402,22 +8202,22 @@ function mcuLibFileName(platform = process.platform) {
   return "libmcuupdate.so";
 }
 function resolveCommLib(install, platform = process.platform) {
-  const dir = path13.join(install.resourcesDir, "components", "WCH", "Others", "CommunicationLib", "default");
+  const dir = path14.join(install.resourcesDir, "components", "WCH", "Others", "CommunicationLib", "default");
   if (platform !== "win32") {
-    const mcu = path13.join(dir, mcuLibFileName(platform));
-    if (!fs12.existsSync(mcu)) return null;
+    const mcu = path14.join(dir, mcuLibFileName(platform));
+    if (!fs13.existsSync(mcu)) return null;
     return { dir, mcuDll: mcu, usbDll: "" };
   }
-  const wcfg = path13.join(dir, "load.wcfg");
+  const wcfg = path14.join(dir, "load.wcfg");
   try {
     let mcuDll = "";
     let usbDll = "";
-    for (const line of fs12.readFileSync(wcfg, "utf-8").split(/\r?\n/)) {
+    for (const line of fs13.readFileSync(wcfg, "utf-8").split(/\r?\n/)) {
       if (line.startsWith("mcudll=")) mcuDll = line.slice(7).trim();
       else if (line.startsWith("libdll=")) usbDll = line.slice(7).trim();
     }
     if (!mcuDll) return null;
-    return { dir, mcuDll: path13.join(dir, mcuDll), usbDll: usbDll ? path13.join(dir, usbDll) : "" };
+    return { dir, mcuDll: path14.join(dir, mcuDll), usbDll: usbDll ? path14.join(dir, usbDll) : "" };
   } catch {
     return null;
   }
@@ -7432,14 +8232,14 @@ function loadMcuLib(koffi, libPath) {
   try {
     return koffi.load(libPath);
   } catch (first) {
-    const dir = path13.dirname(libPath);
-    const base = path13.basename(libPath);
+    const dir = path14.dirname(libPath);
+    const base = path14.basename(libPath);
     try {
-      for (const f of fs12.readdirSync(dir)) {
+      for (const f of fs13.readdirSync(dir)) {
         if (f === base || !f.startsWith("lib")) continue;
         if (!f.includes(".so") && !f.includes(".dylib")) continue;
         try {
-          koffi.load(path13.join(dir, f));
+          koffi.load(path14.join(dir, f));
         } catch {
         }
       }
@@ -7450,7 +8250,7 @@ function loadMcuLib(koffi, libPath) {
   }
 }
 function wchlinkFirmwareCfgPath(install) {
-  return path13.join(install.resourcesDir, "components", "WCH", "Others", "Firmware_Link", "default", "wchlink.wcfg");
+  return path14.join(install.resourcesDir, "components", "WCH", "Others", "Firmware_Link", "default", "wchlink.wcfg");
 }
 function linkInfoFor(linkId) {
   switch (linkId) {
@@ -7482,6 +8282,9 @@ function expectedFirmwareVersion(cfgText, linkId, isDap = false) {
     if (m) return Number(m[1]);
   }
   return void 0;
+}
+function formatLinkVersion(n) {
+  return n !== void 0 && n >= 10 && n <= 99 ? "v" + String(n).padStart(2, "0") : "?";
 }
 function buildPsFirmwareCheckScript(commLib, wcfgPath) {
   assertPsSafePath(commLib.dir, "communication library directory");
@@ -7545,13 +8348,13 @@ async function checkWCHLinkFirmware(install, koffiModule, platform = process.pla
       const info = linkInfoFor(c.linkId);
       c.linkName = info.name;
       try {
-        c.expectedVersion = expectedFirmwareVersion(fs12.readFileSync(wcfg, "utf-8"), c.linkId);
+        c.expectedVersion = expectedFirmwareVersion(fs13.readFileSync(wcfg, "utf-8"), c.linkId);
       } catch {
       }
     }
     return { state: "error", ...c };
   };
-  if (!fs12.existsSync(wcfg)) {
+  if (!fs13.existsSync(wcfg)) {
     return { state: "error", error: "wchlink.wcfg not found under the MounRiver installation" };
   }
   const runPosix = async () => {
@@ -7605,43 +8408,43 @@ async function checkWCHLinkFirmware(install, koffiModule, platform = process.pla
   };
   if (platform !== "win32") return runPosix();
   const commLib = resolveCommLib(install, "win32");
-  if (!commLib || !fs12.existsSync(commLib.mcuDll)) {
+  if (!commLib || !fs13.existsSync(commLib.mcuDll)) {
     return { state: "error", error: "WCH CommunicationLib (McuCompilerDll.dll) not found under the MounRiver installation" };
   }
   const psExe = bridgePowerShell(commLib.mcuDll);
-  if (!fs12.existsSync(psExe)) {
+  if (!fs13.existsSync(psExe)) {
     return { state: "error", error: "Windows PowerShell not found on this system (" + psExe + ")" };
   }
   let script;
   let ps1;
   try {
     script = buildPsFirmwareCheckScript(commLib, wcfg);
-    ps1 = path13.join(fs12.mkdtempSync(path13.join(os.tmpdir(), "mrvc-wlink-")), "fwcheck.ps1");
-    fs12.writeFileSync(ps1, "\uFEFF" + script, "utf-8");
+    ps1 = path14.join(fs13.mkdtempSync(path14.join(os.tmpdir(), "mrvc-wlink-")), "fwcheck.ps1");
+    fs13.writeFileSync(ps1, "\uFEFF" + script, "utf-8");
   } catch (e) {
     return { state: "error", error: e instanceof Error ? e.message : String(e) };
   }
-  return new Promise((resolve13) => {
+  return new Promise((resolve15) => {
     (0, import_child_process.execFile)(
       psExe,
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1],
       { timeout: 15e3, windowsHide: true },
       (err, stdout) => {
         try {
-          fs12.rmSync(path13.dirname(ps1), { recursive: true, force: true });
+          fs13.rmSync(path14.dirname(ps1), { recursive: true, force: true });
         } catch {
         }
         const line = (stdout ?? "").split(/\r?\n/).filter((l) => l.startsWith("{")).pop();
         if (!line) {
-          resolve13({ state: "error", error: (err == null ? void 0 : err.message) ?? "no result from the PowerShell bridge" });
+          resolve15({ state: "error", error: (err == null ? void 0 : err.message) ?? "no result from the PowerShell bridge" });
           return;
         }
         try {
           const parsed = JSON.parse(line);
           delete parsed.op;
-          resolve13(finish(normalizeFirmwareCheck(parsed)));
+          resolve15(finish(normalizeFirmwareCheck(parsed)));
         } catch {
-          resolve13({ state: "error", error: `unparsable bridge output: ${line}` });
+          resolve15({ state: "error", error: `unparsable bridge output: ${line}` });
         }
       }
     );
@@ -7649,38 +8452,39 @@ async function checkWCHLinkFirmware(install, koffiModule, platform = process.pla
 }
 
 // src/core/flashAck.ts
-var fs13 = __toESM(require("fs"));
-var path14 = __toESM(require("path"));
+var fs14 = __toESM(require("fs"));
+var path15 = __toESM(require("path"));
 var os2 = __toESM(require("os"));
-var import_crypto = require("crypto");
+var import_crypto3 = require("crypto");
 function flashAckPath(root) {
-  return path14.join(root, ".vscode", "mrvc", "flash-verified.json");
+  return path15.join(root, ".vscode", "mrvc", "flash-verified.json");
 }
 function templatePath(root) {
-  return path14.join(root, ".template");
+  return path15.join(root, ".template");
 }
 function templateHashOf(root) {
   const file = templatePath(root);
-  if (!fs13.existsSync(file)) return null;
-  return (0, import_crypto.createHash)("sha256").update(fs13.readFileSync(file)).digest("hex");
+  if (!fs14.existsSync(file)) return null;
+  return (0, import_crypto3.createHash)("sha256").update(fs14.readFileSync(file)).digest("hex");
 }
-function sha256File(file) {
+function sha256File2(file) {
   try {
-    return (0, import_crypto.createHash)("sha256").update(fs13.readFileSync(file)).digest("hex");
+    return (0, import_crypto3.createHash)("sha256").update(fs14.readFileSync(file)).digest("hex");
   } catch {
     return null;
   }
 }
 function normPath(p) {
-  return foldPathOnPlatform(path14.resolve(p)).replace(/\\/g, "/");
+  return foldPathOnPlatform(path15.resolve(p)).replace(/\\/g, "/");
 }
 function machineId() {
   try {
-    return (0, import_crypto.createHash)("sha256").update(os2.hostname() + "\n" + (os2.userInfo().username ?? "")).digest("hex").slice(0, 32);
+    return (0, import_crypto3.createHash)("sha256").update(os2.hostname() + "\n" + (os2.userInfo().username ?? "")).digest("hex").slice(0, 32);
   } catch {
-    return (0, import_crypto.createHash)("sha256").update(os2.hostname()).digest("hex").slice(0, 32);
+    return (0, import_crypto3.createHash)("sha256").update(os2.hostname()).digest("hex").slice(0, 32);
   }
 }
+var RENAME_SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
 function fingerprintFlashPlan(o) {
   return {
     address: o.address.toLowerCase(),
@@ -7688,11 +8492,11 @@ function fingerprintFlashPlan(o) {
     reset: o.reset,
     eraseAll: o.eraseAll,
     banks: o.banks,
-    scriptSha: sha256File(o.scriptPath) ?? "",
+    scriptSha: sha256File2(o.scriptPath) ?? "",
     firmwarePath: normPath(o.firmware),
-    firmwareSha: sha256File(o.firmware),
+    firmwareSha: sha256File2(o.firmware),
     boardCfgPath: normPath(o.boardCfg),
-    boardCfgSha: sha256File(o.boardCfg),
+    boardCfgSha: sha256File2(o.boardCfg),
     openocdExe: normPath(o.openocdExe),
     powerOn: o.powerOn ?? null
   };
@@ -7710,7 +8514,11 @@ function validFlashPlan(p) {
 }
 function readFlashAck(root) {
   try {
-    const parsed = JSON.parse(fs13.readFileSync(flashAckPath(root), "utf-8"));
+    const realMrvcDir = resolveContainedMetaDir(root, [".vscode", "mrvc"], false);
+    if (!realMrvcDir) return null;
+    const info = assertContainedMetaFile(realMrvcDir, "flash-verified.json", true);
+    if (!info.exists) return null;
+    const parsed = JSON.parse(fs14.readFileSync(info.path, "utf-8"));
     if (typeof parsed.time !== "string") return null;
     const corrupt = parsed.plan !== null && parsed.plan !== void 0 && !validFlashPlan(parsed.plan);
     return {
@@ -7758,14 +8566,14 @@ function checkFlashAck(root) {
   return { ok: true, ack };
 }
 function powerAckPath(root) {
-  return path14.join(root, ".vscode", "mrvc", "power-verified.json");
+  return path15.join(root, ".vscode", "mrvc", "power-verified.json");
 }
 function fingerprintPowerPlan(o) {
   return {
     voltage: o.voltage,
     delayMs: o.delayMs,
     boardCfgPath: normPath(o.boardCfg),
-    boardCfgSha: sha256File(o.boardCfg),
+    boardCfgSha: sha256File2(o.boardCfg),
     openocdExe: normPath(o.openocdExe)
   };
 }
@@ -7782,7 +8590,11 @@ function validPowerPlan(p) {
 }
 function readPowerAck(root) {
   try {
-    const parsed = JSON.parse(fs13.readFileSync(powerAckPath(root), "utf-8"));
+    const realMrvcDir = resolveContainedMetaDir(root, [".vscode", "mrvc"], false);
+    if (!realMrvcDir) return null;
+    const info = assertContainedMetaFile(realMrvcDir, "power-verified.json", true);
+    if (!info.exists) return null;
+    const parsed = JSON.parse(fs14.readFileSync(info.path, "utf-8"));
     if (typeof parsed.time !== "string" || !parsed.plan) return null;
     const corrupt = !validPowerPlan(parsed.plan);
     return {
@@ -7813,8 +8625,8 @@ function checkPowerAck(root) {
 }
 
 // src/core/audit.ts
-var fs14 = __toESM(require("fs"));
-var path15 = __toESM(require("path"));
+var fs15 = __toESM(require("fs"));
+var path16 = __toESM(require("path"));
 function strictXmlStructureError(src, expectRoot) {
   const isXmlChar = (cp2) => cp2 === 9 || cp2 === 10 || cp2 === 13 || cp2 >= 32 && cp2 <= 55295 || cp2 >= 57344 && cp2 <= 65533 || cp2 >= 65536 && cp2 <= 1114111;
   for (const ch of src) {
@@ -7928,7 +8740,7 @@ function strictXmlStructureError(src, expectRoot) {
 function strictXmlFileError(file, expectRoot) {
   let src;
   try {
-    src = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(fs14.readFileSync(file));
+    src = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(fs15.readFileSync(file));
   } catch {
     return "file is not valid UTF-8";
   }
@@ -7938,21 +8750,21 @@ function parseFile(file, findings, code, expectRoot) {
   var _a;
   const structure = strictXmlFileError(file, expectRoot);
   if (structure) {
-    findings.push({ code, file: path15.basename(file), detail: structure, fixable: false });
+    findings.push({ code, file: path16.basename(file), detail: structure, fixable: false });
     return void 0;
   }
   let doc;
   try {
-    doc = parseXml(fs14.readFileSync(file, "utf-8"));
+    doc = parseXml(fs15.readFileSync(file, "utf-8"));
   } catch (e) {
-    findings.push({ code, file: path15.basename(file), detail: e instanceof Error ? e.message : String(e), fixable: false });
+    findings.push({ code, file: path16.basename(file), detail: e instanceof Error ? e.message : String(e), fixable: false });
     return void 0;
   }
   const px = doc == null ? void 0 : doc.child(expectRoot);
   if (!px) {
     findings.push({
       code,
-      file: path15.basename(file),
+      file: path16.basename(file),
       detail: `root element is "${((_a = doc == null ? void 0 : doc.children[0]) == null ? void 0 : _a.name) || (doc == null ? void 0 : doc.name) || "(none)"}", expected <${expectRoot}>`,
       fixable: false
     });
@@ -7966,12 +8778,12 @@ function rvGccFormOk(value) {
 function auditProjectConfig(root) {
   var _a, _b;
   const findings = [];
-  const projectFile = path15.join(root, ".project");
-  if (fs14.existsSync(projectFile)) {
+  const projectFile = path16.join(root, ".project");
+  if (fs15.existsSync(projectFile)) {
     const px = parseFile(projectFile, findings, "project-xml", "projectDescription");
     if (px) {
       const name = (_b = (_a = px.child("name")) == null ? void 0 : _a.text) == null ? void 0 : _b.trim();
-      if (name && name !== path15.basename(root)) {
+      if (name && name !== path16.basename(root)) {
         findings.push({
           code: "project-name",
           file: ".project",
@@ -7981,8 +8793,8 @@ function auditProjectConfig(root) {
       }
     }
   }
-  const cprojectFile = path15.join(root, ".cproject");
-  if (fs14.existsSync(cprojectFile)) {
+  const cprojectFile = path16.join(root, ".cproject");
+  if (fs15.existsSync(cprojectFile)) {
     let cp2;
     try {
       const px = parseFile(cprojectFile, findings, "project-xml", "cproject");
@@ -8039,19 +8851,48 @@ function auditProjectConfig(root) {
   }
   return { findings };
 }
+function backup(root, backupDir, basename11) {
+  const src = path16.join(root, basename11);
+  if (!fs15.existsSync(src)) return;
+  fs15.mkdirSync(backupDir, { recursive: true });
+  fs15.copyFileSync(src, path16.join(backupDir, basename11));
+}
+function repairProjectConfig(root, findings) {
+  const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:T]/g, "").slice(0, 14) + "-" + String(process.pid % 1e4).padStart(4, "0");
+  const backupDir = path16.join(root, ".vscode", "mrvc", "repair-backup", stamp);
+  const repairedFiles = [];
+  const cprojectFindings = findings.filter((f) => f.file === ".cproject" && f.fixable);
+  if (cprojectFindings.length) {
+    backup(root, backupDir, ".cproject");
+    const cp2 = Cproject.load(root, { repairProject: false });
+    for (const f of cprojectFindings) {
+      if (f.code !== "enum-value-missing" || !f.optionId) continue;
+      const opt = cp2.config.findAll((e) => e.name === "option" && e.attr("id") === f.optionId)[0];
+      if (opt == null ? void 0 : opt.parent) opt.parent.removeChild(opt);
+    }
+    cp2.save();
+    repairedFiles.push(".cproject");
+  }
+  if (findings.some((f) => f.code === "template-address" && f.fixable)) {
+    backup(root, backupDir, ".template");
+    templateSet(root, "Address", "");
+    repairedFiles.push(".template");
+  }
+  return { repairedFiles, backupDir };
+}
 
 // src/core/cmake.ts
-var fs15 = __toESM(require("fs"));
-var path16 = __toESM(require("path"));
+var fs16 = __toESM(require("fs"));
+var path17 = __toESM(require("path"));
 var setLine = (name, value) => `set(${name} ${value})\r
 `;
-var toPosix2 = (p) => p.split(path16.sep).join("/");
+var toPosix3 = (p) => p.split(path17.sep).join("/");
 function linkOf(cp2, p) {
-  const key = foldPathOnPlatform(path16.resolve(p));
+  const key = foldPathOnPlatform(path17.resolve(p));
   for (const [name, target] of cp2.linkedFolders) {
-    const root = foldPathOnPlatform(path16.resolve(target));
+    const root = foldPathOnPlatform(path17.resolve(target));
     if (key === root) return [name, ""];
-    if (key.startsWith(root + path16.sep)) return [name, path16.relative(path16.resolve(target), path16.resolve(p))];
+    if (key.startsWith(root + path17.sep)) return [name, path17.relative(path17.resolve(target), path17.resolve(p))];
   }
   return void 0;
 }
@@ -8110,27 +8951,27 @@ function buildCMakeContent(cp2, tc, file, opts = {}) {
   const sources = [];
   for (const files of scanSources(cp2).values()) {
     for (const f of files) {
-      const rel = path16.relative(cp2.projectRoot, f.fullpath);
+      const rel = path17.relative(cp2.projectRoot, f.fullpath);
       if (!isOutsideRelPath(rel)) {
-        sources.push('"' + esc(toPosix2(rel)) + '"');
+        sources.push('"' + esc(toPosix3(rel)) + '"');
         continue;
       }
       const link = linkOf(cp2, f.fullpath);
       if (!link) continue;
       if (forExport) {
-        sources.push('"' + esc(toPosix2(link[1] ? path16.join(link[0], link[1]) : link[0])) + '"');
+        sources.push('"' + esc(toPosix3(link[1] ? path17.join(link[0], link[1]) : link[0])) + '"');
       } else {
-        sources.push('"' + esc(toPosix2(rel)) + '"');
+        sources.push('"' + esc(toPosix3(rel)) + '"');
       }
     }
   }
   sources.sort((a, b) => a.localeCompare(b));
   const toCmakeInc = (incPath) => {
-    const rel = path16.relative(cp2.projectRoot, incPath);
-    if (!isOutsideRelPath(rel)) return toPosix2(rel);
+    const rel = path17.relative(cp2.projectRoot, incPath);
+    if (!isOutsideRelPath(rel)) return toPosix3(rel);
     const link = linkOf(cp2, incPath);
-    if (forExport) return link ? link[1] ? toPosix2(path16.join(link[0], link[1])) : link[0] : toPosix2(incPath);
-    return toPosix2(rel);
+    if (forExport) return link ? link[1] ? toPosix3(path17.join(link[0], link[1])) : link[0] : toPosix3(incPath);
+    return toPosix3(rel);
   };
   const includes = [];
   const forced = { c: [], cpp: [], asm: [] };
@@ -8158,11 +8999,11 @@ function buildCMakeContent(cp2, tc, file, opts = {}) {
   body += setLine("CMAKE_TRY_COMPILE_TARGET_TYPE", "STATIC_LIBRARY") + "\r\n";
   const exe = process.platform === "win32" ? ".exe" : "";
   body += "# Use MRS toolchain to compile\r\n";
-  body += setLine("TOOLCHAIN_FOLDER", `"${esc(toPosix2(tc.dir))}"`);
+  body += setLine("TOOLCHAIN_FOLDER", `"${esc(toPosix3(tc.dir))}"`);
   body += setLine("TOOLCHAIN_PREFIX", `"${prefix}"`);
-  body += setLine("CMAKE_C_COMPILER", `"${"${TOOLCHAIN_FOLDER}/bin/"}${path16.basename(tc.compilerC)}${exe}"`);
-  body += setLine("CMAKE_CXX_COMPILER", `"${"${TOOLCHAIN_FOLDER}/bin/"}${path16.basename(tc.compilerCpp)}${exe}"`);
-  body += setLine("CMAKE_ASM_COMPILER", `"${"${TOOLCHAIN_FOLDER}/bin/"}${path16.basename(tc.compilerC)}${exe}"`);
+  body += setLine("CMAKE_C_COMPILER", `"${"${TOOLCHAIN_FOLDER}/bin/"}${path17.basename(tc.compilerC)}${exe}"`);
+  body += setLine("CMAKE_CXX_COMPILER", `"${"${TOOLCHAIN_FOLDER}/bin/"}${path17.basename(tc.compilerCpp)}${exe}"`);
+  body += setLine("CMAKE_ASM_COMPILER", `"${"${TOOLCHAIN_FOLDER}/bin/"}${path17.basename(tc.compilerC)}${exe}"`);
   body += setLine("CMAKE_OBJCOPY", `"${"${TOOLCHAIN_FOLDER}/bin/"}${prefix}objcopy${exe}"`);
   body += setLine("CMAKE_OBJDUMP", `"${"${TOOLCHAIN_FOLDER}/bin/"}${prefix}objdump${exe}"`);
   body += setLine("CMAKE_SIZE", `"${"${TOOLCHAIN_FOLDER}/bin/"}${prefix}size${exe}"`);
@@ -8242,19 +9083,19 @@ ${quoted.join("\r\n")}\r
     body += setLine("CMAKE_STATIC_LIBRARY_PREFIX", '""');
     body += setLine("CMAKE_STATIC_LIBRARY_SUFFIX", '".a"');
   }
-  fs15.writeFileSync(file, body, "utf-8");
+  fs16.writeFileSync(file, body, "utf-8");
   return { file, sourceCount: sources.length, includeCount: uniqIncludes.length, isExecutable };
 }
 
 // src/core/intellisense.ts
-var path17 = __toESM(require("path"));
-var fs16 = __toESM(require("fs"));
+var path18 = __toESM(require("path"));
+var fs17 = __toESM(require("fs"));
 function picolibcIncludeDir(tc) {
   const candidates = [
-    path17.join(tc.dir, "riscv-wch-elf", "picolibc", "riscv-wch-elf", "include"),
-    path17.join(tc.dir, "picolibc", "riscv-wch-elf", "include")
+    path18.join(tc.dir, "riscv-wch-elf", "picolibc", "riscv-wch-elf", "include"),
+    path18.join(tc.dir, "picolibc", "riscv-wch-elf", "include")
   ];
-  for (const p of candidates) if (fs16.existsSync(p)) return p;
+  for (const p of candidates) if (fs17.existsSync(p)) return p;
   return void 0;
 }
 function makeEntry(cp2, tc, kind, file) {
@@ -8269,8 +9110,8 @@ function makeEntry(cp2, tc, kind, file) {
   }
   return {
     directory: cp2.projectRoot,
-    file: path17.resolve(file),
-    arguments: [path17.resolve(compiler), ...args, path17.resolve(file)]
+    file: path18.resolve(file),
+    arguments: [path18.resolve(compiler), ...args, path18.resolve(file)]
   };
 }
 function kindOf(logicName) {
@@ -8291,20 +9132,20 @@ function buildCompileEntries(cp2, tc) {
 }
 
 // src/core/buildLog.ts
-var fs17 = __toESM(require("fs"));
-var path18 = __toESM(require("path"));
+var fs18 = __toESM(require("fs"));
+var path19 = __toESM(require("path"));
 var crypto = __toESM(require("crypto"));
 var os3 = __toESM(require("os"));
 function buildWorkDir(projectRoot) {
-  const tmp = path18.join(os3.tmpdir(), "mrs-cache");
-  fs17.mkdirSync(tmp, { recursive: true });
+  const tmp = path19.join(os3.tmpdir(), "mrs-cache");
+  fs18.mkdirSync(tmp, { recursive: true });
   const hash = crypto.createHash("md5").update(projectRoot).digest("hex");
-  const dir = path18.join(tmp, `${path18.basename(projectRoot)}-${hash}`);
-  fs17.mkdirSync(dir, { recursive: true });
+  const dir = path19.join(tmp, `${path19.basename(projectRoot)}-${hash}`);
+  fs18.mkdirSync(dir, { recursive: true });
   return dir;
 }
 function buildRecordFile(projectRoot) {
-  return path18.join(buildWorkDir(projectRoot), "buildContentRecord.txt");
+  return path19.join(buildWorkDir(projectRoot), "buildContentRecord.txt");
 }
 
 // src/core/ppConsistency.ts
@@ -8350,33 +9191,33 @@ function ppDivergences(cp2) {
 }
 
 // src/core/configSwitch.ts
-var fs18 = __toESM(require("fs"));
-var path19 = __toESM(require("path"));
-var import_crypto2 = require("crypto");
+var fs19 = __toESM(require("fs"));
+var path20 = __toESM(require("path"));
+var import_crypto4 = require("crypto");
 var CONFIG_NAME_RE = /^[\w\u4e00-\u9fa5-]+$/u;
 var MAX_CONFIGURATIONS = 10;
 function entryPath(root, name) {
-  if (!name || path19.basename(name) !== name || path19.isAbsolute(name)) return null;
-  const base = path19.resolve(root);
-  const full = path19.resolve(base, name);
-  return full.startsWith(base + path19.sep) ? full : null;
+  if (!name || path20.basename(name) !== name || path20.isAbsolute(name)) return null;
+  const base = path20.resolve(root);
+  const full = path20.resolve(base, name);
+  return full.startsWith(base + path20.sep) ? full : null;
 }
 function findWvproj(root) {
   try {
-    const name = fs18.readdirSync(root).find((n) => n.toLowerCase().endsWith(".wvproj")) ?? "";
+    const name = fs19.readdirSync(root).find((n) => n.toLowerCase().endsWith(".wvproj")) ?? "";
     return name ? entryPath(root, name) : null;
   } catch {
     return null;
   }
 }
 function readWv(file) {
-  return JSON.parse(fs18.readFileSync(file, "utf-8"));
+  return JSON.parse(fs19.readFileSync(file, "utf-8"));
 }
 function writeWv(file, doc) {
-  fs18.writeFileSync(file, JSON.stringify(doc, null, "	"), "utf-8");
+  fs19.writeFileSync(file, JSON.stringify(doc, null, "	"), "utf-8");
 }
 function configIdSuffix(name) {
-  return String(parseInt((0, import_crypto2.createHash)("sha1").update(name).digest("hex").slice(0, 8), 16));
+  return String(parseInt((0, import_crypto4.createHash)("sha1").update(name).digest("hex").slice(0, 8), 16));
 }
 function renameConfigBlock(el, name) {
   const suffix = configIdSuffix(name);
@@ -8429,9 +9270,16 @@ function assertValidName(name) {
     throw new Error(`configuration name ${problem}`);
   }
 }
+function assertFreeOutputName(projectRoot, name) {
+  if (fs19.existsSync(path20.join(projectRoot, name))) {
+    throw new Error(
+      `a directory named "${name}" already exists in the project \u2014 a configuration's name becomes its build output directory, so reusing it would put real files at risk of deletion`
+    );
+  }
+}
 function assertUnique(names, name) {
-  const fold2 = name.toLowerCase();
-  if (names.some((n) => n.toLowerCase() === fold2)) {
+  const fold4 = name.toLowerCase();
+  if (names.some((n) => n.toLowerCase() === fold4)) {
     throw new Error(`configuration already exists: ${name}`);
   }
 }
@@ -8455,7 +9303,7 @@ function resolveConfigIndex(names, name, index) {
   return first;
 }
 function writeTemplateTarget(projectRoot, cp2, name) {
-  if (!fs18.existsSync(path19.join(projectRoot, ".template"))) return void 0;
+  if (!fs19.existsSync(path20.join(projectRoot, ".template"))) return void 0;
   const tpl = readTemplate(projectRoot);
   const old = (tpl.values["Target Path"] ?? "").trim();
   const file = old ? old.split(/[\\/]/).pop() ?? "" : "";
@@ -8548,6 +9396,7 @@ function addConfiguration(projectRoot, name, copyFrom, copyFromIndex) {
     throw new Error(`at most ${MAX_CONFIGURATIONS} configurations are supported`);
   }
   assertUnique(names, name);
+  assertFreeOutputName(projectRoot, name);
   let sourceIdx = 0;
   if (typeof copyFromIndex === "number" && Number.isInteger(copyFromIndex) && copyFromIndex >= 0 && copyFromIndex < names.length) {
     if (copyFrom !== void 0 && names[copyFromIndex] !== copyFrom) {
@@ -8598,6 +9447,7 @@ function renameConfiguration(projectRoot, oldName, newName, index) {
   assertValidName(newName);
   const others = names.filter((_, i) => i !== idx);
   assertUnique(others, newName);
+  assertFreeOutputName(projectRoot, newName);
   renameConfigBlock(els[idx], newName);
   const nextNames = names.map((n, i) => i === idx ? newName : n);
   const targetPath = idx === 0 ? writeTemplateTarget(projectRoot, cp2, newName) : void 0;
@@ -8654,6 +9504,392 @@ function deleteConfiguration(projectRoot, name, index) {
   return { names: nextNames, active: nextNames[0] };
 }
 
+// src/core/projectType.ts
+function setProjectCpp(projectRoot, on) {
+  setCppNature(projectRoot, on);
+  const cp2 = Cproject.load(projectRoot, { repairProject: false });
+  const laterConfigs = cp2.configurationNames.length - 1;
+  if (!on) {
+    if (cp2.removeCppCompilerInputType()) cp2.save();
+    for (let i = 1; i <= laterConfigs; i++) {
+      const cfg = Cproject.loadConfigAt(projectRoot, i, { repairProject: false });
+      if (cfg.removeCppCompilerInputType()) cfg.save();
+    }
+    return { mirrored: 0 };
+  }
+  let mirrored = cp2.ensureCppOptionsFromC();
+  const inputTypeAdded = cp2.ensureCppCompilerInputType();
+  if (mirrored > 0 || inputTypeAdded) cp2.save();
+  for (let i = 1; i <= laterConfigs; i++) {
+    const cfg = Cproject.loadConfigAt(projectRoot, i, { repairProject: false });
+    const opts = cfg.ensureCppOptionsFromC();
+    const it = cfg.ensureCppCompilerInputType();
+    if (opts > 0 || it) cfg.save();
+    mirrored += opts;
+  }
+  return { mirrored };
+}
+
+// src/core/output.ts
+var fs20 = __toESM(require("fs"));
+var path21 = __toESM(require("path"));
+var import_crypto5 = require("crypto");
+var CASE_FOLD3 = process.platform === "win32";
+var fold3 = (s) => CASE_FOLD3 ? s.toLowerCase() : s;
+function contained(projectRoot, dir) {
+  const root = path21.resolve(projectRoot);
+  const d = path21.resolve(root, dir);
+  const prefix = root.endsWith(path21.sep) ? root : root + path21.sep;
+  if (fold3(d) === fold3(root) || !fold3(d).startsWith(fold3(prefix))) {
+    throw new Error(`refusing to touch a directory outside the project root: ${d}`);
+  }
+  try {
+    const realD = fs20.realpathSync.native(d);
+    const realR = fs20.realpathSync.native(root);
+    const realPrefix = realR.endsWith(path21.sep) ? realR : realR + path21.sep;
+    if (fold3(realD) === fold3(realR) || !fold3(realD).startsWith(fold3(realPrefix))) {
+      throw new Error(`refusing to touch a directory that resolves outside the project root through a link: ${d} -> ${realD}`);
+    }
+  } catch (e) {
+    if ((e == null ? void 0 : e.code) === "ENOENT") {
+      return d;
+    }
+    throw e;
+  }
+  return d;
+}
+function assertInsideDir(d, rel) {
+  const joined = path21.resolve(d, rel);
+  const base = path21.resolve(d);
+  if (joined !== base && !joined.startsWith(base + path21.sep)) {
+    throw new Error(`refusing to operate outside the output directory: ${joined}`);
+  }
+  return joined;
+}
+function refuseLinkedDir(d) {
+  let st;
+  try {
+    st = fs20.lstatSync(d);
+  } catch {
+    return;
+  }
+  if (st.isSymbolicLink()) {
+    throw new Error(`refusing to operate on a linked (junction/symlink) output directory: ${d}`);
+  }
+}
+function inspectTree(d) {
+  const files = [];
+  const dirs = [];
+  const visit = (rel) => {
+    let entries;
+    try {
+      entries = fs20.readdirSync(path21.join(d, rel), { withFileTypes: true });
+    } catch (e) {
+      throw new Error(`cannot inspect the directory (${e instanceof Error ? e.message : String(e)}) \u2014 refusing to treat it as a build output directory`);
+    }
+    for (const ent of entries) {
+      const child = rel ? `${rel}/${ent.name}` : ent.name;
+      if (ent.isSymbolicLink()) throw new Error(`refusing a link (junction/symlink) inside the output directory: ${child}`);
+      if (ent.isFile()) files.push(child);
+      else if (ent.isDirectory()) {
+        visit(child);
+        dirs.push(child);
+      } else {
+        throw new Error(`refusing a special entry (not a regular file or directory) inside the output directory: ${child}`);
+      }
+    }
+  };
+  visit("");
+  return { files, dirs };
+}
+var GENERATED_HEADER = "Automatically-generated file. Do not edit!";
+function mentionsWord(text, word) {
+  let idx = text.indexOf(word);
+  while (idx >= 0) {
+    const before = idx > 0 ? text[idx - 1] : "";
+    const after = text[idx + word.length] ?? "";
+    const beforeOk = before === "" || !/[A-Za-z0-9_]/.test(before);
+    const afterOk = after === "" || !/[A-Za-z0-9_]/.test(after);
+    if (beforeOk && afterOk) return true;
+    idx = text.indexOf(word, idx + 1);
+  }
+  return false;
+}
+var NOT_PROVEN = "not proven to be THIS build's output directory";
+function makefileOwnershipProblem(d, targets, encoding) {
+  let bytes;
+  try {
+    bytes = fs20.readFileSync(path21.join(d, "makefile"));
+  } catch {
+    return `it holds files this build writes, but there is no generated makefile in it \u2014 ${NOT_PROVEN}`;
+  }
+  const enc = encoding ?? ansiArtifactEncoding();
+  const text = decodeArtifact(bytes, enc);
+  if (text.includes("\uFFFD")) {
+    return `the makefile is not valid ${enc}; it may have been generated on a machine with a different system code page \u2014 rebuild the project once to regenerate it in this machine's encoding`;
+  }
+  if (!text.includes(GENERATED_HEADER)) {
+    return `the makefile here is not a generated build makefile (no generated-file header) \u2014 ${NOT_PROVEN}`;
+  }
+  if (!targets.some((t) => mentionsWord(text, t))) {
+    return `the generated makefile does not reference this configuration's target (${targets.join(" / ")}) \u2014 ${NOT_PROVEN}`;
+  }
+  return void 0;
+}
+function planGroup(root, g) {
+  const d = contained(root, g.d);
+  refuseLinkedDir(d);
+  let st;
+  let realD = d;
+  try {
+    st = fs20.statSync(d);
+    if (st.isDirectory()) realD = fs20.realpathSync.native(d);
+  } catch {
+    st = void 0;
+  }
+  if (!st) return { d, realD, deleteFiles: [], keptFiles: [], dirs: [], removeRoot: false };
+  if (!st.isDirectory()) throw new Error(`refusing to delete "${d}": it is not a directory`);
+  const tree = inspectTree(d);
+  const hist = loadDirHistory(root, realD);
+  const keepTop = g.keep;
+  const deleteFiles = [];
+  const keptFiles = [];
+  let sawOwned = false;
+  for (const rel of tree.files) {
+    const k = fold3(rel);
+    let owned;
+    let fileSha;
+    if (hist.files.has(k)) {
+      fileSha = sha256File(path21.join(d, rel));
+      owned = fileSha !== void 0 && mayReclaim(k, fileSha, hist.files);
+    } else if (g.claimed.has(k)) {
+      fileSha = sha256File(path21.join(d, rel));
+      if (fileSha === void 0) {
+        throw new Error(`refusing to ${g.clear ? "clear" : "delete"} "${d}": cannot read planned output file "${rel}"`);
+      }
+      owned = true;
+    } else {
+      owned = false;
+    }
+    if (owned) {
+      sawOwned = true;
+      if (g.clear && !rel.includes("/") && keepTop.has(k)) {
+        keptFiles.push(rel);
+        continue;
+      }
+      deleteFiles.push({ rel, expectedSha: fileSha });
+    } else {
+      keptFiles.push(rel);
+    }
+  }
+  if (g.clear) {
+    if (deleteFiles.length === 0 && tree.files.length && !sawOwned) {
+      throw new Error(
+        `refusing to clear "${d}": none of the ${tree.files.length} file(s) here are written by this build (for example ${tree.files.slice(0, 3).join(", ")}) \u2014 the directory is not this configuration's build output`
+      );
+    }
+  } else if (keptFiles.length) {
+    throw new Error(
+      `refusing to delete "${d}": ${keptFiles.length} file(s) here are not written by this build (for example ${keptFiles.slice(0, 3).join(", ")}) \u2014 remove them manually, or use the keep-images clear which leaves them alone`
+    );
+  }
+  if (deleteFiles.length || !g.clear && tree.dirs.length > 0) {
+    const own = makefileOwnershipProblem(d, g.targets, g.encoding ?? hist.encoding);
+    if (own) throw new Error(`refusing to ${g.clear ? "clear" : "delete"} "${d}": ${own}`);
+  }
+  return {
+    d,
+    realD,
+    deleteFiles,
+    keptFiles,
+    dirs: tree.dirs,
+    removeRoot: !g.clear
+  };
+}
+function removePlannedRoot(dir) {
+  try {
+    fs20.rmdirSync(dir);
+    return 1;
+  } catch (e) {
+    const code = e == null ? void 0 : e.code;
+    if (code === "ENOENT") return 0;
+    throw new Error(
+      `failed to remove output directory "${dir}" (${code ?? "unknown"}): ${e instanceof Error ? e.message : String(e)} \u2014 some claimed files inside may already have been deleted`
+    );
+  }
+}
+function assertContainedExecutionPath(plan, rel, abs, kind) {
+  const segs = rel.split("/").filter(Boolean);
+  const dirSegCount = kind === "dir" ? segs.length : Math.max(0, segs.length - 1);
+  let cur = path21.resolve(plan.d);
+  for (let i = 0; i < dirSegCount; i++) {
+    cur = path21.join(cur, segs[i]);
+    const st = fs20.lstatSync(cur);
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      throw new Error(`refusing to traverse linked or non-directory path inside the output directory: ${segs.slice(0, i + 1).join("/")}`);
+    }
+  }
+  const realTarget = fs20.realpathSync.native(abs);
+  const realPrefix = plan.realD.endsWith(path21.sep) ? plan.realD : plan.realD + path21.sep;
+  if (fold3(realTarget) === fold3(plan.realD) || !fold3(realTarget).startsWith(fold3(realPrefix))) {
+    throw new Error(`refusing to touch path escaping the output directory through a link: ${abs} -> ${realTarget}`);
+  }
+}
+function executePlan(root, plan) {
+  if (!plan.deleteFiles.length && !plan.removeRoot) {
+    return { files: 0, dirs: 0 };
+  }
+  refuseLinkedDir(plan.d);
+  try {
+    const currentRealD = fs20.realpathSync.native(plan.d);
+    if (fold3(currentRealD) !== fold3(plan.realD)) {
+      throw new Error(`refusing to operate on output directory whose real path changed after validation: ${plan.d} -> ${currentRealD}`);
+    }
+  } catch (e) {
+    if ((e == null ? void 0 : e.code) === "ENOENT") {
+      return { files: 0, dirs: 0 };
+    }
+    throw e;
+  }
+  const deletedRels = [];
+  try {
+    for (const item of plan.deleteFiles) {
+      const abs = assertInsideDir(plan.d, item.rel);
+      let st;
+      try {
+        st = fs20.lstatSync(abs);
+      } catch (e) {
+        if ((e == null ? void 0 : e.code) === "ENOENT") continue;
+        throw e;
+      }
+      if (st.isSymbolicLink() || !st.isFile()) {
+        throw new Error(`refusing to delete non-regular entry or link inside the output directory: ${item.rel}`);
+      }
+      assertContainedExecutionPath(plan, item.rel, abs, "file");
+      let bytes;
+      try {
+        bytes = fs20.readFileSync(abs);
+      } catch (e) {
+        if ((e == null ? void 0 : e.code) === "ENOENT") continue;
+        throw e;
+      }
+      const actualSha = (0, import_crypto5.createHash)("sha256").update(bytes).digest("hex");
+      if (actualSha !== item.expectedSha) {
+        throw new Error(`refusing to delete "${item.rel}" in "${plan.d}": file content changed after validation (TOCTOU)`);
+      }
+      let stPreUnlink;
+      try {
+        stPreUnlink = fs20.lstatSync(abs);
+      } catch (e) {
+        if ((e == null ? void 0 : e.code) === "ENOENT") continue;
+        throw e;
+      }
+      if (stPreUnlink.isSymbolicLink() || !stPreUnlink.isFile()) {
+        throw new Error(`refusing to delete non-regular entry or link inside the output directory: ${item.rel}`);
+      }
+      assertContainedExecutionPath(plan, item.rel, abs, "file");
+      fs20.unlinkSync(abs);
+      deletedRels.push(item.rel);
+    }
+  } finally {
+    if (deletedRels.length) {
+      pruneDeletedHistory(root, plan.realD, deletedRels);
+    }
+  }
+  for (const rel of plan.dirs) {
+    const absDir = assertInsideDir(plan.d, rel);
+    let stDir;
+    try {
+      stDir = fs20.lstatSync(absDir);
+    } catch (e) {
+      if ((e == null ? void 0 : e.code) === "ENOENT") continue;
+      throw e;
+    }
+    if (stDir.isSymbolicLink() || !stDir.isDirectory()) {
+      throw new Error(`refusing to remove linked or non-directory subdirectory inside the output directory: ${rel}`);
+    }
+    assertContainedExecutionPath(plan, rel, absDir, "dir");
+    try {
+      fs20.rmdirSync(absDir);
+    } catch (e) {
+      const code = e == null ? void 0 : e.code;
+      if (plan.removeRoot && code !== "ENOTEMPTY" && code !== "EEXIST" && code !== "ENOENT") {
+        throw new Error(
+          `failed to remove subdirectory "${rel}" in "${plan.d}" (${code ?? "unknown"}): ${e instanceof Error ? e.message : String(e)}`
+        );
+      }
+    }
+  }
+  let dirs = 0;
+  if (plan.removeRoot) {
+    dirs += removePlannedRoot(assertInsideDir(plan.d, "."));
+  }
+  return { files: deletedRels.length, dirs };
+}
+function clearOutputDir(projectRoot, dir, keepNames, target, claimed, encoding) {
+  contained(projectRoot, dir);
+  const r = deleteConfigOutputs(projectRoot, [{ dir, keep: keepNames, target, claimed, encoding }]);
+  return { removed: r.files, kept: r.kept };
+}
+function removeOutputDir(projectRoot, dir, target, claimed, encoding) {
+  contained(projectRoot, dir);
+  const r = deleteConfigOutputs(projectRoot, [{ dir, target, claimed, encoding }]);
+  return { removed: r.dirs > 0, files: r.files };
+}
+function deleteConfigOutputs(projectRoot, specs) {
+  const root = path21.resolve(projectRoot);
+  const groups = /* @__PURE__ */ new Map();
+  for (const spec of specs) {
+    const d = contained(root, spec.dir);
+    refuseLinkedDir(d);
+    let realD;
+    try {
+      realD = fs20.realpathSync.native(d);
+    } catch (e) {
+      if ((e == null ? void 0 : e.code) === "ENOENT") continue;
+      throw e;
+    }
+    const key = fold3(realD);
+    let g = groups.get(key);
+    if (!g) {
+      g = { d, targets: [], keep: /* @__PURE__ */ new Set(), clear: false, claimed: /* @__PURE__ */ new Set(), encoding: spec.encoding };
+      groups.set(key, g);
+    } else if (!g.encoding && spec.encoding) {
+      g.encoding = spec.encoding;
+    }
+    if (!g.targets.includes(spec.target)) g.targets.push(spec.target);
+    if (spec.keep !== void 0) {
+      g.clear = true;
+      for (const k of spec.keep) g.keep.add(fold3(k));
+    }
+    for (const c of spec.claimed) g.claimed.add(fold3(c));
+  }
+  const problems = [];
+  const plans = [];
+  const kept = [];
+  for (const g of groups.values()) {
+    try {
+      const plan = planGroup(root, g);
+      plans.push(plan);
+      kept.push(...plan.keptFiles);
+    } catch (e) {
+      problems.push(e instanceof Error ? e.message : String(e));
+    }
+  }
+  if (problems.length) {
+    throw new Error(`refusing the batch delete \u2014 ${problems.length} of ${groups.size} directories failed the output-directory checks:
+${problems.join("\n")}`);
+  }
+  let dirs = 0;
+  let files = 0;
+  for (const plan of plans) {
+    const r = executePlan(root, plan);
+    files += r.files;
+    dirs += r.dirs;
+  }
+  return { dirs, files, kept };
+}
+
 // src/mcp/tools.ts
 var SUPPORTED_PROTOCOL_VERSION = "2024-11-05";
 var PROJECT_ROOT_DESC = "Absolute path of the MRS project directory (it must contain a *.wvproj marker, .project and .cproject).";
@@ -8699,6 +9935,18 @@ function listTools() {
       }
     },
     {
+      name: "mrvc_repair_project",
+      description: "Execute the audit repairs on a project: enum options missing their value attribute are removed (MRS\u2019s reader crashes on them) and a malformed .template Address is cleared (the download falls back to inference). With includeStaleLinks:true, linked folders whose target no longer exists are ALSO re-pointed when the original tree is found nearby (stored in the PARENT-N-PROJECT_LOC form) \u2014 the self-service half of the stale-link build refusal: run this, then retry mrvc_build. Links whose target cannot be found anywhere nearby are REPORTED, not invented. Every write is guarded: the touched files are backed up first and re-parsed after \u2014 a failed parse restores everything.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          root: { type: "string", description: PROJECT_ROOT_DESC },
+          includeStaleLinks: { type: "boolean", description: "Also re-point stale linked folders whose original target can be found nearby (default false)." }
+        },
+        required: ["root"]
+      }
+    },
+    {
       name: "mrvc_check_preprocessor",
       description: "Check the three preprocessor define lists (C / C++ / assembler) of the ACTIVE configuration for the same macro being defined with DIFFERENT values in different lists \u2014 the silent-bug class where one toolchain sees FOO=1 and another sees FOO=0. Read-only; reports, never repairs.",
       inputSchema: {
@@ -8709,14 +9957,20 @@ function listTools() {
     },
     {
       name: "mrvc_set_config_option",
-      description: 'Write ONE class of build-configuration fields: include paths, preprocessor defines, the optimization level or the linker script. List fields take the FULL replacement list (read mrvc_get_project_config first and write back everything you want to keep \u2014 an empty list clears). Absolute paths inside the project (and bare relative entries) are stored in the MRS "${workspace_loc:/${ProjName}/rel}" spelling; values that already start with "$" pass through untouched. C and C++ twins are written together by default (language "both") so the two languages cannot drift \u2014 pass language "c" / "cpp" (or "asm" for includePaths) to target one. Every write is guarded: the touched files are copied to .vscode/mrvc/mcp-backup/<stamp>/ first and re-parsed after \u2014 a failed parse restores the originals.',
+      description: 'Write ONE class of build-configuration fields. Original four: includePaths / defines / optimizationLevel / linkerScript. 0.3.8 additions: warningsAll / warningsExtra / gcSections / functionSections / dataSections / lto (booleans), debugInfoLevel (default|none|minimal|max), cDialect / cppDialect (real C/C++ standard choices \u2014 "default" is refused), userObjects / linkedLibs / libSearchPaths (lists), artifactName / outputPrefix (build identity; plain name segments \u2014 an artifactName change means the .template Target Path needs a re-check before flashing). List fields take the FULL replacement list (read mrvc_get_project_config first and write back everything you want to keep \u2014 an empty list clears). Absolute paths inside the project (and bare relative entries) are stored in the MRS "${workspace_loc:/${ProjName}/rel}" spelling; values that already start with "$" pass through untouched. C and C++ twins are written together by default (language "both") so the two languages cannot drift \u2014 pass language "c" / "cpp" (or "asm" for includePaths) to target one. Every write is guarded: the touched files are copied to .vscode/mrvc/mcp-backup/<stamp>/ first and re-parsed after \u2014 a failed parse restores the originals.',
       inputSchema: {
         type: "object",
         properties: {
           root: { type: "string", description: PROJECT_ROOT_DESC },
-          field: { type: "string", enum: ["includePaths", "defines", "optimizationLevel", "linkerScript"], description: "Which field class to write." },
+          // derived from the SAME tables the handler reads — the enum can never
+          // drift from what the tool actually accepts (v0.3.8 review H1)
+          field: {
+            type: "string",
+            enum: ["includePaths", "defines", "optimizationLevel", "linkerScript", ...Object.keys(EXTRA_OPTION_FIELDS)],
+            description: "Which field class to write."
+          },
           value: {
-            description: "includePaths / defines / linkerScript: the FULL replacement list of strings (defines are raw macros like DEBUG=1, no quoting). optimizationLevel: one of size (-Os), none (-O0), optimize (-O1), more (-O2), most (-O3), fast (-Ofast), debug (-Og), z (-Oz)."
+            description: 'includePaths / defines / linkerScript / userObjects / linkedLibs / libSearchPaths: the FULL replacement list of strings (defines are raw macros like DEBUG=1; userObjects/linkedLibs are stored UNQUOTED per the MRS2 model). optimizationLevel: size (-Os), none (-O0), optimize (-O1), more (-O2), most (-O3), fast (-Ofast), debug (-Og), z (-Oz). debugInfoLevel: default (-g) / none / minimal (-g1) / max (-g3) \u2014 "default" is a real stored choice here. cDialect / cppDialect: a REAL standard id (gnu99/c11/gnu17/\u2026, ansi, gnucpp11/cpp17/\u2026 \u2014 "default" is refused). Booleans (warningsAll/warningsExtra/gcSections/functionSections/dataSections/lto): true|false \u2014 false is written explicitly, so model-default-on options (c.linker.gcsections) really turn off. artifactName / outputPrefix: a plain name segment, no path separators or shell metacharacters.'
           },
           configIndex: { type: "number", description: "Configuration row to write (0 = the ACTIVE configuration, the .cproject array position). Default 0." },
           language: { type: "string", enum: ["both", "c", "cpp", "asm"], description: 'Which language twin(s) to write (default both; "asm" applies to includePaths only).' }
@@ -8739,6 +9993,43 @@ function listTools() {
           index: { type: "number", description: 'rename/delete/setActive: ROW index of "name" when more than one configuration shares it.' }
         },
         required: ["root", "action"]
+      }
+    },
+    {
+      name: "mrvc_set_build_exclusion",
+      description: 'Exclude a file or folder from the build / re-include it \u2014 the CDT sourceEntries exclusion table, with exactly the extension tree\u2019s Exclude-From-Build semantics. "path" is the LOGIC path: project-relative (APP/main.c) or under a linked folder (StdPeriphDriver/CH58x_adc.c \u2014 paths start with the link name, see mrvc_list_linked_folders). Excluding a top folder that carries its own named sourceEntry REMOVES that entry and writes the root token (a root token paired WITH a named entry is only CDT\u2019s re-include marker \u2014 the entry must go for the exclusion to be real); include strips the tokens and re-creates the named entry. action "check" is read-only: is the path excluded now, plus the raw exclusion table. Writes follow the ACTIVE configuration (MRS semantics). Guarded write.',
+      inputSchema: {
+        type: "object",
+        properties: {
+          root: { type: "string", description: PROJECT_ROOT_DESC },
+          path: { type: "string", description: "Logic path of the file or folder (project-relative, or LinkName/sub/path for linked content)." },
+          action: { type: "string", enum: ["exclude", "include", "check"], description: "exclude / include write the table; check only reports." }
+        },
+        required: ["root", "path", "action"]
+      }
+    },
+    {
+      name: "mrvc_rename_project",
+      description: 'Rename a MRS project the way the extension\u2019s Rename command does: the .project display name, the debug-launch configuration (rewritten AND renamed to <newName>.launch), the <newName>.wvproj marker (old marker deleted) and the .template Target Path filename segment. .cproject is untouched. Refuses names with \\ / : * ? " < > | or whitespace. Guarded write \u2014 everything is backed up first and rolled back if any step fails.',
+      inputSchema: {
+        type: "object",
+        properties: {
+          root: { type: "string", description: PROJECT_ROOT_DESC },
+          newName: { type: "string", description: "The new project name (a single safe path segment)." }
+        },
+        required: ["root", "newName"]
+      }
+    },
+    {
+      name: "mrvc_switch_project_type",
+      description: "Convert a project between C and C++ (the extension\u2019s Project Type toggle): toggles the ccnature in .project; switching TO C++ also mirrors every C option onto its cpp twin and adds the C++ compiler inputType (a nature-only toggle would build C++ with no include paths and no linker script); switching back to C removes the C++ inputType (the mirrored values stay in place \u2014 extension parity). Guarded write.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          root: { type: "string", description: PROJECT_ROOT_DESC },
+          cpp: { type: "boolean", description: "true = convert to C++, false = convert back to C." }
+        },
+        required: ["root", "cpp"]
       }
     },
     {
@@ -8769,6 +10060,19 @@ function listTools() {
       }
     },
     {
+      name: "mrvc_change_linked_folder_target",
+      description: "Point an existing linked folder at a new directory (the extension\u2019s Change Target command): rewrites the .project locationURI in the PARENT-N-PROJECT_LOC macro form so the project stays portable. The link NAME is untouched, so every .cproject reference keeps working. Refuses targets that are, contain, or resolve through a link back to the project root; the target need not exist, but a missing/unreadable target is reported in the response (builds refuse on it until repaired \u2014 see mrvc_repair_project includeStaleLinks). Unknown link names are refused. Guarded write.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          root: { type: "string", description: PROJECT_ROOT_DESC },
+          name: { type: "string", description: "Link name to re-target (see mrvc_list_linked_folders)." },
+          newTarget: { type: "string", description: "ABSOLUTE path of the new target directory." }
+        },
+        required: ["root", "name", "newTarget"]
+      }
+    },
+    {
       name: "mrvc_remove_linked_folder",
       description: "Remove a linked folder by its link name and clean the .cproject references the same way the extension\u2019s Remove command does (include-path entries, the named sourceEntry, the root-scan excluding token) \u2014 removing one that compiled sources still reference changes what gets built, so check mrvc_get_project_config / mrvc_audit_project afterwards. Unknown names are refused. Guarded write (whole transaction rolls back on failure).",
       inputSchema: {
@@ -8795,6 +10099,34 @@ function listTools() {
           mrsInstallPath: { type: "string", description: "Explicit MRS install root (overrides the environment variable)." }
         },
         required: ["root"]
+      }
+    },
+    {
+      name: "mrvc_compile_file",
+      description: 'Compile ONE source file headlessly: regenerates the makefiles from .cproject (byte-identical to the extension) and runs the MRS-bundled make on that single object target \u2014 the headless shape of the extension\u2019s Compile Single File. "file" is the LOGIC path: project-relative, or under a linked folder (LinkName/sub/file.c). Refused for excluded files, unknown source extensions, a C++ file on a plain-C project, and stale-linked projects (same gate as mrvc_build). The result is returned here only \u2014 the extension\u2019s build record is not written.',
+      inputSchema: {
+        type: "object",
+        properties: {
+          root: { type: "string", description: PROJECT_ROOT_DESC },
+          file: { type: "string", description: "Logic path of the source file (.c/.cpp/.cc/.cxx/.s/.S)." },
+          configIndex: { type: "number", description: "Configuration row to build under (0 = the ACTIVE configuration). Default 0." },
+          timeoutSec: { type: "number", description: "Hard timeout for the make invocation in seconds (default 600, clamped 5\u20133600)." },
+          mrsInstallPath: { type: "string", description: "Explicit MRS install root (overrides the environment variable)." }
+        },
+        required: ["root", "file"]
+      }
+    },
+    {
+      name: "mrvc_delete_output",
+      description: 'Delete build output directories \u2014 the extension\u2019s four Delete commands in one tool. scope "active" cleans the ACTIVE configuration\u2019s output directory; "all" covers every configuration in .cproject (the configuration name IS the directory name). keepImages:true spares only <target>.hex / <target>.bin per configuration and otherwise clears the whole directory contents. Nothing outside <project>/<config>/ is ever touched; a symlinked output directory is refused. No make, no toolchain needed.',
+      inputSchema: {
+        type: "object",
+        properties: {
+          root: { type: "string", description: PROJECT_ROOT_DESC },
+          scope: { type: "string", enum: ["active", "all"], description: "active = the active configuration only; all = every configuration." },
+          keepImages: { type: "boolean", description: "Keep <target>.hex / <target>.bin, delete everything else in the output directory(ies) (default false = delete the directories)." }
+        },
+        required: ["root", "scope"]
       }
     },
     {
@@ -8891,6 +10223,32 @@ function listTools() {
         },
         required: ["root"]
       }
+    },
+    {
+      name: "mrvc_set_power_output",
+      description: "Switch the WCH-Link target power rail to 3.3 V or 5 V immediately (pow3v3/pow5v off \u2192 delay \u2192 on at the requested rail, each pass marker-verified). GATE: the user must have run Power-Off Reset in the MRVC extension at least once (MRVC records a marker-verified receipt after that manual sequence \u2014 rail operations stay anchored to that human go-ahead), and only WCH-LinkE / DAPLink / LinkW can switch the rail (the plain WCH-Link is refused). Note: this APPLIES the rail now \u2014 it does not latch a preference for later downloads; mrvc_flash\u2019s power steps follow their own verified plan.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          root: { type: "string", description: PROJECT_ROOT_DESC },
+          rail: { type: "string", enum: ["3v3", "5v"], description: "The rail to apply (default 3v3)." },
+          delayMs: { type: "number", description: "De-energised duration in ms, 0\u201310000 (default 100)." },
+          openocdPath: { type: "string", description: "OpenOCD binary override." },
+          openocdCfg: { type: "string", description: "Board cfg override (default: wch-riscv.cfg / wch-dual-core.cfg from the MRS install)." },
+          mrsInstallPath: { type: "string", description: "Explicit MRS install root (overrides the environment variable)." }
+        },
+        required: ["root", "rail"]
+      }
+    },
+    {
+      name: "mrvc_check_wchlink_firmware",
+      description: 'Check the attached WCH-Link\u2019s firmware version against the version the MRS install expects \u2014 a READ-ONLY FFI probe (OpenDevice / GetDeviceVersion / CloseDevice; MRVC never writes link firmware). Returns the link model and the current/expected version pair; state "upgrade-needed" carries the guidance (update with WCH-LinkUtility first \u2014 the IDE gates downloads on it).',
+      inputSchema: {
+        type: "object",
+        properties: {
+          mrsInstallPath: { type: "string", description: "Explicit MRS install root (overrides the environment variable)." }
+        }
+      }
     }
   ];
 }
@@ -8899,13 +10257,13 @@ var ToolError = class extends Error {
 function toolRoot(args) {
   const raw = typeof args["root"] === "string" ? args["root"].trim() : "";
   if (!raw) throw new ToolError("root is required (the MRS project directory)");
-  return path20.resolve(raw);
+  return path22.resolve(raw);
 }
 function requireCproject(root) {
   if (typeof root !== "string" || !root.trim()) {
     throw new ToolError("root is required (the MRS project directory)");
   }
-  const abs = path20.resolve(root.trim());
+  const abs = path22.resolve(root.trim());
   if (!isLegalProjectRoot(abs)) {
     throw new ToolError(
       `${abs} is not a legal MRS project \u2014 the directory must contain a *.wvproj marker, .project and .cproject (the three-file contract)`
@@ -8915,11 +10273,23 @@ function requireCproject(root) {
   return cp2;
 }
 function requireLinkedTargets(root) {
-  const stale = staleLinkedFolders(root);
+  const cp2 = Cproject.load(root, { repairProject: false });
+  const rootEntry = cp2.sourceEntries.find((e) => e.name === "");
+  const excluded = new Set(((rootEntry == null ? void 0 : rootEntry.excluding) ?? []).map((t) => foldPathOnPlatform(t)));
+  const named = new Set(cp2.sourceEntries.filter((e) => e.name !== "").map((e) => foldPathOnPlatform(e.name)));
+  const removedFolders = new Set(
+    listRemovedResources(root).filter((r) => r.isFolder).map((r) => foldPathOnPlatform((r.parentLogic ? r.parentLogic + "/" : "") + r.name))
+  );
+  const stale = staleLinkedFolders(root).filter((s) => {
+    const k = foldPathOnPlatform(s.name);
+    if (removedFolders.has(k)) return false;
+    if (excluded.has(k) && !named.has(k)) return false;
+    return true;
+  });
   if (!stale.length) return;
   const detail = stale.map((s) => `"${s.name}" -> ${s.locationUri}${s.suggestedFix ? ` (repairable to ${s.suggestedFix})` : ""}`).join("; ");
   throw new ToolError(
-    `stale linked folder(s) \u2014 their targets do not exist on disk, so a build/scan would silently skip them: ${detail}. Open the project once in the MRVC extension (its first-open pass repairs stale links automatically), then retry.`
+    `stale linked folder(s) \u2014 their targets do not exist on disk, so a build/scan would silently skip them: ${detail}. Repair headlessly with mrvc_repair_project (includeStaleLinks: true) and retry \u2014 or open the project once in the MRVC extension (its first-open pass repairs stale links automatically).`
   );
 }
 function resolveInstall(explicit) {
@@ -8936,7 +10306,7 @@ function resolveInstall(explicit) {
     }
     return null;
   }
-  if (requested && foldPathOnPlatform(path20.resolve(requested)) !== foldPathOnPlatform(install.root)) {
+  if (requested && foldPathOnPlatform(path22.resolve(requested)) !== foldPathOnPlatform(install.root)) {
     throw new ToolError(
       `the requested MRS install path is not a valid install: ${requested} (locateInstall fell back to ${install.root})`
     );
@@ -8949,22 +10319,22 @@ function requireVerifiedFlash(root) {
   return gate;
 }
 function selectBoardCfgHeadless(install, root, cp2, override) {
-  if (typeof override === "string" && override.trim()) return path20.resolve(root, override.trim());
-  const binDir = path20.dirname(install.openocdCfg);
-  if (isDualCoreProject(root)) return path20.join(binDir, "wch-dual-core.cfg");
+  if (typeof override === "string" && override.trim()) return path22.resolve(root, override.trim());
+  const binDir = path22.dirname(install.openocdCfg);
+  if (isDualCoreProject(root)) return path22.join(binDir, "wch-dual-core.cfg");
   return install.openocdCfg;
 }
 function isDualCoreProject(root) {
   var _a;
   try {
-    const kernelFile = JSON.parse(fs19.readFileSync(path20.join(root, ".kernel"), "utf-8"));
+    const kernelFile = JSON.parse(fs21.readFileSync(path22.join(root, ".kernel"), "utf-8"));
     if (typeof kernelFile.kernelName === "string") return true;
   } catch {
   }
   try {
-    const wvprojName = fs19.readdirSync(root).find((f) => f.toLowerCase().endsWith(".wvproj"));
+    const wvprojName = fs21.readdirSync(root).find((f) => f.toLowerCase().endsWith(".wvproj"));
     if (wvprojName) {
-      const wvproj = JSON.parse(fs19.readFileSync(path20.join(root, wvprojName), "utf-8"));
+      const wvproj = JSON.parse(fs21.readFileSync(path22.join(root, wvprojName), "utf-8"));
       if (((_a = wvproj.basic) == null ? void 0 : _a.kernel) && typeof wvproj.basic.kernel.kernelName === "string") return true;
     }
   } catch {
@@ -8972,27 +10342,51 @@ function isDualCoreProject(root) {
   return false;
 }
 function resolveFirmware(root, cp2, tpl, targetFile) {
-  const own = path20.join(root, cp2.configName, `${cp2.targetName}.${cp2.flashFormat === "binary" ? "bin" : "hex"}`);
+  const ext = cp2.flashFormat === "binary" ? "bin" : "hex";
+  const ownCandidates = imageCandidates(cp2.targetName, cp2.outputPrefix, cp2.flashFormat).map((f) => path22.join(root, cp2.configName, f));
+  const own = ownCandidates[0];
+  const requireImage = (file) => {
+    let st;
+    try {
+      st = fs21.statSync(file);
+    } catch {
+      throw new ToolError(`firmware image not found: ${file} \u2014 run mrvc_build first (or pass targetFile)`);
+    }
+    if (!st.isFile() || st.size === 0) {
+      throw new ToolError(`firmware image is not a readable non-empty file: ${file} \u2014 rebuild the project first`);
+    }
+    let fd;
+    try {
+      fd = fs21.openSync(file, "r");
+      fs21.readSync(fd, Buffer.alloc(1), 0, 1, 0);
+    } catch (e) {
+      throw new ToolError(`firmware image is not readable: ${file} (${e instanceof Error ? e.message : String(e)}) \u2014 fix access to the file, then retry`);
+    } finally {
+      if (fd !== void 0) fs21.closeSync(fd);
+    }
+  };
   if (typeof targetFile === "string" && targetFile.trim()) {
-    const abs = path20.resolve(root, targetFile.trim());
-    if (!fs19.existsSync(abs)) throw new ToolError(`firmware not found: ${abs}`);
+    const abs = path22.resolve(root, targetFile.trim());
+    requireImage(abs);
     return { file: abs, note: "" };
   }
   const targetRaw = (tpl.values["Target Path"] ?? "").trim();
   if (targetRaw) {
-    const cand = path20.resolve(root, targetRaw);
-    if (fs19.existsSync(cand)) {
+    const cand = path22.resolve(root, targetRaw);
+    if (fs21.existsSync(cand)) {
+      requireImage(cand);
       return {
         file: cand,
-        note: path20.resolve(cand) === path20.resolve(own) ? "" : `using .template Target Path (${targetRaw}) instead of the project artifact`
+        note: ownCandidates.some((o) => path22.resolve(o) === path22.resolve(cand)) ? "" : `using .template Target Path (${targetRaw}) instead of the project artifact`
       };
     }
-    return { file: own, note: `.template Target Path (${targetRaw}) does not exist on this machine \u2014 using the project's own artifact` };
+    const existing2 = ownCandidates.find((o) => fs21.existsSync(o)) ?? own;
+    requireImage(existing2);
+    return { file: existing2, note: `.template Target Path (${targetRaw}) does not exist on this machine \u2014 using the project's own artifact` };
   }
-  if (!fs19.existsSync(own)) {
-    throw new ToolError(`nothing to flash: ${own} does not exist \u2014 run mrvc_build first (or pass targetFile)`);
-  }
-  return { file: own, note: "" };
+  const existing = ownCandidates.find((o) => fs21.existsSync(o)) ?? own;
+  requireImage(existing);
+  return { file: existing, note: "" };
 }
 function selectProjectToolchain(install, cp2) {
   return selectToolchain(install, "auto", cp2.rvGccVersion, cp2.storedPrefix);
@@ -9055,7 +10449,7 @@ async function terminateChildren() {
 }
 function runProcess(cmd, args, cwd, envPathDirs, timeoutMs, maxChars) {
   const MAX_CHARS = maxChars;
-  return new Promise((resolve13, reject) => {
+  return new Promise((resolve15, reject) => {
     var _a, _b;
     const proc = (0, import_child_process2.spawn)(cmd, args, {
       cwd,
@@ -9064,7 +10458,7 @@ function runProcess(cmd, args, cwd, envPathDirs, timeoutMs, maxChars) {
       detached: process.platform !== "win32",
       env: {
         ...process.env,
-        PATH: [...envPathDirs, process.env.PATH ?? ""].filter(Boolean).join(path20.delimiter)
+        PATH: [...envPathDirs, process.env.PATH ?? ""].filter(Boolean).join(path22.delimiter)
       },
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -9109,7 +10503,7 @@ function runProcess(cmd, args, cwd, envPathDirs, timeoutMs, maxChars) {
       }
       setTimeout(() => {
         const lines = out.split(/\r?\n/).filter((l) => l.trim().length > 0);
-        resolve13({ exitCode: null, tail: lines.slice(-60).join("\n"), output: out, truncated, timedOut });
+        resolve15({ exitCode: null, tail: lines.slice(-60).join("\n"), output: out, truncated, timedOut });
       }, 1e3);
     }, timeoutMs) : null;
     proc.on("error", (e) => {
@@ -9119,7 +10513,7 @@ function runProcess(cmd, args, cwd, envPathDirs, timeoutMs, maxChars) {
     proc.on("close", (code) => {
       if (timer) clearTimeout(timer);
       const lines = out.split(/\r?\n/).filter((l) => l.trim().length > 0);
-      resolve13({ exitCode: code, tail: lines.slice(-60).join("\n"), output: out, truncated, timedOut });
+      resolve15({ exitCode: code, tail: lines.slice(-60).join("\n"), output: out, truncated, timedOut });
     });
   });
 }
@@ -9129,44 +10523,87 @@ function serializeHardware(fn) {
   hardwareChain = run.catch(() => void 0);
   return run;
 }
-var HARDWARE_TOOLS = /* @__PURE__ */ new Set(["mrvc_build", "mrvc_flash", "mrvc_power_off_reset"]);
+var HARDWARE_TOOLS = /* @__PURE__ */ new Set([
+  "mrvc_build",
+  "mrvc_compile_file",
+  "mrvc_delete_output",
+  "mrvc_flash",
+  "mrvc_power_off_reset",
+  "mrvc_set_power_output",
+  "mrvc_check_wchlink_firmware",
+  // project-structure writes join the mutex too: a rename or type switch
+  // racing a concurrent build's makefile generation would read half-moved
+  // files (v0.3.8 review Low-3)
+  "mrvc_rename_project",
+  "mrvc_switch_project_type"
+]);
+function resolveLogicPath(root, cp2, raw) {
+  const norm = raw.trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  const firstSeg = norm.split("/")[0] ?? "";
+  if (!norm || /^([A-Za-z]:)?\//.test(norm) || /^[A-Za-z]:$/.test(firstSeg) || norm.split("/").some((s) => s === "..")) {
+    throw new ToolError(`path must be a project-relative logic path without ".." escapes (got "${raw}")`);
+  }
+  const segs = norm.split("/");
+  for (const [name, target] of cp2.linkedFolders) {
+    if (foldPathOnPlatform(segs[0]) !== foldPathOnPlatform(name)) continue;
+    const base = path22.resolve(target);
+    const full2 = segs.length > 1 ? path22.join(base, ...segs.slice(1)) : base;
+    if (!fs21.existsSync(full2)) {
+      throw new ToolError(`"${segs.slice(1).join("/") || "(the link root)"}" does not exist under linked folder "${name}" (${base})`);
+    }
+    return { logic: norm, abs: full2 };
+  }
+  const full = path22.resolve(root, ...segs);
+  const rootF = foldPathOnPlatform(root);
+  const fullF = foldPathOnPlatform(full);
+  if (fullF === rootF) throw new ToolError("path must be INSIDE the project \u2014 the root itself cannot be named");
+  const sep11 = rootF.endsWith(path22.sep) ? "" : path22.sep;
+  if (!fullF.startsWith(rootF + sep11)) throw new ToolError(`path resolves outside the project root: ${norm}`);
+  if (!fs21.existsSync(full)) {
+    throw new ToolError(
+      `no such file or directory in the project: ${norm} (linked-folder content starts with the link name \u2014 see mrvc_list_linked_folders)`
+    );
+  }
+  return { logic: norm, abs: full };
+}
+function logicallyRemoved(root, logic) {
+  const f = foldPathOnPlatform(logic.replace(/\\/g, "/"));
+  for (const r of listRemovedResources(root)) {
+    const parent = r.parentLogic ? r.parentLogic.replace(/\\/g, "/") + "/" : "";
+    const name = foldPathOnPlatform(parent + r.name);
+    if (r.isFolder ? f === name || f.startsWith(name + "/") : f === name) return true;
+  }
+  return false;
+}
 function buildTimeoutSec(v) {
   const arg = typeof v === "number" && v > 0 ? v : Number(process.env["MRVC_MCP_BUILD_TIMEOUT_SEC"]);
   const raw = Number.isFinite(arg) && arg > 0 ? arg : 600;
   return Math.min(3600, Math.max(5, Math.round(raw)));
 }
 function containedJoin(root, ...segments) {
-  const target = path20.resolve(root, ...segments);
-  const r = path20.resolve(root);
-  if (target !== r && !target.startsWith(r + path20.sep)) {
+  const target = path22.resolve(root, ...segments);
+  const r = path22.resolve(root);
+  if (target !== r && !target.startsWith(r + path22.sep)) {
     throw new ToolError(`configuration path escapes the project root: ${segments.join("/")}`);
   }
   return target;
 }
-function productsFor(cp2, buildDir) {
-  const dir = path20.resolve(buildDir);
-  const exts = cp2.artifactType === "staticLib" ? ["a"] : ["elf", "hex", "bin"];
-  return exts.map((ext) => {
-    const f = path20.resolve(dir, `${cp2.targetName}.${ext}`);
-    if (f !== dir && !f.startsWith(dir + path20.sep)) throw new ToolError(`artifact path escapes the build directory: ${cp2.targetName}.${ext}`);
-    return { file: f, size: fs19.existsSync(f) ? fs19.statSync(f).size : null };
-  });
-}
+var productsFor2 = (cp2, buildDir) => productsFor(cp2, buildDir, flashExtensions(cp2));
 function collectAnalysisFiles(buildDir, test) {
   const out = [];
   const walk2 = (dir) => {
     let entries;
     try {
-      entries = fs19.readdirSync(dir, { withFileTypes: true });
+      entries = fs21.readdirSync(dir, { withFileTypes: true });
     } catch {
       return;
     }
     for (const e of entries) {
-      const p = path20.join(dir, e.name);
+      const p = path22.join(dir, e.name);
       if (e.isDirectory()) walk2(p);
       else if (test(e.name)) {
         try {
-          out.push(fs19.readFileSync(p, "utf-8"));
+          out.push(fs21.readFileSync(p, "utf-8"));
         } catch {
         }
       }
@@ -9195,17 +10632,17 @@ async function buildAllConfigs(opts) {
     });
   };
   if (target === "clean") {
-    if (!names.some((n) => fs19.existsSync(containedJoin(root, n, "makefile")))) {
+    if (!names.some((n) => fs21.existsSync(containedJoin(root, n, "makefile")))) {
       return { ok: true, mode: "all", target, configCount: names.length, configs: [], note: "no configuration has been built yet \u2014 nothing to clean" };
     }
     const makeExe2 = requireMake(install);
     for (const name of names) {
       const dir = containedJoin(root, name);
-      if (!fs19.existsSync(containedJoin(dir, "makefile"))) {
+      if (!fs21.existsSync(containedJoin(dir, "makefile"))) {
         configs.push({ config: name, phase: "clean", skipped: true, note: "never built (no makefile)" });
         continue;
       }
-      const run = await runProcess(makeExe2, ["clean"], dir, [install.makeBin], timeoutSec * 1e3, 96 * 1024);
+      const run = await runProcess(makeExe2, ["clean", ...legacyPrintSizeCleanOverride(dir)], dir, [install.makeBin], timeoutSec * 1e3, 96 * 1024);
       pushRun(name, "clean", run);
     }
     return { ok: configs.every((c) => c["ok"] !== false), mode: "all", target, configCount: names.length, configs };
@@ -9214,8 +10651,8 @@ async function buildAllConfigs(opts) {
   if (target === "rebuild") {
     for (const name of names) {
       const dir = containedJoin(root, name);
-      if (!fs19.existsSync(containedJoin(dir, "makefile"))) break;
-      const run = await runProcess(makeExe, ["clean"], dir, [install.makeBin], timeoutSec * 1e3, 96 * 1024);
+      if (!fs21.existsSync(containedJoin(dir, "makefile"))) break;
+      const run = await runProcess(makeExe, ["clean", ...legacyPrintSizeCleanOverride(dir)], dir, [install.makeBin], timeoutSec * 1e3, 96 * 1024);
       pushRun(name, "clean", run);
       if (run.exitCode !== 0 || run.timedOut) break;
     }
@@ -9235,7 +10672,10 @@ async function buildAllConfigs(opts) {
       throw new ToolError(`configuration [${name}]: ${e instanceof Error ? e.message : String(e)}`);
     }
     const buildDir = containedJoin(root, cpConfig.configName);
-    const run = await runProcess(makeExe, [`-j${jobs}`, "all"], buildDir, [path20.join(tc.dir, "bin"), install.makeBin], timeoutSec * 1e3, 192 * 1024);
+    const candidateOutputs = buildOutputFiles(cpConfig);
+    const preBuildSnap = snapshotExistingOutputs(buildDir, candidateOutputs);
+    const run = await runProcess(makeExe, [`-j${jobs}`, "all"], buildDir, [path22.join(tc.dir, "bin"), install.makeBin], timeoutSec * 1e3, 192 * 1024);
+    recordBuildOutputs(root, buildDir, candidateOutputs, preBuildSnap);
     const ok = run.exitCode === 0 && !run.timedOut;
     configs.push({
       config: name,
@@ -9245,7 +10685,7 @@ async function buildAllConfigs(opts) {
       ...run.timedOut ? { timedOut: true } : {},
       toolchain: tc.name,
       generatedMakefiles: generatedFiles,
-      ...ok ? { products: productsFor(cpConfig, buildDir) } : {},
+      ...ok ? { products: productsFor2(cpConfig, buildDir) } : {},
       outputTail: run.tail.length > tailCap ? "\u2026" + run.tail.slice(-tailCap) : run.tail
     });
     if (!ok) {
@@ -9269,14 +10709,54 @@ var CONFIG_FIELD_SUFFIXES = {
   defines: { c: "c.compiler.defs", cpp: "cpp.compiler.defs", paths: false },
   linkerScript: { c: "c.linker.scriptfile", cpp: "cpp.linker.scriptfile", paths: true }
 };
+var ENUM_OPTION_BASE = "ilg.gnumcueclipse.managedbuild.cross.riscv.option.";
+var DEBUG_LEVELS = ["default", "none", "minimal", "max"];
+var C_STD_LEVELS = ["gnu99", "c99", "gnu11", "c11", "gnu17", "c17", "gnu90", "iso9899.1994090", "c2x", "gnu2x", "ansi"];
+var CPP_STD_LEVELS = [
+  "ansi",
+  "gnucpp98",
+  "cpp0x",
+  "cpp11",
+  "gnucpp0x",
+  "gnucpp11",
+  "cpp1y",
+  "cpp14",
+  "gnucpp1y",
+  "gnucpp14",
+  "cpp1z",
+  "cpp17",
+  "gnucpp1z",
+  "gnucpp17",
+  "cpp2a",
+  "gnucpp2a"
+];
+var EXTRA_OPTION_FIELDS = {
+  warningsAll: { kind: "bool", global: "warnings.allwarn" },
+  warningsExtra: { kind: "bool", global: "warnings.extrawarn" },
+  // c.linker.gcsections defaults ON when the option is absent (MRS2's C
+  // linker model, mirrored in flags.ts) — before/after must report that
+  // default, or a false write would claim an already-off option
+  gcSections: { kind: "bool", c: "c.linker.gcsections", cpp: "cpp.linker.gcsections", defaults: { "c.linker.gcsections": true } },
+  functionSections: { kind: "bool", global: "optimization.functionsections" },
+  dataSections: { kind: "bool", global: "optimization.datasections" },
+  lto: { kind: "bool", global: "optimization.lto" },
+  debugInfoLevel: { kind: "enum", suffix: "debugging.level", enumBase: ENUM_OPTION_BASE + "debugging.level.", options: DEBUG_LEVELS },
+  cDialect: { kind: "enum", suffix: "c.compiler.std", enumBase: ENUM_OPTION_BASE + "c.compiler.std.", options: C_STD_LEVELS, onlyLanguage: "c" },
+  cppDialect: { kind: "enum", suffix: "cpp.compiler.std", enumBase: ENUM_OPTION_BASE + "cpp.compiler.std.", options: CPP_STD_LEVELS, onlyLanguage: "cpp" },
+  userObjects: { kind: "list", c: "c.linker.otherobjs", cpp: "cpp.linker.otherobjs", paths: false },
+  linkedLibs: { kind: "list", c: "c.linker.libs", cpp: "cpp.linker.libs", paths: false },
+  libSearchPaths: { kind: "list", c: "c.linker.paths", cpp: "cpp.linker.paths", paths: true },
+  artifactName: { kind: "identity", id: "artifactName" },
+  outputPrefix: { kind: "identity", id: "outputPrefix" }
+};
 function normalizeStoredPath(root, value) {
   const v = value.trim();
   if (!v || v.startsWith("$")) return v;
-  const abs = path20.resolve(root, v);
+  const abs = path22.resolve(root, v);
   const rootF = foldPathOnPlatform(root);
   const absF = foldPathOnPlatform(abs);
   if (absF === rootF) return "${workspace_loc:/${ProjName}}";
-  if (absF.startsWith(rootF + path20.sep)) {
+  if (absF.startsWith(rootF + path22.sep)) {
     return "${workspace_loc:/${ProjName}/" + abs.slice(root.length + 1).replace(/\\/g, "/") + "}";
   }
   return v;
@@ -9284,38 +10764,42 @@ function normalizeStoredPath(root, value) {
 function projectWriteTargets(root) {
   const names = [".cproject", ".project"];
   try {
-    const marker = fs19.readdirSync(root).find((n) => n.toLowerCase().endsWith(".wvproj"));
-    if (marker) names.push(marker);
+    const entries = fs21.readdirSync(root);
+    for (const n of entries) {
+      if (n.toLowerCase().endsWith(".wvproj") || n.toLowerCase().endsWith(".launch")) names.push(n);
+    }
   } catch {
   }
-  if (fs19.existsSync(path20.join(root, ".template"))) names.push(".template");
+  if (fs21.existsSync(path22.join(root, ".template"))) names.push(".template");
   return names;
 }
-function reparseWritten(root, basename10, backupFile) {
-  if (basename10 === ".cproject") {
-    Cproject.load(root);
-  } else if (basename10 === ".project") {
+function reparseWritten(root, basename11, backupFile) {
+  if (basename11 === ".cproject") {
+    Cproject.load(root, { repairProject: false });
+  } else if (basename11 === ".project") {
     readProjectFile(root, { repair: false });
-  } else if (basename10 === ".template") {
+  } else if (basename11 === ".template") {
     readTemplate(root);
+  } else if (basename11.toLowerCase().endsWith(".launch")) {
+    parseXml(fs21.readFileSync(path22.join(root, basename11), "utf-8"));
   } else {
-    const now = fs19.readFileSync(path20.join(root, basename10));
-    const was = fs19.readFileSync(backupFile);
+    const now = fs21.readFileSync(path22.join(root, basename11));
+    const was = fs21.readFileSync(backupFile);
     if (!now.equals(was)) JSON.parse(now.toString("utf-8"));
   }
 }
 function withBackup(root, mutate) {
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:T]/g, "").slice(0, 14) + "-" + String(process.pid % 1e4).padStart(4, "0");
-  const backupDir = path20.join(root, ".vscode", "mrvc", "mcp-backup", stamp);
+  const backupDir = path22.join(root, ".vscode", "mrvc", "mcp-backup", stamp);
   const targets = projectWriteTargets(root);
-  fs19.mkdirSync(backupDir, { recursive: true });
-  for (const b of targets) fs19.copyFileSync(path20.join(root, b), path20.join(backupDir, b));
+  fs21.mkdirSync(backupDir, { recursive: true });
+  for (const b of targets) fs21.copyFileSync(path22.join(root, b), path22.join(backupDir, b));
   try {
     const result = mutate();
-    for (const b of targets) reparseWritten(root, b, path20.join(backupDir, b));
+    for (const b of targets) reparseWritten(root, b, path22.join(backupDir, b));
     return { ...result, backupDir, backedUp: targets };
   } catch (e) {
-    for (const b of targets) fs19.copyFileSync(path20.join(backupDir, b), path20.join(root, b));
+    for (const b of targets) fs21.copyFileSync(path22.join(backupDir, b), path22.join(root, b));
     throw e;
   }
 }
@@ -9333,10 +10817,10 @@ function configIndexOrThrow(root, raw) {
 var handlers = {
   async mrvc_discover_projects(args) {
     var _a;
-    const root = path20.resolve(
+    const root = path22.resolve(
       typeof args["root"] === "string" && args["root"].trim() ? args["root"].trim() : ((_a = process.env["MRVC_MCP_DEFAULT_ROOT"]) == null ? void 0 : _a.trim()) || process.cwd()
     );
-    if (!fs19.existsSync(root) || !fs19.statSync(root).isDirectory()) {
+    if (!fs21.existsSync(root) || !fs21.statSync(root).isDirectory()) {
       throw new ToolError(`not a directory: ${root}`);
     }
     const depth = typeof args["depth"] === "number" && args["depth"] > 0 ? Math.floor(args["depth"]) : DEFAULT_DISCOVERY_DEPTH;
@@ -9370,7 +10854,7 @@ var handlers = {
     };
   },
   async mrvc_get_project_config(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     const cp2 = requireCproject(root);
     const summary = summarizeProject(root, cp2);
     const dangling = danglingSourceEntries(cp2);
@@ -9400,7 +10884,7 @@ var handlers = {
     return summary;
   },
   async mrvc_audit_project(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     requireCproject(root);
     const result = auditProjectConfig(root);
     const findings = result.findings.map((f) => ({ code: f.code, file: f.file, detail: f.detail, fixable: f.fixable }));
@@ -9409,11 +10893,60 @@ var handlers = {
       findingCount: findings.length,
       fixableCount: findings.filter((f) => f.fixable).length,
       findings,
-      note: findings.length ? "repair is extension-only in this version (Project right-click \u2192 Audit And Repair)" : ""
+      note: findings.length ? "run mrvc_repair_project to execute the fixable ones" : ""
     };
   },
+  async mrvc_repair_project(args) {
+    const root = toolRoot(args);
+    requireCproject(root);
+    const includeStaleLinks = args["includeStaleLinks"] === true;
+    const report = auditProjectConfig(root);
+    const fixable = report.findings.filter((f) => f.fixable);
+    const staleNow = includeStaleLinks ? staleLinkedFolders(root) : [];
+    const staleWritable = staleNow.some((s) => !!s.suggestedFix);
+    if (!fixable.length && !staleWritable) {
+      const response2 = {
+        ok: true,
+        findingsTotal: report.findings.length,
+        fixableCount: 0,
+        repaired: [],
+        note: "nothing fixable and no repairable stale links \u2014 no backup taken"
+      };
+      if (includeStaleLinks) {
+        response2["staleLinksRemaining"] = staleNow.map((s) => ({ name: s.name, location: s.location }));
+      }
+      return response2;
+    }
+    const written = withBackup(root, () => {
+      let staleRepaired = 0;
+      if (includeStaleLinks) {
+        const p = readProjectFile(root, { repair: false });
+        staleRepaired = repairLinkedResources(root, p);
+      }
+      const outcome = fixable.length ? repairProjectConfig(root, fixable) : void 0;
+      return {
+        repairBackupDir: (outcome == null ? void 0 : outcome.backupDir) ?? null,
+        repairedFiles: (outcome == null ? void 0 : outcome.repairedFiles) ?? [],
+        staleLinksRepaired: staleRepaired
+      };
+    });
+    const response = {
+      ok: true,
+      findingsTotal: report.findings.length,
+      fixableCount: fixable.length,
+      repaired: fixable.map((f) => ({ code: f.code, file: f.file, detail: f.detail })),
+      ...written
+    };
+    if (includeStaleLinks) {
+      response["staleLinksRemaining"] = staleLinkedFolders(root).map((s) => ({ name: s.name, location: s.location }));
+    }
+    if (fixable.length === 0 && !includeStaleLinks) {
+      response["note"] = "nothing fixable found \u2014 report-only findings (if any) stay visible in mrvc_audit_project";
+    }
+    return response;
+  },
   async mrvc_build(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     const cp2 = requireCproject(root);
     const target = args["target"] === "clean" ? "clean" : args["target"] === "rebuild" ? "rebuild" : "build";
     if (target !== "clean") requireLinkedTargets(root);
@@ -9429,10 +10962,10 @@ var handlers = {
       return buildAllConfigs({ root, cp: cp2, target, jobs, analysis, install, timeoutSec });
     }
     const cwd = containedJoin(root, cp2.configName);
-    const hasMakefile = fs19.existsSync(containedJoin(cwd, "makefile"));
+    const hasMakefile = fs21.existsSync(containedJoin(cwd, "makefile"));
     const timeoutMs = timeoutSec * 1e3;
     const makeOnly = () => [install.makeBin];
-    const runClean = () => runProcess(requireMake(install), ["clean"], cwd, makeOnly(), timeoutMs, 96 * 1024);
+    const runClean = () => runProcess(requireMake(install), ["clean", ...legacyPrintSizeCleanOverride(cwd)], cwd, makeOnly(), timeoutMs, 96 * 1024);
     if (target === "clean") {
       if (!hasMakefile) {
         return { ok: true, target, config: cp2.configName, skipped: true, note: "no makefile \u2014 nothing to clean (never built)" };
@@ -9469,7 +11002,10 @@ var handlers = {
     const tc = requireToolchain(install, cp2);
     const makeExe = requireMake(install);
     const gen = generateMakefiles(cp2, tc, { analysis });
-    const buildRun = await runProcess(makeExe, [`-j${jobs}`, "all"], cwd, [path20.join(tc.dir, "bin"), install.makeBin], timeoutMs, 192 * 1024);
+    const candidateOutputs = buildOutputFiles(cp2);
+    const preBuildSnap = snapshotExistingOutputs(cwd, candidateOutputs);
+    const buildRun = await runProcess(makeExe, [`-j${jobs}`, "all"], cwd, [path22.join(tc.dir, "bin"), install.makeBin], timeoutMs, 192 * 1024);
+    recordBuildOutputs(root, cwd, candidateOutputs, preBuildSnap);
     const result = {
       ok: buildRun.exitCode === 0 && !buildRun.timedOut,
       target,
@@ -9489,11 +11025,102 @@ var handlers = {
       // — this build's log lives ONLY in outputTail/output here
       note: "MCP build log is returned here only; it is not written to the extension build record"
     };
-    result["products"] = productsFor(cp2, cwd);
+    result["products"] = productsFor2(cp2, cwd);
     return result;
   },
+  async mrvc_compile_file(args) {
+    const root = toolRoot(args);
+    requireCproject(root);
+    const { index, names } = configIndexOrThrow(root, args["configIndex"]);
+    const cp2 = Cproject.loadConfigAt(root, index, { repairProject: false });
+    const rawFile = typeof args["file"] === "string" ? args["file"] : "";
+    if (!rawFile.trim()) throw new ToolError("file is required \u2014 the logic path of the source file");
+    const { logic, abs } = resolveLogicPath(root, cp2, rawFile);
+    if (!fs21.statSync(abs).isFile()) {
+      throw new ToolError(`"${logic}" is a directory \u2014 compile_file takes a single source file`);
+    }
+    if (logicallyRemoved(root, logic)) {
+      throw new ToolError(`"${logic}" is logically removed from the project (filteredResources) \u2014 restore it first`);
+    }
+    const cl = classifySourceExt(logic);
+    if (!cl) {
+      throw new ToolError(`"${logic}" is not a compilable source file (.c/.cpp/.cc/.cxx/.s/.S)`);
+    }
+    if (!cp2.isCpp && cl.kind === "cpp") {
+      throw new ToolError(`the project is a plain-C project \u2014 there is no C++ tool to compile "${logic}" with (switch the project type first)`);
+    }
+    if (isOutputDirLogicPath(cp2, logic)) {
+      throw new ToolError(`"${logic}" is inside a build output directory \u2014 output directories are excluded from compilation`);
+    }
+    if (isLogicExcluded(cp2, logic)) {
+      throw new ToolError(`"${logic}" is excluded from the build \u2014 re-include it first (mrvc_set_build_exclusion action:"include")`);
+    }
+    const install = resolveInstall(typeof args["mrsInstallPath"] === "string" ? String(args["mrsInstallPath"]) : void 0);
+    if (!install) throw new ToolError("no valid MRS install found (see mrvc_get_install_info)");
+    requireLinkedTargets(root);
+    const tc = requireToolchain(install, cp2);
+    const makeExe = requireMake(install);
+    const buildDir = containedJoin(root, cp2.configName);
+    const gen = generateMakefiles(cp2, tc, {});
+    const objTarget = objectTargetFor(logic);
+    const arg = singleFileMakeArg(objTarget);
+    if (arg.error || !arg.arg) throw new ToolError(`cannot hand the target to make safely: ${arg.error ?? "unknown quoting problem"}`);
+    const candidateOutputs = [objTarget, objTarget.slice(0, -2) + ".d", objTarget.slice(0, -2) + ".su"];
+    const preBuildSnap = snapshotExistingOutputs(buildDir, candidateOutputs);
+    const run = await runProcess(makeExe, [arg.arg], buildDir, [path22.join(tc.dir, "bin"), install.makeBin], buildTimeoutSec(args["timeoutSec"]) * 1e3, 192 * 1024);
+    recordBuildOutputs(root, buildDir, candidateOutputs, preBuildSnap);
+    return {
+      ok: run.exitCode === 0 && !run.timedOut,
+      exitCode: run.exitCode,
+      timedOut: run.timedOut,
+      file: logic,
+      objectTarget: objTarget,
+      config: cp2.configName,
+      toolchain: tc.name,
+      generatedMakefiles: gen.files.length,
+      outputTail: run.tail,
+      outputTruncated: run.truncated,
+      note: "MCP result is returned here only; the extension build record is not written"
+    };
+  },
+  async mrvc_delete_output(args) {
+    const root = toolRoot(args);
+    const cp2 = requireCproject(root);
+    const scope = args["scope"] === "all" ? "all" : args["scope"] === "active" ? "active" : "";
+    if (!scope) throw new ToolError(`scope must be "active" or "all" (got ${JSON.stringify(args["scope"])})`);
+    const keepImages = args["keepImages"] === true;
+    if (scope === "active") {
+      const dir = containedJoin(root, cp2.configName);
+      if (!fs21.existsSync(dir)) {
+        return { ok: true, scope, skipped: true, note: "no output directory \u2014 the project has never been built" };
+      }
+      const claimed = buildOutputFiles(cp2);
+      if (keepImages) {
+        const keep = imageKeepNames(cp2.targetName, cp2.outputPrefix);
+        const { removed, kept: survivors } = clearOutputDir(root, dir, keep, cp2.outputPrefix + cp2.targetName, claimed);
+        return { ok: true, scope, config: cp2.configName, keepImages: true, kept: keep, filesCleared: removed, survivors };
+      }
+      const r2 = removeOutputDir(root, dir, cp2.outputPrefix + cp2.targetName, claimed);
+      if (!r2.removed) {
+        return { ok: true, scope, config: cp2.configName, keepImages: false, skipped: true, filesCleared: r2.files, note: "output directory was already absent" };
+      }
+      return { ok: true, scope, config: cp2.configName, keepImages: false, removedDir: cp2.configName, filesCleared: r2.files };
+    }
+    const names = listConfigurations(root);
+    const specs = names.map((cfg, i) => {
+      const ci = Cproject.loadConfigAt(root, i, { repairProject: false });
+      return {
+        dir: containedJoin(root, cfg),
+        keep: keepImages ? imageKeepNames(ci.targetName, ci.outputPrefix) : void 0,
+        target: ci.outputPrefix + ci.targetName,
+        claimed: buildOutputFiles(ci)
+      };
+    });
+    const r = deleteConfigOutputs(root, specs);
+    return { ok: true, scope, configs: names, keepImages, ...r };
+  },
   async mrvc_check_preprocessor(args) {
-    const cp2 = requireCproject(path20.resolve(String(args["root"]).trim()));
+    const cp2 = requireCproject(toolRoot(args));
     const divergences = ppDivergences(cp2).map((d) => ({
       name: d.name,
       occurrences: d.occurrences.map((o) => ({ tool: o.tool, stored: o.raw, value: o.value }))
@@ -9507,7 +11134,7 @@ var handlers = {
     };
   },
   async mrvc_set_config_option(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     requireCproject(root);
     const field = String(args["field"] ?? "");
     const { index, names } = configIndexOrThrow(root, args["configIndex"]);
@@ -9532,9 +11159,114 @@ var handlers = {
       });
       return { ok: true, field, config: names[index], before: before2, after: level, ...written2 };
     }
+    const extra = EXTRA_OPTION_FIELDS[field];
+    if (extra && extra.kind === "bool") {
+      const targets2 = [];
+      if (extra.global) {
+        if (language !== "both") throw new ToolError(`"${field}" is a global option \u2014 it has no language twins, drop "language"`);
+        targets2.push(extra.global);
+      } else {
+        if (language === "asm") throw new ToolError(`"${field}" has no assembler option`);
+        for (const l of language === "c" ? ["c"] : language === "cpp" ? ["cpp"] : ["c", "cpp"]) {
+          const sfx = l === "c" ? extra.c : extra.cpp;
+          if (sfx) targets2.push(sfx);
+        }
+      }
+      if (typeof args["value"] !== "boolean") throw new ToolError(`value must be true or false for "${field}"`);
+      const v = args["value"];
+      const load = () => Cproject.loadConfigAt(root, index, { repairProject: false });
+      const boolDefault = (sfx) => {
+        var _a;
+        return extra.kind === "bool" ? ((_a = extra.defaults) == null ? void 0 : _a[sfx]) ?? false : false;
+      };
+      const before2 = {};
+      for (const sfx of targets2) before2[sfx] = load().optionBool(sfx, boolDefault(sfx));
+      const written2 = withBackup(root, () => {
+        const cp2 = load();
+        for (const sfx of targets2) cp2.setOptionBool(sfx, v, true);
+        cp2.save();
+        return {};
+      });
+      const after = {};
+      for (const sfx of targets2) after[sfx] = load().optionBool(sfx, boolDefault(sfx));
+      return { ok: true, field, config: names[index], language, before: before2, after, ...written2 };
+    }
+    if (extra && extra.kind === "enum") {
+      if (language !== "both" && language !== extra.onlyLanguage) {
+        throw new ToolError(`"${field}" belongs to the ${extra.onlyLanguage ?? "global (language-independent)"} side \u2014 language "${language}" does not apply`);
+      }
+      const v = typeof args["value"] === "string" ? args["value"].trim() : "";
+      if (!extra.options.includes(v)) {
+        throw new ToolError(
+          `unknown value "${v}" for "${field}" \u2014 valid: ${extra.options.join(", ")}` + (extra.onlyLanguage ? ' ("default" is not accepted: MRS always keeps one stored choice \u2014 write a specific id)' : "")
+        );
+      }
+      const load = () => Cproject.loadConfigAt(root, index, { repairProject: false });
+      const before2 = load().optionEnum(extra.suffix) ?? null;
+      const written2 = withBackup(root, () => {
+        const cp2 = load();
+        cp2.setOptionValue(extra.suffix, extra.enumBase + v);
+        cp2.save();
+        return {};
+      });
+      const after = load().optionEnum(extra.suffix) ?? null;
+      return { ok: true, field, config: names[index], before: before2, after: v, stored: after, ...written2 };
+    }
+    if (extra && extra.kind === "list") {
+      if (language === "asm") throw new ToolError(`"${field}" has no assembler option`);
+      const targets2 = (language === "c" ? ["c"] : language === "cpp" ? ["cpp"] : ["c", "cpp"]).map((l) => ({
+        lang: l,
+        suffix: l === "c" ? extra.c : extra.cpp
+      }));
+      const raw2 = args["value"];
+      if (!Array.isArray(raw2) || raw2.some((v) => typeof v !== "string")) {
+        throw new ToolError(`value must be an array of strings for "${field}" (an empty array clears the list)`);
+      }
+      const cleaned2 = raw2.map((v) => v.replace(/^"(.*)"$/, "$1").trim()).filter((v) => v);
+      const values2 = extra.paths ? cleaned2.map((v) => normalizeStoredPath(root, v)) : cleaned2;
+      const load = () => Cproject.loadConfigAt(root, index, { repairProject: false });
+      const before2 = {};
+      for (const t of targets2) before2[t.lang] = load().listOption(t.suffix).values;
+      const written2 = withBackup(root, () => {
+        const cp2 = load();
+        for (const t of targets2) cp2.setOptionList(t.suffix, values2);
+        cp2.save();
+        return {};
+      });
+      return { ok: true, field, config: names[index], language, before: before2, after: values2, ...written2 };
+    }
+    if (extra && extra.kind === "identity") {
+      if (language !== "both") throw new ToolError(`"${field}" is build identity \u2014 it has no language twins, drop "language"`);
+      const v = typeof args["value"] === "string" ? args["value"].trim() : "";
+      if (!v) throw new ToolError(`value must be a non-empty string for "${field}"`);
+      if (/[\\/\r\n`$;&|'"<>\s]/.test(v)) {
+        throw new ToolError(`${extra.id} must be a plain name segment \u2014 no path separators, whitespace or shell metacharacters (got "${v}")`);
+      }
+      const load = () => Cproject.loadConfigAt(root, index, { repairProject: false });
+      const beforeModel2 = load();
+      const before2 = extra.id === "artifactName" ? { artifactName: beforeModel2.artifactNameRaw, targetName: beforeModel2.targetName } : { outputPrefix: beforeModel2.outputPrefix };
+      const written2 = withBackup(root, () => {
+        const cp2 = load();
+        cp2.setBuildIdentity(extra.id === "artifactName" ? { artifactName: v } : { outputPrefix: v });
+        if (extra.id === "outputPrefix" && cp2.outputPrefix !== v) {
+          throw new ToolError("the .cproject carries no C/C++ linker <tool> element to hold outputPrefix \u2014 open and Apply the properties page once to materialize the toolchain block");
+        }
+        cp2.save();
+        return {};
+      });
+      const afterModel = load();
+      const after = extra.id === "artifactName" ? { artifactName: afterModel.artifactNameRaw, targetName: afterModel.targetName } : { outputPrefix: afterModel.outputPrefix };
+      const result = { ok: true, field, config: names[index], before: before2, after, ...written2 };
+      if (extra.id === "artifactName") {
+        result["note"] = "the artifact name changed \u2014 re-check the .template Target Path (download resolution) before the next flash";
+      }
+      return result;
+    }
     const def = CONFIG_FIELD_SUFFIXES[field];
     if (!def) {
-      throw new ToolError(`unknown field "${field}" \u2014 valid: ${Object.keys(CONFIG_FIELD_SUFFIXES).join(", ")}, optimizationLevel`);
+      throw new ToolError(
+        `unknown field "${field}" \u2014 valid: ${Object.keys(CONFIG_FIELD_SUFFIXES).join(", ")}, optimizationLevel, ${Object.keys(EXTRA_OPTION_FIELDS).join(", ")}`
+      );
     }
     if (language === "asm" && field !== "includePaths") {
       throw new ToolError('language "asm" applies to includePaths only');
@@ -9562,7 +11294,7 @@ var handlers = {
     return { ok: true, field, config: names[index], language, before, after: values, ...written };
   },
   async mrvc_manage_configurations(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     requireCproject(root);
     const action = String(args["action"] ?? "");
     const strArg = (k) => {
@@ -9603,20 +11335,131 @@ var handlers = {
       return { ok: true, ...outcome };
     });
   },
+  async mrvc_set_build_exclusion(args) {
+    const root = toolRoot(args);
+    const cp2 = requireCproject(root);
+    const action = args["action"] === "exclude" ? "exclude" : args["action"] === "include" ? "include" : args["action"] === "check" ? "check" : "";
+    if (!action) throw new ToolError("action must be one of: exclude, include, check");
+    const rawPath = typeof args["path"] === "string" ? args["path"] : "";
+    if (!rawPath.trim()) throw new ToolError("path is required \u2014 the logic path (project-relative, or LinkName/sub/path)");
+    const logic = resolveLogicPath(root, cp2, rawPath).logic;
+    const isOutDir = isOutputDirLogicPath(cp2, logic);
+    if (action === "check") {
+      return {
+        ok: true,
+        action,
+        path: logic,
+        excluded: isOutDir || isLogicExcluded(cp2, logic),
+        ...isOutDir ? { outputDirectory: true } : {},
+        rootTokens: exclusionTokens(cp2).rootTokens,
+        namedEntries: cp2.sourceEntries.filter((e) => e.name !== "").map((e) => e.name),
+        note: "read-only"
+      };
+    }
+    if (isOutDir) {
+      throw new ToolError(`"${logic}" is inside a build output directory \u2014 output directories are always excluded from compilation and cannot be toggled`);
+    }
+    const wasExcluded = isLogicExcluded(cp2, logic);
+    const written = withBackup(root, () => {
+      const fresh = Cproject.load(root, { repairProject: false });
+      if (action === "exclude") fresh.excludeResource(logic);
+      else fresh.includeResource(logic);
+      fresh.save();
+      return {};
+    });
+    const after = Cproject.load(root, { repairProject: false });
+    return {
+      ok: true,
+      action,
+      path: logic,
+      wasExcluded,
+      excludedNow: isLogicExcluded(after, logic),
+      rootTokens: exclusionTokens(after).rootTokens,
+      namedEntries: after.sourceEntries.filter((e) => e.name !== "").map((e) => e.name),
+      ...written
+    };
+  },
+  async mrvc_rename_project(args) {
+    const root = toolRoot(args);
+    requireCproject(root);
+    const newName = typeof args["newName"] === "string" ? args["newName"].trim() : "";
+    if (!newName) throw new ToolError("newName is required \u2014 a single safe path segment");
+    if (!isSafeLinkName(newName) || /\s/.test(newName)) {
+      throw new ToolError(
+        `newName must be a single safe path segment (no separators, whitespace, control characters, "."/"..", trailing dot/space, or Windows reserved device names): "${newName}"`
+      );
+    }
+    const oldName = readProjectFile(root, { repair: false }).name ?? path22.basename(root);
+    if (newName === oldName) {
+      return { ok: true, oldName, newName, changed: false, note: "same name \u2014 nothing written" };
+    }
+    const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:T]/g, "").slice(0, 14) + "-" + String(process.pid % 1e4).padStart(4, "0");
+    const backupDir = containedJoin(root, ".vscode", "mrvc", "mcp-backup", stamp);
+    const targets = projectWriteTargets(root);
+    fs21.mkdirSync(backupDir, { recursive: true });
+    for (const b of targets) fs21.copyFileSync(containedJoin(root, b), path22.join(backupDir, b));
+    try {
+      renameProject(root, newName);
+      readProjectFile(root, { repair: false });
+      const newMarker = containedJoin(root, `${newName}.wvproj`);
+      if (!fs21.existsSync(newMarker)) {
+        throw new ToolError(`rename did not produce the ${newName}.wvproj marker`);
+      }
+      const launchesNow = fs21.readdirSync(root).filter((f) => f.toLowerCase().endsWith(".launch"));
+      for (const b of targets) {
+        if (!b.toLowerCase().endsWith(".launch")) continue;
+        const expected = b.toLowerCase() === `${oldName.toLowerCase()}.launch` ? `${newName.toLowerCase()}.launch` : b.toLowerCase();
+        const actual = launchesNow.find((f) => f.toLowerCase() === expected);
+        if (!actual) {
+          throw new ToolError(`rename lost the launch configuration ${b}`);
+        }
+        parseXml(fs21.readFileSync(containedJoin(root, actual), "utf-8"));
+      }
+      return { ok: true, oldName, newName, backupDir, backedUp: targets };
+    } catch (e) {
+      for (const b of targets) fs21.copyFileSync(path22.join(backupDir, b), containedJoin(root, b));
+      for (const stale of [`${newName}.wvproj`, `${newName}.launch`]) {
+        try {
+          if (targets.some((b) => foldPathOnPlatform(b) === foldPathOnPlatform(stale))) continue;
+          const p = containedJoin(root, stale);
+          if (fs21.existsSync(p)) fs21.rmSync(p, { force: true });
+        } catch {
+        }
+      }
+      throw e;
+    }
+  },
+  async mrvc_switch_project_type(args) {
+    const root = toolRoot(args);
+    const cp2 = requireCproject(root);
+    if (typeof args["cpp"] !== "boolean") {
+      throw new ToolError("cpp is required and must be true (convert to C++) or false (convert back to C)");
+    }
+    const want = args["cpp"];
+    const is = cp2.isCpp;
+    if (want === is) {
+      return { ok: true, cpp: is, changed: false, note: `the project is already ${is ? "C++" : "C"} \u2014 nothing written` };
+    }
+    const written = withBackup(root, () => {
+      const mirrored = setProjectCpp(root, want);
+      return { mirrored: mirrored.mirrored };
+    });
+    return { ok: true, cpp: want, changed: true, ...written };
+  },
   async mrvc_list_linked_folders(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     requireCproject(root);
     const folders = readProjectFile(root, { repair: false }).linkedResources.map((l) => ({
       name: l.name,
       type: l.type,
       locationUri: l.locationUri,
       location: l.location,
-      exists: fs19.existsSync(l.location) && fs19.statSync(l.location).isDirectory()
+      exists: fs21.existsSync(l.location) && fs21.statSync(l.location).isDirectory()
     }));
     return { ok: true, count: folders.length, folders };
   },
   async mrvc_add_linked_folder(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     requireCproject(root);
     const name = typeof args["name"] === "string" ? args["name"].trim() : "";
     const rawName = typeof args["name"] === "string" ? args["name"] : "";
@@ -9631,11 +11474,11 @@ var handlers = {
     }
     const location = typeof args["location"] === "string" ? args["location"].trim() : "";
     if (!location) throw new ToolError("location is required \u2014 an absolute path to an existing directory");
-    if (!path20.isAbsolute(location)) {
+    if (!path22.isAbsolute(location)) {
       throw new ToolError(`location must be an ABSOLUTE path (got "${location}")`);
     }
-    const abs = path20.resolve(location);
-    if (!fs19.existsSync(abs) || !fs19.statSync(abs).isDirectory()) {
+    const abs = path22.resolve(location);
+    if (!fs21.existsSync(abs) || !fs21.statSync(abs).isDirectory()) {
       throw new ToolError(`location is not an existing directory: ${abs}`);
     }
     assertSafeLinkTarget(root, abs);
@@ -9671,8 +11514,38 @@ var handlers = {
     });
     return { ok: true, ...added };
   },
+  async mrvc_change_linked_folder_target(args) {
+    const root = toolRoot(args);
+    requireCproject(root);
+    const rawName = typeof args["name"] === "string" ? args["name"].trim() : "";
+    if (!rawName) throw new ToolError("name is required \u2014 the link name to re-target");
+    const newTargetRaw = typeof args["newTarget"] === "string" ? args["newTarget"].trim() : "";
+    if (!newTargetRaw) throw new ToolError("newTarget is required \u2014 an absolute directory path");
+    if (!path22.isAbsolute(newTargetRaw)) throw new ToolError(`newTarget must be an ABSOLUTE path (got "${newTargetRaw}")`);
+    const newTarget = path22.resolve(newTargetRaw);
+    const foldN = (s) => process.platform === "win32" ? s.toLowerCase() : s;
+    const present = readProjectFile(root, { repair: false }).linkedResources;
+    const link = present.find((l) => foldN(l.name) === foldN(rawName));
+    if (!link) {
+      throw new ToolError(`no linked folder named "${rawName}" \u2014 present: ${present.map((l) => l.name).join(", ") || "(none)"}`);
+    }
+    assertSafeLinkTarget(root, newTarget);
+    const written = withBackup(root, () => {
+      const r = changeLinkedFolderTarget(root, link.name, newTarget);
+      if (!r) throw new ToolError(`link "${link.name}" has no location element to rewrite`);
+      return { name: r.name, locationUri: r.locationUri, location: r.location };
+    });
+    const usable = !unscannableLinkedTarget(newTarget);
+    return {
+      ok: true,
+      ...written,
+      ...usable ? {} : {
+        warning: "the new target is missing or not a readable directory \u2014 builds refuse until it resolves (mrvc_repair_project includeStaleLinks can re-point it)"
+      }
+    };
+  },
   async mrvc_remove_linked_folder(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     requireCproject(root);
     const name = typeof args["name"] === "string" ? args["name"].trim() : "";
     if (!name) throw new ToolError("name is required \u2014 the link name to remove");
@@ -9706,7 +11579,7 @@ var handlers = {
     };
   },
   async mrvc_stack_usage(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     const cp2 = requireCproject(root);
     const buildDir = containedJoin(root, cp2.configName);
     const contents = collectAnalysisFiles(buildDir, (n) => n.endsWith(".su"));
@@ -9733,7 +11606,7 @@ var handlers = {
     };
   },
   async mrvc_call_analysis(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     const cp2 = requireCproject(root);
     const buildDir = containedJoin(root, cp2.configName);
     const dumps = collectAnalysisFiles(buildDir, isExpandDump);
@@ -9760,27 +11633,27 @@ var handlers = {
     };
   },
   async mrvc_get_build_log(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     requireCproject(root);
     const record = buildRecordFile(root);
     const lines = typeof args["lines"] === "number" && args["lines"] > 0 ? Math.floor(args["lines"]) : 100;
-    if (!fs19.existsSync(record)) {
+    if (!fs21.existsSync(record)) {
       return { ok: true, exists: false, recordFile: record, tail: "" };
     }
-    const content = fs19.readFileSync(record, "utf-8");
+    const content = fs21.readFileSync(record, "utf-8");
     const all = content.split(/\r?\n/);
     return { ok: true, exists: true, recordFile: record, tail: all.slice(-lines).join("\n") };
   },
   async mrvc_export_cmake(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     const cp2 = requireCproject(root);
     requireLinkedTargets(root);
     const install = resolveInstall(typeof args["mrsInstallPath"] === "string" ? String(args["mrsInstallPath"]) : void 0);
     if (!install) throw new ToolError("no valid MRS install found (see mrvc_get_install_info)");
     const tc = requireToolchain(install, cp2);
-    const file = path20.join(root, "CMakeLists.txt");
+    const file = path22.join(root, "CMakeLists.txt");
     const overwrite = args["overwrite"] === true;
-    if (fs19.existsSync(file) && !overwrite) {
+    if (fs21.existsSync(file) && !overwrite) {
       throw new ToolError(
         `${file} already exists \u2014 a hand-maintained CMakeLists.txt is not silently replaced; pass overwrite: true to replace it`
       );
@@ -9789,29 +11662,29 @@ var handlers = {
     return { ok: true, file: built.file, sourceCount: built.sourceCount, includeCount: built.includeCount };
   },
   async mrvc_generate_intellisense_db(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     const cp2 = requireCproject(root);
     requireLinkedTargets(root);
     const install = resolveInstall(typeof args["mrsInstallPath"] === "string" ? String(args["mrsInstallPath"]) : void 0);
     if (!install) throw new ToolError("no valid MRS install found (see mrvc_get_install_info)");
     const tc = requireToolchain(install, cp2);
     const entries = buildCompileEntries(cp2, tc);
-    const dir = path20.join(root, ".vscode");
-    fs19.mkdirSync(dir, { recursive: true });
-    const file = path20.join(dir, "compile_commands.json");
-    fs19.writeFileSync(file, JSON.stringify(entries, null, 1), "utf-8");
+    const dir = path22.join(root, ".vscode");
+    fs21.mkdirSync(dir, { recursive: true });
+    const file = path22.join(dir, "compile_commands.json");
+    fs21.writeFileSync(file, JSON.stringify(entries, null, 1), "utf-8");
     return { ok: true, file, entryCount: entries.length };
   },
   async mrvc_flash(args) {
-    const root = path20.resolve(String(args["root"]).trim());
+    const root = toolRoot(args);
     const cp2 = requireCproject(root);
     const ackGate = requireVerifiedFlash(root);
     const install = resolveInstall(typeof args["mrsInstallPath"] === "string" ? String(args["mrsInstallPath"]) : void 0);
     if (!install) throw new ToolError("no valid MRS install found (see mrvc_get_install_info)");
-    const openocd = typeof args["openocdPath"] === "string" && args["openocdPath"].trim() ? path20.resolve(args["openocdPath"].trim()) : install.openocdExe;
-    if (!fs19.existsSync(openocd)) throw new ToolError(`openocd not found: ${openocd}`);
+    const openocd = typeof args["openocdPath"] === "string" && args["openocdPath"].trim() ? path22.resolve(args["openocdPath"].trim()) : install.openocdExe;
+    if (!fs21.existsSync(openocd)) throw new ToolError(`openocd not found: ${openocd}`);
     const boardCfg = selectBoardCfgHeadless(install, root, cp2, typeof args["openocdCfg"] === "string" ? args["openocdCfg"] : void 0);
-    if (!fs19.existsSync(boardCfg)) throw new ToolError(`board cfg not found: ${boardCfg}`);
+    if (!fs21.existsSync(boardCfg)) throw new ToolError(`board cfg not found: ${boardCfg}`);
     const tpl = readTemplate(root);
     const fw = resolveFirmware(root, cp2, tpl, typeof args["targetFile"] === "string" ? args["targetFile"] : void 0);
     const sourcePaths = [...scanSources(cp2).values()].flat().map((f) => f.fullpath);
@@ -9821,7 +11694,7 @@ var handlers = {
     const eraseAll = String(tpl.values["Erase All"] ?? "").trim().toLowerCase() === "true";
     const banks = isDualCoreProject(root) ? 2 : 1;
     const plan = prepareFlash({
-      buildDir: path20.join(root, cp2.configName),
+      buildDir: path22.join(root, cp2.configName),
       address,
       verify,
       reset,
@@ -9851,7 +11724,7 @@ var handlers = {
       const rec = ackGate.ack.plan;
       const hint = rec.powerOn ? " The verified download used the power-off-reset rail flow (powerOn=" + rec.powerOn + "), which this tool does not replicate \u2014 ask the user to download via the extension, or run mrvc_power_off_reset separately." : "";
       throw new ToolError(
-        "the requested flash plan differs from the verified one \u2014 recorded plan: " + describePlanFingerprint(rec) + ". Re-run Download in the MRVC extension with the current parameters, or pass exactly the recorded parameters (they were captured from the extension settings, which this server does not read)." + hint
+        "the requested flash plan differs from the verified one \u2014 recorded plan: " + describePlanFingerprint(rec) + " [computed: " + describePlanFingerprint(fp) + "]. Re-run Download in the MRVC extension with the current parameters, or pass exactly the recorded parameters (they were captured from the extension settings, which this server does not read)." + hint
       );
     }
     const run = await runProcess(openocd, plan.args, root, [], 3e5, 192 * 1024);
@@ -9880,10 +11753,10 @@ var handlers = {
     const pAck = pGate.ack;
     const install = resolveInstall(typeof args["mrsInstallPath"] === "string" ? String(args["mrsInstallPath"]) : void 0);
     if (!install) throw new ToolError("no valid MRS install found (see mrvc_get_install_info)");
-    const openocd = typeof args["openocdPath"] === "string" && args["openocdPath"].trim() ? path20.resolve(args["openocdPath"].trim()) : install.openocdExe;
-    if (!fs19.existsSync(openocd)) throw new ToolError(`openocd not found: ${openocd}`);
+    const openocd = typeof args["openocdPath"] === "string" && args["openocdPath"].trim() ? path22.resolve(args["openocdPath"].trim()) : install.openocdExe;
+    if (!fs21.existsSync(openocd)) throw new ToolError(`openocd not found: ${openocd}`);
     const boardCfg = selectBoardCfgHeadless(install, root, cp2, typeof args["openocdCfg"] === "string" ? args["openocdCfg"] : void 0);
-    if (!fs19.existsSync(boardCfg)) throw new ToolError(`board cfg not found: ${boardCfg}`);
+    if (!fs21.existsSync(boardCfg)) throw new ToolError(`board cfg not found: ${boardCfg}`);
     const voltage = args["voltage"] === "5v" ? "5v" : "3v3";
     const delayMs = clampPowerOffDelay(typeof args["delayMs"] === "number" ? args["delayMs"] : 100);
     const reqFp = fingerprintPowerPlan({ voltage, delayMs, boardCfg, openocdExe: openocd });
@@ -9901,14 +11774,14 @@ var handlers = {
     if (fw && fw.linkId !== void 0 && linkSupportsPowerOutput(fw.linkId) === false) {
       throw new ToolError(`${fw.linkName ?? "WCH-Link"} cannot switch the target power rail \u2014 only WCH-LinkE / DAPLink / LinkW can`);
     }
-    const buildDir = path20.join(root, cp2.configName);
+    const buildDir = path22.join(root, cp2.configName);
     for (const state of ["off", "on"]) {
       let done = false;
       for (let attempt = 0; attempt < 3 && !done; attempt++) {
         const logPath = freshLogPath(root, buildDir, state === "off" ? "mrvc_power_off" : "mrvc_power_on", attempt);
         const passArgs = preparePowerPass({ boardCfg, voltage, state, logPath });
         const run = await runProcess(openocd, passArgs, root, [], 6e4, 64 * 1024);
-        const logText = fs19.existsSync(logPath) ? fs19.readFileSync(logPath, "utf-8") : "";
+        const logText = fs21.existsSync(logPath) ? fs21.readFileSync(logPath, "utf-8") : "";
         const verdict = powerPassVerdict(state, run.exitCode ?? void 0, logText, attempt);
         if (verdict.action === "done") {
           done = true;
@@ -9927,6 +11800,90 @@ var handlers = {
       verifiedBy: pAck.time,
       note: "rail sequence off\u2192delay\u2192on completed (marker-verified)"
     };
+  },
+  async mrvc_set_power_output(args) {
+    const root = toolRoot(args);
+    const cp2 = requireCproject(root);
+    const pGate = checkPowerAck(root);
+    if (!pGate.ok) throw new ToolError(pGate.message);
+    const pAck = pGate.ack;
+    const install = resolveInstall(typeof args["mrsInstallPath"] === "string" ? String(args["mrsInstallPath"]) : void 0);
+    if (!install) throw new ToolError("no valid MRS install found (see mrvc_get_install_info)");
+    const rail = args["rail"] === "5v" ? "5v" : args["rail"] === "3v3" ? "3v3" : "";
+    if (!rail) throw new ToolError(`rail must be "3v3" or "5v" (got ${JSON.stringify(args["rail"])})`);
+    if (pAck.plan.voltage !== rail) {
+      throw new ToolError(
+        `the verified Power-Off Reset receipt was recorded at ${pAck.plan.voltage} \u2014 switching to ${rail} needs the user to run Power-Off Reset in the MRVC extension at ${rail} once first (each rail is anchored to its own manual verification)`
+      );
+    }
+    const openocdArg = typeof args["openocdPath"] === "string" && args["openocdPath"].trim() ? path22.resolve(args["openocdPath"].trim()) : install.openocdExe;
+    if (foldPathOnPlatform(path22.resolve(openocdArg)) !== foldPathOnPlatform(path22.resolve(pAck.plan.openocdExe))) {
+      throw new ToolError("the openocd binary differs from the verified one \u2014 recorded: " + describePowerFingerprint(pAck.plan));
+    }
+    const openocd = openocdArg;
+    if (!fs21.existsSync(openocd)) throw new ToolError(`openocd not found: ${openocd}`);
+    const boardCfg = selectBoardCfgHeadless(install, root, cp2, typeof args["openocdCfg"] === "string" ? args["openocdCfg"] : void 0);
+    if (!fs21.existsSync(boardCfg)) throw new ToolError(`board cfg not found: ${boardCfg}`);
+    const reqFp = fingerprintPowerPlan({ voltage: rail, delayMs: pAck.plan.delayMs, boardCfg, openocdExe: openocd });
+    if (!samePowerFingerprint(reqFp, pAck.plan)) {
+      throw new ToolError("the power plan differs from the verified one \u2014 recorded: " + describePowerFingerprint(pAck.plan));
+    }
+    const delayMs = clampPowerOffDelay(typeof args["delayMs"] === "number" ? args["delayMs"] : 100);
+    let fw;
+    try {
+      fw = await checkWCHLinkFirmware(install);
+    } catch {
+      fw = void 0;
+    }
+    if (fw && fw.linkId !== void 0 && linkSupportsPowerOutput(fw.linkId) === false) {
+      throw new ToolError(`${fw.linkName ?? "WCH-Link"} cannot switch the target power rail \u2014 only WCH-LinkE / DAPLink / LinkW can`);
+    }
+    const buildDir = path22.join(root, cp2.configName);
+    for (const state of ["off", "on"]) {
+      let done = false;
+      for (let attempt = 0; attempt < 3 && !done; attempt++) {
+        const logPath = freshLogPath(root, buildDir, state === "off" ? "mrvc_rail_off" : "mrvc_rail_on", attempt);
+        const passArgs = preparePowerPass({ boardCfg, voltage: rail, state, logPath });
+        const run = await runProcess(openocd, passArgs, root, [], 6e4, 64 * 1024);
+        const logText = fs21.existsSync(logPath) ? fs21.readFileSync(logPath, "utf-8") : "";
+        const verdict = powerPassVerdict(state, run.exitCode ?? void 0, logText, attempt);
+        if (verdict.action === "done") {
+          done = true;
+        } else if (verdict.action === "fail") {
+          throw new ToolError(`power ${state} pass failed (exit ${run.exitCode}) \u2014 tail: ${run.tail.slice(-400)}`);
+        }
+        if (!done) await new Promise((r) => setTimeout(r, 500));
+      }
+      if (!done) throw new ToolError(`power ${state} pass failed after retries`);
+      if (state === "off") await new Promise((r) => setTimeout(r, delayMs));
+    }
+    return {
+      ok: true,
+      rail,
+      delayMs,
+      verifiedBy: pAck.time,
+      note: "rail applied off\u2192delay\u2192on at the requested voltage (marker-verified); no MCP-side latch \u2014 mrvc_flash follows its own verified plan"
+    };
+  },
+  async mrvc_check_wchlink_firmware(args) {
+    const install = resolveInstall(typeof args["mrsInstallPath"] === "string" ? String(args["mrsInstallPath"]) : void 0);
+    if (!install) throw new ToolError("no valid MRS install found (see mrvc_get_install_info)");
+    const fw = await checkWCHLinkFirmware(install);
+    const response = {
+      ok: fw.state !== "error",
+      state: fw.state,
+      linkId: fw.linkId ?? null,
+      linkName: fw.linkName ?? null,
+      currentVersion: fw.currentVersion !== void 0 ? formatLinkVersion(fw.currentVersion) : null,
+      expectedVersion: fw.expectedVersion !== void 0 ? formatLinkVersion(fw.expectedVersion) : null
+    };
+    if (fw.error) response["error"] = fw.error;
+    if (fw.state === "upgrade-needed") {
+      response["guidance"] = `the link firmware ${formatLinkVersion(fw.currentVersion)} is older than the install expects (${formatLinkVersion(fw.expectedVersion)}) \u2014 update it with WCH-LinkUtility before downloading; MRVC never flashes the link firmware itself`;
+    } else if (fw.state === "no-link") {
+      response["note"] = "no WCH-Link attached \u2014 attach one and retry";
+    }
+    return response;
   }
 };
 async function callTool(name, args) {
@@ -9955,7 +11912,7 @@ async function callTool(name, args) {
 // src/mcp/server.ts
 function packageVersion(file, expectName) {
   try {
-    const pkg = JSON.parse(fs20.readFileSync(file, "utf8"));
+    const pkg = JSON.parse(fs22.readFileSync(file, "utf8"));
     if (expectName && (!pkg || pkg.name !== expectName)) return void 0;
     return typeof pkg.version === "string" ? pkg.version : void 0;
   } catch {
@@ -9963,8 +11920,8 @@ function packageVersion(file, expectName) {
   }
 }
 var MRVC_FAMILY_PACKAGE_NAMES = ["mrvc", "mrvc-ai"];
-var parentPkg = path21.join(__dirname, "..", "package.json");
-var serverVersion = packageVersion(path21.join(__dirname, "package.json"), MCP_EXPORT_PACKAGE_NAME) ?? MRVC_FAMILY_PACKAGE_NAMES.map((n) => packageVersion(parentPkg, n)).find((v) => v !== void 0) ?? "0.0.0";
+var parentPkg = path23.join(__dirname, "..", "package.json");
+var serverVersion = packageVersion(path23.join(__dirname, "package.json"), MCP_EXPORT_PACKAGE_NAME) ?? MRVC_FAMILY_PACKAGE_NAMES.map((n) => packageVersion(parentPkg, n)).find((v) => v !== void 0) ?? "0.0.0";
 function send(payload) {
   process.stdout.write(JSON.stringify(payload) + "\n");
 }

@@ -73,6 +73,49 @@ export function hexBaseAddress(content: string): number | undefined {
   return base;
 }
 
+/**
+ * (review round6 P2) ONE strict scan that validates the Intel HEX structure
+ * AND returns the lowest writable byte address. Replaces the loose
+ * hexBaseAddress for the flash gate: it enforces record shape, declared
+ * length, checksum, control-record rules, EOF termination (records AFTER
+ * EOF refuse — an EOF-first file checksums fine but the data after it was
+ * previously still counted as writable bytes), at least one data record,
+ * and correct record ORDER for extended-address records. Returns the base
+ * of the first (lowest) data record so prepareFlash never re-parses.
+ */
+function checkedHexBase(text: string): number {
+  let eof = false;
+  let upper = 0;
+  let base: number | undefined;
+  // type → fixed payload length in bytes (1=EOF, 2=seg addr, 3=start addr,
+  // 4=ext linear addr, 5=start linear addr)
+  const fixedLength: Record<number, number> = { 1: 0, 2: 2, 3: 4, 4: 2, 5: 4 };
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (eof) throw new Error('Intel HEX: record after EOF — rebuild the project first');
+    if (!/^:(?:[0-9a-fA-F]{2}){5,}$/.test(line)) throw new Error('Intel HEX: malformed record — rebuild the project first');
+    const b = Buffer.from(line.slice(1), 'hex');
+    const n = b[0];
+    const addr = b.readUInt16BE(1);
+    const type = b[3];
+    if (b.length !== n + 5) throw new Error('Intel HEX: record length field does not match its content — rebuild the project first');
+    if ((b.reduce((sum, v) => sum + v, 0) & 255) !== 0) throw new Error('Intel HEX: bad record checksum — rebuild the project first');
+    if (type === 0) {
+      // data record — counts toward writable bytes only when non-empty
+      if (n > 0 && base === undefined) base = upper + addr;
+      else if (n > 0) base = Math.min(base ?? Infinity, upper + addr);
+      continue;
+    }
+    if (fixedLength[type] !== n || addr !== 0) throw new Error('Intel HEX: malformed control record — rebuild the project first');
+    if (type === 1) eof = true;
+    if (type === 2) upper = b.readUInt16BE(4) * 16;
+    if (type === 4) upper = b.readUInt16BE(4) * 65536;
+  }
+  if (!eof || base === undefined) throw new Error('Intel HEX: missing EOF record or no data records — rebuild the project first');
+  return base;
+}
+
 export interface FlashOptions {
   /** project build dir (obj/) — the generated script lands here */
   buildDir: string;
@@ -173,22 +216,57 @@ export function prepareFlash(opts: FlashOptions): FlashPlan {
   if (!ADDRESS_RE.test(opts.address)) {
     throw new Error(`Invalid flash address "${opts.address}" (expected form 0x00000000)`);
   }
+  // (review round7) pure input validation comes BEFORE the firmware gate — a
+  // line break in the path must produce the H2 refusal, not an incidental
+  // "image not found" from statSync
+  if (/[\r\n]/.test(opts.firmware)) {
+    throw new Error('invalid firmware path (line break): ' + opts.firmware);
+  }
+  // (review round3 P1) BOTH download entries share this gate — the VS Code
+  // manual flow used to check existence only, so an EMPTY (or unreadable)
+  // BIN reached the plan and OpenOCD would erase the chip before failing to
+  // open the image at write time. The gate OPENS the file and, for Intel
+  // HEX, verifies every record's checksum and requires at least one record
+  // (an all-garbage "hex" refuses). Throwing here means NO executable
+  // erase/program plan is produced at all.
+  let fwStat: fs.Stats;
+  try {
+    fwStat = fs.statSync(opts.firmware);
+  } catch {
+    throw new Error(`firmware image not found: ${opts.firmware} — build the project first`);
+  }
+  if (!fwStat.isFile() || fwStat.size === 0) {
+    throw new Error(`firmware image is empty or not a regular file: ${opts.firmware} — build the project first`);
+  }
+  try {
+    const fd = fs.openSync(opts.firmware, 'r');
+    fs.readSync(fd, Buffer.alloc(1), 0, 1, 0);
+    fs.closeSync(fd);
+  } catch (e) {
+    throw new Error(`firmware image is not readable: ${opts.firmware} (${e instanceof Error ? e.message : String(e)})`);
+  }
+  let hexBase: number | undefined;
+  if (/\.hex$/i.test(opts.firmware)) {
+    // (review round6 P2) ONE strict scan validates the whole structure —
+    // record shape, declared length, checksum, control-record rules, EOF
+    // termination (nothing may follow EOF), at least one writable data
+    // record — and returns the lowest data address in the same pass, so the
+    // old separate hexBaseAddress re-read (which ignored record order and
+    // counted bytes after an early EOF) is gone.
+    const hexText = fs.readFileSync(opts.firmware, 'utf-8');
+    hexBase = checkedHexBase(hexText);
+  }
   let bank = opts.address;
   let offset = opts.address;
-  if (/\.hex$/i.test(opts.firmware)) {
-    try {
-      const base = hexBaseAddress(fs.readFileSync(opts.firmware, 'utf-8'));
-      const addr = parseInt(opts.address, 16);
-      if (base !== undefined && base > 0) {
-        if (addr >= base) {
-          offset = '0x' + (addr - base).toString(16);
-        } else {
-          bank = '0x' + base.toString(16);
-          offset = '0x0';
-        }
+  if (hexBase !== undefined) {
+    const addr = parseInt(opts.address, 16);
+    if (hexBase > 0) {
+      if (addr >= hexBase) {
+        offset = '0x' + (addr - hexBase).toString(16);
+      } else {
+        bank = '0x' + hexBase.toString(16);
+        offset = '0x0';
       }
-    } catch {
-      // unreadable firmware — keep the raw address as the offset
     }
   }
   // Firmware path: forward slashes (Jim Tcl eats backslashes inside double
@@ -196,13 +274,10 @@ export function prepareFlash(opts: FlashOptions): FlashPlan {
   // Jim Tcl ALSO evaluates [cmd] / $var / \" inside double quotes, so a
   // bracketed path (D:\Work\CH32[v2]\obj\app.hex) would abort the download
   // — and a crafted one could inject Tcl commands (code-review H2). Escape
-  // the meta-characters and refuse line breaks outright. Normal paths are
-  // byte-for-byte unchanged, so receipt plan fingerprints stay valid; only
-  // paths carrying these characters produce a different script, and with
-  // those the pre-fix script errored anyway.
-  if (/[\r\n]/.test(opts.firmware)) {
-    throw new Error('invalid firmware path (line break): ' + opts.firmware);
-  }
+  // the meta-characters (line breaks were refused up front). Normal paths
+  // are byte-for-byte unchanged, so receipt plan fingerprints stay valid;
+  // only paths carrying these characters produce a different script, and
+  // with those the pre-fix script errored anyway.
   const fwPosix = opts.firmware
     .replace(/\\/g, '/')
     .replace(/(["$\\[\]])/g, '\\$1');

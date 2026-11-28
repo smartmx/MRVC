@@ -162,7 +162,11 @@ export function addLinkedFolder(projectRoot: string, name: string, target: strin
     );
   }
   assertSafeLinkTarget(projectRoot, target);
-  const p = readProjectFile(projectRoot);
+  // repair:false — a WRITE flow must apply only the write it was asked for;
+  // the default repair would ride a stale-link auto-repair of UNRELATED
+  // links on this load (round27 P2-1). The extension's first-open repair
+  // has long since fixed the file before a user reaches this flow anyway.
+  const p = readProjectFile(projectRoot, { repair: false });
   // case-folded duplicate check (round21 P2-1): on NTFS "Foo" and "foo" are
   // the SAME directory — two links over it scan the same objects twice and
   // their object files race on one name during make -j
@@ -202,7 +206,7 @@ export function addLinkedFolder(projectRoot: string, name: string, target: strin
 }
 
 export function removeLinkedFolder(projectRoot: string, name: string): void {
-  const p = readProjectFile(projectRoot);
+  const p = readProjectFile(projectRoot, { repair: false }); // no rider repairs on writes (round27 P2-1)
   const pd = p.root.child('projectDescription')!;
   const lr = pd.child('linkedResources');
   if (!lr) return;
@@ -228,7 +232,7 @@ export function changeLinkedFolderTarget(projectRoot: string, name: string, newT
   // re-pointing at/above the project root re-scans the whole tree under the
   // link name — same refusal as add (round21 P2-2)
   assertSafeLinkTarget(projectRoot, newTarget);
-  const p = readProjectFile(projectRoot);
+  const p = readProjectFile(projectRoot, { repair: false }); // no rider repairs on writes (round27 P2-1)
   const pd = p.root.child('projectDescription')!;
   const lr = pd.child('linkedResources');
   if (!lr) return undefined;
@@ -276,7 +280,12 @@ function filteredListElement(projectRoot: string, create: boolean): { file: MrsP
   // every scan before round14 P3.1
   let file: MrsProjectFile;
   try {
-    file = readProjectFile(projectRoot, { repair: create });
+    // (review L2) the element-creation flag must not double as the repair
+    // flag: a write flow (appendRemovedResource passes create=true) would
+    // otherwise carry the first-open auto-repair and rewrite UNRELATED
+    // stale linked folders — same round14 zero-repair invariant as every
+    // other write path
+    file = readProjectFile(projectRoot, { repair: false });
   } catch (e) {
     // a project may legally lack .project (Cproject.load tolerates it) — the
     // READ path then simply sees no removed resources. The round25 High
@@ -392,7 +401,7 @@ export function hasLegacyCppNature(projectRoot: string): boolean {
  * toggle; switching off removes either spelling.
  */
 export function setCppNature(projectRoot: string, on: boolean): void {
-  const p = readProjectFile(projectRoot);
+  const p = readProjectFile(projectRoot, { repair: false }); // no rider repairs on writes (round27 P2-1)
   const natures = p.root.child('projectDescription')?.child('natures');
   if (!natures) {
     if (!on) return;
@@ -444,7 +453,7 @@ export function renameProject(projectRoot: string, newName: string, opts: { isSl
     throw new Error(`Invalid project name "${newName}" (no spaces or \\ / : * ? " < > |)`);
   }
   // 1. .project display name — read only, nothing written yet
-  const p = readProjectFile(projectRoot);
+  const p = readProjectFile(projectRoot, { repair: false }); // no rider repairs on writes (round27 P2-1)
   const nameEl = p.root.child('projectDescription')?.child('name');
   if (!nameEl) {
     throw new Error('.project: <projectDescription><name> not found');
@@ -455,12 +464,18 @@ export function renameProject(projectRoot: string, newName: string, opts: { isSl
   // 2/3. .launch edits are prepared IN MEMORY before anything is written:
   // a failure here (locked or broken .launch) must abort while the old
   // name is still on disk — otherwise a retry sees oldName === newName
-  // and can never match/fix the .launch's MAPPED_RESOURCE_PATHS again
-  const oldLaunch = fs.readdirSync(projectRoot).find((f) => f.toLowerCase().endsWith('.launch'));
-  let launchDom: XElement | undefined;
-  if (oldLaunch) {
-    launchDom = parseXml(fs.readFileSync(path.join(projectRoot, oldLaunch), 'utf-8'));
-    for (const attr of launchDom.findAll((e) => e.name === 'stringAttribute')) {
+  // and can never match/fix the .launch's MAPPED_RESOURCE_PATHS again.
+  // EVERY .launch migrates (round27 P2-3): a project may carry several
+  // launch configurations and each one's PROJECT_ATTR/MAPPED_RESOURCE_PATHS
+  // would otherwise keep pointing at the old project
+  const launches = fs
+    .readdirSync(projectRoot)
+    .filter((f) => f.toLowerCase().endsWith('.launch'))
+    .sort();
+  const launchEdits: Array<{ file: string; dom: XElement }> = [];
+  for (const f of launches) {
+    const dom = parseXml(fs.readFileSync(path.join(projectRoot, f), 'utf-8'));
+    for (const attr of dom.findAll((e) => e.name === 'stringAttribute')) {
       const key = attr.attr('key');
       if (key === 'org.eclipse.cdt.launch.PROGRAM_NAME') {
         const v = attr.attr('value');
@@ -477,7 +492,7 @@ export function renameProject(projectRoot: string, newName: string, opts: { isSl
         attr.setAttr('value', newName);
       }
     }
-    for (const list of launchDom.findAll((e) => e.name === 'listAttribute')) {
+    for (const list of dom.findAll((e) => e.name === 'listAttribute')) {
       if (list.attr('key') !== 'org.eclipse.debug.core.MAPPED_RESOURCE_PATHS') continue;
       for (const le of list.findAll((e) => e.name === 'listEntry')) {
         const v = le.attr('value');
@@ -494,6 +509,25 @@ export function renameProject(projectRoot: string, newName: string, opts: { isSl
         }
       }
     }
+    launchEdits.push({ file: f, dom });
+  }
+  // only the launch named after the PROJECT follows the rename
+  // (Old.launch → New.launch); other launch configurations keep their own
+  // user-chosen filenames
+  const renameLaunch = launches.find((f) => f.toLowerCase() === `${oldName.toLowerCase()}.launch`);
+
+  // target-collision precheck (round29 P2) — still zero writes here. When a
+  // DIFFERENT launch already carries the new project name, the renameSync
+  // below would silently overwrite it on Windows (Node renames replace the
+  // target). Refuse instead and keep both launches; the caller (MCP
+  // transaction / rename command) surfaces the message. A same-named source
+  // (case-only rename, old and new fold to one file) is not a collision.
+  if (
+    oldName.toLowerCase() !== newName.toLowerCase() &&
+    launches.some((f) => f.toLowerCase() === `${oldName.toLowerCase()}.launch`) &&
+    launches.some((f) => f.toLowerCase() === `${newName.toLowerCase()}.launch`)
+  ) {
+    throw new Error(`a launch configuration named "${newName}.launch" already exists — rename or delete it first (no overwrite)`);
   }
 
   // ---- all reads and in-memory edits done — now write ----
@@ -503,9 +537,11 @@ export function renameProject(projectRoot: string, newName: string, opts: { isSl
   // everything. Writing .project first would flip the commit point: a
   // failed .launch write then leaves MAPPED_RESOURCE_PATHS pointing at the
   // old project forever (the retry can no longer match the old name).
-  if (oldLaunch && launchDom) {
-    fs.writeFileSync(path.join(projectRoot, oldLaunch), serializeXml(launchDom), 'utf-8');
-    fs.renameSync(path.join(projectRoot, oldLaunch), path.join(projectRoot, newName + '.launch'));
+  for (const e of launchEdits) {
+    fs.writeFileSync(path.join(projectRoot, e.file), serializeXml(e.dom), 'utf-8');
+  }
+  if (renameLaunch) {
+    fs.renameSync(path.join(projectRoot, renameLaunch), path.join(projectRoot, newName + '.launch'));
   }
 
   saveProjectFile(projectRoot, p);

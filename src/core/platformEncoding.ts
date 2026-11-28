@@ -71,6 +71,14 @@ export function encodeArtifact(text: string): Buffer {
 }
 
 /**
+ * Decode toolchain-artifact bytes produced with `encodeArtifact` back to UTF-16
+ * JS text using the same system ANSI code page (review round8 P2-C).
+ */
+export function decodeArtifact(bytes: Buffer, enc: AnsiArtifactEncoding = ansiArtifactEncoding()): string {
+  return enc === 'utf-8' ? bytes.toString('utf8') : iconv.decode(bytes, enc);
+}
+
+/**
  * Encode a PowerShell script file. Windows PowerShell 5.1 decodes a BOM-less
  * .ps1 with the ANSI code page, so a script carrying a non-ASCII path (the
  * user's project directory, e.g. `...\指纹code\...`) would be read as garbage.

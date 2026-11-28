@@ -169,15 +169,27 @@ export function hadTrailingCommaFn(trailingCommas: Map<number, number>, closer: 
  * that span would erase the user's raw trailing comma (and any line-end
  * comment behind it), and a same-pass insert would then produce a
  * missing-separator file that no longer parses (round15 code-review H5). */
-export function objectProps(s: string, trailingCommas?: Map<number, number>): Array<{ key: string; value: ValueSpan }> | null {
+export function objectProps(s: string, trailingCommas?: Map<number, number>): Array<{ key: string; keyStart: number; value: ValueSpan }> | null {
   const open = skipWs(s, 0);
+  if (s[open] !== '{') return null;
+  return objectPropsAt(s, open, trailingCommas);
+}
+
+/** the SAME property inventory for an object that opens at an ARBITRARY
+ * offset (a nested `files.associations` value, 0.3.8 review H3): the caller
+ * can then splice single keys inside the existing object instead of
+ * replacing the whole value span, so comments and layout inside the user's
+ * object survive. `keyStart` is the offset of the opening quote (used to
+ * derive the property indent for inserted lines). */
+export function objectPropsAt(s: string, open: number, trailingCommas?: Map<number, number>): Array<{ key: string; keyStart: number; value: ValueSpan }> | null {
   if (s[open] !== '{') return null;
   const close = matchBracket(s, open);
   if (close < 0) return null;
-  const props: Array<{ key: string; value: ValueSpan }> = [];
+  const props: Array<{ key: string; keyStart: number; value: ValueSpan }> = [];
   let p = skipWs(s, open + 1);
   while (p < close) {
     if (s[p] !== '"') return null;
+    const keyStart = p;
     const kEnd = matchString(s, p);
     if (kEnd < 0) return null;
     let key: string;
@@ -204,7 +216,7 @@ export function objectProps(s: string, trailingCommas?: Map<number, number>): Ar
       i++;
     }
     const vEnd = i < close ? i : close;
-    props.push({ key, value: { start: vStart, end: vEnd } });
+    props.push({ key, keyStart, value: { start: vStart, end: vEnd } });
     p = skipWs(s, vEnd + 1); // past the separating comma
   }
   return props;

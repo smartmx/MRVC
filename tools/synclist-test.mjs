@@ -33,6 +33,7 @@ for (const f of [
   'src/vscode/exclude.ts',
   'src/vscode/logicPath.ts',
   'src/core/output.ts',
+  'src/core/outputHistory.ts',
   'tools/output-test.js',
 ]) {
   check(`FILES carries ${f}`, src.includes(`'${f}'`));

@@ -1,17 +1,20 @@
 /*
- * MRVC MCP server end-to-end tests (0.3.7): spawn mcp/mcp-server.js, speak
- * the stdio JSON-RPC transport (newline-delimited), and assert the protocol
- * surface (initialize / tools/list / ping / parse errors / unknown methods)
- * plus the EIGHTEEN tools against a HERMETIC fixture — a fake MRS install tree
- * (the mrsinstall-test recipe), a minimal legal project, and the
- * env-steering contract (MRVC_MRS_INSTALL_PATH inherited by the child). The
- * real install is only exercised tolerantly (get_install_info without
+ * MRVC MCP server end-to-end tests (0.3.7 → 0.3.8): spawn mcp/mcp-server.js,
+ * speak the stdio JSON-RPC transport (newline-delimited), and assert the
+ * protocol surface (initialize / tools/list / ping / parse errors / unknown
+ * methods) plus the TWENTY-SEVEN tools against a HERMETIC fixture — a fake
+ * MRS install tree (the mrsinstall-test recipe), a minimal legal project, and
+ * the env-steering contract (MRVC_MRS_INSTALL_PATH inherited by the child).
+ * The real install is only exercised tolerantly (get_install_info without
  * arguments must return a parseable result either way); the build tool's
  * make stage depends on the machine's PATH, so its assertion accepts the
  * structured no-make error. Hardware gates: flash requires a receipt with a
  * matching FlashPlan fingerprint; power requires its own marker-verified
  * power receipt. Config-write tools (0.3.7 batch 5) run through the guarded
- * shell: backup into .vscode/mrvc/mcp-backup/, mutation, re-parse.
+ * shell: backup into .vscode/mrvc/mcp-backup/, mutation, re-parse. Batch 6
+ * (0.3.8) adds the exclusion table, linked-target change, audit repair,
+ * rename, C/C++ switch, the extended option fields, single-file compile
+ * gates, output-dir cleanup and the two hardware helpers.
  *
  * Run: node tools/mcpserver-test.js
  */
@@ -219,20 +222,27 @@ async function withServer(label, fn) {
       const list = await server.rpc('tools/list');
       const names = list.result.tools.map((t) => t.name);
       check(
-        'main: tools/list carries the eighteen tools',
+        'main: tools/list carries the twenty-seven tools',
         JSON.stringify(names) ===
           JSON.stringify([
             'mrvc_discover_projects',
             'mrvc_get_install_info',
             'mrvc_get_project_config',
             'mrvc_audit_project',
+            'mrvc_repair_project',
             'mrvc_check_preprocessor',
             'mrvc_set_config_option',
             'mrvc_manage_configurations',
+            'mrvc_set_build_exclusion',
+            'mrvc_rename_project',
+            'mrvc_switch_project_type',
             'mrvc_list_linked_folders',
             'mrvc_add_linked_folder',
+            'mrvc_change_linked_folder_target',
             'mrvc_remove_linked_folder',
             'mrvc_build',
+            'mrvc_compile_file',
+            'mrvc_delete_output',
             'mrvc_stack_usage',
             'mrvc_call_analysis',
             'mrvc_get_build_log',
@@ -240,11 +250,19 @@ async function withServer(label, fn) {
             'mrvc_generate_intellisense_db',
             'mrvc_flash',
             'mrvc_power_off_reset',
+            'mrvc_set_power_output',
+            'mrvc_check_wchlink_firmware',
           ]),
         names.join(',')
       );
       check('main: every tool has a description and an object schema', list.result.tools.every((t) => typeof t.description === 'string' && t.description.length > 0 && t.inputSchema && t.inputSchema.type === 'object'));
       const schemaByName = Object.fromEntries(list.result.tools.map((t) => [t.name, t.inputSchema]));
+      const fieldEnum = schemaByName.mrvc_set_config_option?.properties?.field?.enum;
+      check(
+        'main: set_config_option schema field enum matches the handler tables (18 fields)',
+        Array.isArray(fieldEnum) && fieldEnum.length === 18 && fieldEnum.includes('artifactName') && fieldEnum.includes('gcSections') && fieldEnum.includes('cppDialect'),
+        JSON.stringify(fieldEnum)
+      );
       check(
         'main: build exposes timeoutSec/configs/rebuild/analysis; flash/power expose openocdPath',
         !!schemaByName.mrvc_build.properties.timeoutSec &&
@@ -255,10 +273,11 @@ async function withServer(label, fn) {
           !!schemaByName.mrvc_power_off_reset.properties.openocdPath
       );
       check(
-        'main: write tools expose field/action enums (0.3.7 batch 5)',
-        JSON.stringify(schemaByName.mrvc_set_config_option.properties.field.enum) === JSON.stringify(['includePaths', 'defines', 'optimizationLevel', 'linkerScript']) &&
+        'main: write tools expose field/action enums (0.3.7 batch 5 + 0.3.8 batch 6)',
+        Array.isArray(schemaByName.mrvc_set_config_option.properties.field.enum) && schemaByName.mrvc_set_config_option.properties.field.enum.length === 18 &&
           JSON.stringify(schemaByName.mrvc_set_config_option.properties.language.enum) === JSON.stringify(['both', 'c', 'cpp', 'asm']) &&
           JSON.stringify(schemaByName.mrvc_manage_configurations.properties.action.enum) === JSON.stringify(['list', 'add', 'rename', 'delete', 'setActive']) &&
+          JSON.stringify(schemaByName.mrvc_set_build_exclusion.properties.action.enum) === JSON.stringify(['exclude', 'include', 'check']) &&
           !!schemaByName.mrvc_add_linked_folder.properties.location &&
           !!schemaByName.mrvc_remove_linked_folder.properties.name,
         JSON.stringify(Object.keys(schemaByName))
@@ -826,6 +845,8 @@ async function withServer(label, fn) {
           (resultJson(staleBuild).error || '').includes('PARENT-1-PROJECT_LOC/shared/lib'),
         JSON.stringify(resultJson(staleBuild)).slice(0, 300)
       );
+      // v0.3.8 review M7: the refusal offers the headless self-service repair
+      check('main: the stale refusal offers mrvc_repair_project', (resultJson(staleBuild).error || '').includes('mrvc_repair_project'), '');
       const staleRebuild = await server.rpc('tools/call', { name: 'mrvc_build', arguments: { root: projStale, target: 'rebuild', mrsInstallPath: FAKE } });
       check(
         'main: rebuild refuses on stale linked folders too',
@@ -862,6 +883,23 @@ async function withServer(label, fn) {
         'main: the gate opens once the linked target resolves (cmake export proceeds)',
         !!resultJson(fixedCmake) && resultJson(fixedCmake).ok === true && fs.existsSync(path.join(projStale, 'CMakeLists.txt')),
         JSON.stringify(resultJson(fixedCmake)).slice(0, 240)
+      );
+      // v0.3.8 review M7: requireLinkedTargets exempts EXCLUDED links (root
+      // token, no paired named entry) — their missing targets must not block,
+      // same semantics as the scan gate
+      fs.writeFileSync(
+        path.join(projStale, '.project'),
+        '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>projstale</name><linkedResources><link><name>OldLink</name><type>2</type><locationURI>PARENT-1-PROJECT_LOC/gone-lib</locationURI></link></linkedResources></projectDescription>'
+      );
+      fs.writeFileSync(
+        path.join(projStale, '.cproject'),
+        '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry excluding="OldLink" flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+      );
+      const staleExempt = await server.rpc('tools/call', { name: 'mrvc_build', arguments: { root: projStale, target: 'build', mrsInstallPath: FAKE } });
+      check(
+        'main: an EXCLUDED stale link does not block the MCP build (exemption parity with the scan gate)',
+        !(resultJson(staleExempt).error || '').includes('stale linked folder'),
+        JSON.stringify(resultJson(staleExempt)).slice(0, 220)
       );
 
       // user ruling 2026-11-25: a DANGLING named source entry (no dir, no
@@ -956,7 +994,7 @@ async function withServer(label, fn) {
       fs.writeFileSync(cfgFile, '# test board cfg\n');
       const openocdExe = path.join(FAKE, 'resources', 'app', 'resources', 'win32', 'components', 'WCH', 'OpenOCD', 'OpenOCD', 'bin', 'openocd.exe');
       const flashFresh = await server.rpc('tools/call', { name: 'mrvc_flash', arguments: { root: PROJ, mrsInstallPath: FAKE, openocdCfg: cfgFile } });
-      check('main: fresh receipt opens the gate; flow stops at missing firmware', flashFresh.result.isError === true && resultJson(flashFresh).error.includes('nothing to flash'), JSON.stringify(resultJson(flashFresh)));
+      check('main: fresh receipt opens the gate; flow stops at the missing-firmware gate', flashFresh.result.isError === true && /firmware image not found/.test(resultJson(flashFresh).error || ''), JSON.stringify(resultJson(flashFresh)));
       const powerFresh = await server.rpc('tools/call', { name: 'mrvc_power_off_reset', arguments: { root: PROJ, mrsInstallPath: FAKE, openocdCfg: cfgFile } });
       check(
         'main: power with only a FLASH receipt is refused (its own gate)',
@@ -998,6 +1036,46 @@ async function withServer(label, fn) {
         (pdJson.error || '').slice(0, 240)
       );
 
+      // ---- v0.3.8 review H2: mrvc_set_power_output binds to the receipt's
+      // OWN rail (a 3.3V receipt never authorizes 5V) and to the receipt's
+      // openocd binary + board cfg ----
+      const rail5v = await server.rpc('tools/call', { name: 'mrvc_set_power_output', arguments: { root: PROJ, rail: '5v', mrsInstallPath: FAKE } });
+      check(
+        'power-rail: a 3.3V receipt never authorizes a 5V switch',
+        rail5v.result.isError === true && /recorded at 3v3/.test(resultJson(rail5v).error || ''),
+        JSON.stringify(resultJson(rail5v)).slice(0, 220)
+      );
+      const railBin = await server.rpc('tools/call', {
+        name: 'mrvc_set_power_output',
+        arguments: { root: PROJ, rail: '3v3', mrsInstallPath: FAKE, openocdPath: path.join(ROOT, 'evil-openocd.exe') },
+      });
+      check(
+        'power-rail: a deviating openocdPath is refused (bound to the verified plan)',
+        railBin.result.isError === true && /differs from the verified one/.test(resultJson(railBin).error || ''),
+        JSON.stringify(resultJson(railBin)).slice(0, 220)
+      );
+      const railOk = await server.rpc('tools/call', { name: 'mrvc_set_power_output', arguments: { root: PROJ, rail: '3v3', mrsInstallPath: FAKE, openocdCfg: cfgFile } });
+      // gate passes at the recorded rail → execution reached → the empty fake
+      // openocd cannot run — the error is a spawn failure, NOT a gate refusal
+      check(
+        'power-rail: the recorded rail passes the gate (execution error, not a refusal)',
+        railOk.result.isError === true && !/recorded at|differs from the verified/.test(resultJson(railOk).error || ''),
+        JSON.stringify(resultJson(railOk)).slice(0, 220)
+      );
+      // re-review #1: the board cfg CONTENT is hashed too — a .cfg tampered
+      // after the manual verification is caught by the rail tool as well
+      fs.writeFileSync(cfgFile, '# tampered\n');
+      const railTampered = await server.rpc('tools/call', {
+        name: 'mrvc_set_power_output',
+        arguments: { root: PROJ, rail: '3v3', mrsInstallPath: FAKE, openocdCfg: cfgFile },
+      });
+      check(
+        'power-rail: a board cfg tampered after verification is refused (content hash)',
+        railTampered.result.isError === true && /differs from the verified one/.test(resultJson(railTampered).error || ''),
+        JSON.stringify(resultJson(railTampered)).slice(0, 220)
+      );
+      fs.writeFileSync(cfgFile, '# test board cfg\n');
+
       // ---- round4 P1: the receipt must carry the FINGERPRINT of the plan
       // that ran, and the MCP plan must match it exactly ----
       const { prepareFlash } = require('../out/core/flash.js');
@@ -1005,7 +1083,9 @@ async function withServer(label, fn) {
       const objDir = path.join(PROJ, 'obj');
       fs.mkdirSync(objDir, { recursive: true });
       const hexPath = path.join(objDir, 'proj.hex');
-      fs.writeFileSync(hexPath, 'not-a-real-hex\n');
+      // a VALID minimal Intel HEX record + EOF — the shared prepareFlash
+      // gate (round3) verifies records and checksums for both entries
+      fs.writeFileSync(hexPath, ':0400000021436587AC\n:00000001FF\n');
       // legacy receipt (no plan) -> refusal before anything executes
       const flashLegacy = await server.rpc('tools/call', { name: 'mrvc_flash', arguments: { root: PROJ, mrsInstallPath: FAKE, openocdCfg: cfgFile } });
       check('main: a legacy receipt without a plan fingerprint is refused', flashLegacy.result.isError === true && resultJson(flashLegacy).error.includes('lacks a plan fingerprint'), JSON.stringify(resultJson(flashLegacy)));
@@ -1042,6 +1122,100 @@ async function withServer(label, fn) {
         flashDiff.result.isError === true && (fdJson.error || '').includes('differs from the verified') && (fdJson.error || '').includes('recorded plan'),
         (fdJson.error || '').slice(0, 240)
       );
+
+      // -- round2 P2: the DEFAULT firmware follows the PREFIXED image --
+      // with outputPrefix `boot_` on the linker tool and BOTH images on
+      // disk, the resolved firmware must be the prefixed one (the current
+      // build's output), not the stale prefix-less file beside it
+      {
+        const projFix = inside(ROOT, 'ws/projfix');
+        fs.mkdirSync(path.join(projFix, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(projFix, 'src', 'main.c'), 'int main(){return 0;}\n');
+        fs.writeFileSync(path.join(projFix, 'projfix.wvproj'), '<?xml version="1.0" encoding="UTF-8"?><project/>');
+        fs.writeFileSync(path.join(projFix, '.project'), '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>projfix</name></projectDescription>');
+        fs.writeFileSync(
+          path.join(projFix, '.cproject'),
+          '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n' +
+            '<tool superClass="ilg.gnumcueclipse.managedbuild.cross.riscv.tool.c.linker" outputPrefix="boot_"/>\n' +
+            '<sourceEntries>\n<entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+        );
+        // no .template: the default-candidate order engages only without an
+        // explicit Target Path
+        const fixObj = path.join(projFix, 'obj');
+        fs.mkdirSync(fixObj, { recursive: true });
+        fs.writeFileSync(path.join(fixObj, 'boot_projfix.hex'), ':0400000021436587AC\n:00000001FF\n');
+        fs.writeFileSync(path.join(fixObj, 'projfix.hex'), 'stale-legacy\n');
+        const planFix = prepareFlash({ buildDir: fixObj, address: '0x00000000', verify: true, reset: true, boardCfg: cfgFile, firmware: path.join(fixObj, 'boot_projfix.hex'), eraseAll: false, banks: 1 });
+        const fpFix = fingerprintFlashPlan({
+          scriptPath: planFix.scriptPath,
+          firmware: path.join(fixObj, 'boot_projfix.hex'),
+          boardCfg: cfgFile,
+          openocdExe,
+          address: '0x00000000',
+          verify: true,
+          reset: true,
+          eraseAll: false,
+          banks: 1,
+          powerOn: null,
+        });
+        writeFlashAck(projFix, fpFix);
+        const flashFix = await server.rpc('tools/call', { name: 'mrvc_flash', arguments: { root: projFix, mrsInstallPath: FAKE, openocdCfg: cfgFile } });
+        const fixJson = resultJson(flashFix);
+        // the discriminator: resolving the PREFIXED image reproduces the
+        // recorded fingerprint (gate opens, execution reached — the empty
+        // openocd.exe cannot run, hence the spawn error); resolving the
+        // STALE legacy file would have produced the fingerprint refusal
+        check(
+          'main: default firmware resolves to the PREFIXED image (not the stale legacy file)',
+          flashFix.result.isError === true && /^spawn /.test(fixJson.error || '') && !(fixJson.error || '').includes('differs from the verified'),
+          JSON.stringify(fixJson).slice(0, 300)
+        );
+        // -- round4/round5 P2: products follow the GENERATOR's set — the
+        // configured main extension plus the enabled secondaries; single-
+        // format images are legitimate and missing entries are null-size,
+        // never ENOENT. productsFor lives in core (shared with the
+        // generator's naming) — assert it directly.
+        fs.writeFileSync(path.join(fixObj, 'boot_projfix.elf'), 'elf\n');
+        const { productsFor } = require('../out/core/makefile.js');
+        const prods = productsFor(
+          { artifactType: 'exe', targetName: 'projfix', outputPrefix: 'boot_', artifactExtension: 'elf', createFlash: true, createListing: false },
+          fixObj,
+          ['hex']
+        );
+        const pNames = prods.map((p) => ({ f: path.basename(p.file), s: p.size }));
+        check(
+          'main: products follow the generator set (main ext + enabled secondaries), null size for missing — never ENOENT',
+          pNames.some((p) => p.f === 'boot_projfix.elf' && p.s === 4) &&
+            pNames.some((p) => p.f === 'boot_projfix.hex' && p.s !== null && p.s > 0) &&
+            pNames.length === 2 &&
+            !pNames.some((p) => p.f === 'boot_projfix.bin' || p.f === 'projfix.hex' || p.f === 'projfix.elf' || p.f === 'projfix.bin'),
+          JSON.stringify(pNames)
+        );
+        // custom artifact extension (round5 P2): the main product follows it
+        const prodsAxf = productsFor(
+          { artifactType: 'exe', targetName: 'projfix', outputPrefix: 'boot_', artifactExtension: 'axf', createFlash: true, createListing: false },
+          fixObj,
+          ['hex']
+        ).map((p) => ({ f: path.basename(p.file), s: p.size }));
+        check(
+          'main: a custom artifactExtension names the main product (boot_projfix.axf)',
+          prodsAxf.some((p) => p.f === 'boot_projfix.axf' && p.s === null) && prodsAxf.length === 2,
+          JSON.stringify(prodsAxf)
+        );
+        // round6 P2: a staticLib archives .a REGARDLESS of artifactExtension
+        // (the ar recipe's actual output — type-switch projects previously
+        // got a main-build rule naming .elf with no recipe for it)
+        const prodsLib = productsFor(
+          { artifactType: 'staticLib', targetName: 'projfix', outputPrefix: 'boot_', artifactExtension: 'elf', createFlash: false, createListing: false },
+          fixObj,
+          []
+        ).map((p) => ({ f: path.basename(p.file), s: p.size }));
+        check(
+          'main: a staticLib product is named .a even when artifactExtension says elf',
+          prodsLib.length === 1 && prodsLib[0].f === 'boot_projfix.a' && prodsLib[0].s === null,
+          JSON.stringify(prodsLib)
+        );
+      }
 
       // ---- round6: corrupt receipts and machine binding ----
       const receiptPath = path.join(PROJ, '.vscode', 'mrvc', 'flash-verified.json');
@@ -1109,7 +1283,560 @@ async function withServer(label, fn) {
         });
       });
       check('main: garbage line yields a parse error and the server carries on', parseErr.ping.result && !!parseErr.parseErr, JSON.stringify(parseErr.parseErr));
-    });
+
+    // ================= 0.3.8 batch 6: nine new tools =================
+
+    // -- mrvc_set_build_exclusion --
+    const projExcl = makeProject('projexcl');
+    const exclCheck0 = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_build_exclusion', arguments: { root: projExcl, path: 'src/keep.c', action: 'check' } }));
+    check(
+      'excl: check on a fresh project reports not-excluded with an empty table',
+      !!exclCheck0 && exclCheck0.ok === true && exclCheck0.excluded === false && Array.isArray(exclCheck0.rootTokens) && exclCheck0.rootTokens.length === 0,
+      JSON.stringify(exclCheck0).slice(0, 200)
+    );
+    const exclDo = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_build_exclusion', arguments: { root: projExcl, path: 'src/keep.c', action: 'exclude' } }));
+    const exclDoTxt = fs.readFileSync(path.join(projExcl, '.cproject'), 'utf8');
+    check(
+      'excl: excluding a file writes its logic path as the root token',
+      !!exclDo && exclDo.ok === true && exclDo.excludedNow === true && exclDoTxt.includes('excluding="src/keep.c"'),
+      JSON.stringify(exclDo).slice(0, 160) + ' | ' + exclDoTxt.slice(0, 160)
+    );
+    const exclInc = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_build_exclusion', arguments: { root: projExcl, path: 'src/keep.c', action: 'include' } }));
+    const exclIncTxt = fs.readFileSync(path.join(projExcl, '.cproject'), 'utf8');
+    check(
+      'excl: including strips the token (emptied list stays, MRS style)',
+      !!exclInc && exclInc.ok === true && exclInc.excludedNow === false && exclIncTxt.includes('excluding=""'),
+      JSON.stringify(exclInc).slice(0, 160) + ' | ' + exclIncTxt.slice(0, 160)
+    );
+    // linked-folder marker semantics: root token + named entry = the CDT
+    // re-include marker; excluding must REMOVE the named entry, include must
+    // re-create it
+    const projExcl2 = makeProject('projexcl2');
+    fs.mkdirSync(path.join(ROOT, 'ws', 'excl-target'), { recursive: true });
+    fs.writeFileSync(path.join(ROOT, 'ws', 'excl-target', 'x.c'), 'int x(){return 1;}\n');
+    fs.writeFileSync(
+      path.join(projExcl2, '.project'),
+      '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>projexcl2</name><linkedResources><link><name>SharedX</name><type>2</type><locationURI>PARENT-1-PROJECT_LOC/excl-target</locationURI></link></linkedResources></projectDescription>'
+    );
+    fs.writeFileSync(
+      path.join(projExcl2, '.cproject'),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n<sourceEntries>\n<entry excluding="SharedX" flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/>\n<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="SharedX"/>\n</sourceEntries>\n</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+    );
+    const exclLink = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_build_exclusion', arguments: { root: projExcl2, path: 'SharedX', action: 'exclude' } }));
+    const exclLinkTxt = fs.readFileSync(path.join(projExcl2, '.cproject'), 'utf8');
+    check(
+      'excl: excluding a linked folder removes its named entry (marker becomes a real exclusion)',
+      !!exclLink && exclLink.ok === true && exclLink.excludedNow === true && !exclLinkTxt.includes('kind="sourcePath" name="SharedX"') && exclLinkTxt.includes('excluding="SharedX"'),
+      JSON.stringify(exclLink).slice(0, 160) + ' | ' + exclLinkTxt.slice(0, 240)
+    );
+    const inclLink = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_build_exclusion', arguments: { root: projExcl2, path: 'SharedX', action: 'include' } }));
+    const inclLinkTxt = fs.readFileSync(path.join(projExcl2, '.cproject'), 'utf8');
+    check(
+      'excl: re-including re-creates the named sourceEntry',
+      !!inclLink && inclLink.ok === true && inclLink.excludedNow === false && inclLinkTxt.includes('kind="sourcePath" name="SharedX"'),
+      JSON.stringify(inclLink).slice(0, 160) + ' | ' + inclLinkTxt.slice(0, 240)
+    );
+    const exclBad1 = await server.rpc('tools/call', { name: 'mrvc_set_build_exclusion', arguments: { root: projExcl, path: '../outside.c', action: 'exclude' } });
+    check('excl: a .. escape is refused', exclBad1.result.isError === true && (resultJson(exclBad1).error || '').includes('project-relative'), JSON.stringify(resultJson(exclBad1)));
+    const exclBad2 = await server.rpc('tools/call', { name: 'mrvc_set_build_exclusion', arguments: { root: projExcl, path: 'ghost/nope.c', action: 'exclude' } });
+    check('excl: a path that exists nowhere is refused', exclBad2.result.isError === true && (resultJson(exclBad2).error || '').includes('no such file'), JSON.stringify(resultJson(exclBad2)));
+
+    // -- mrvc_change_linked_folder_target --
+    const projChg = makeProject('projchg');
+    fs.mkdirSync(path.join(ROOT, 'ws', 'chg-a'), { recursive: true });
+    fs.mkdirSync(path.join(ROOT, 'ws', 'chg-b'), { recursive: true });
+    fs.writeFileSync(path.join(projChg, '.project'), '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>projchg</name><linkedResources><link><name>ChgLink</name><type>2</type><locationURI>PARENT-1-PROJECT_LOC/chg-a</locationURI></link></linkedResources></projectDescription>');
+    const chgDo = resultJson(
+      await server.rpc('tools/call', { name: 'mrvc_change_linked_folder_target', arguments: { root: projChg, name: 'ChgLink', newTarget: path.join(ROOT, 'ws', 'chg-b') } })
+    );
+    const chgTxt = fs.readFileSync(path.join(projChg, '.project'), 'utf8');
+    check(
+      'chg: re-targeting rewrites the locationURI in the PARENT-N form',
+      !!chgDo && chgDo.ok === true && chgDo.locationUri === 'PARENT-1-PROJECT_LOC/chg-b' && chgTxt.includes('PARENT-1-PROJECT_LOC/chg-b'),
+      JSON.stringify(chgDo).slice(0, 200) + ' | ' + chgTxt.slice(0, 200)
+    );
+    const chgCase = resultJson(
+      await server.rpc('tools/call', { name: 'mrvc_change_linked_folder_target', arguments: { root: projChg, name: 'chglink', newTarget: path.join(ROOT, 'ws', 'chg-a') } })
+    );
+    check(
+      'chg: a case-variant link name resolves to the canonical one',
+      !!chgCase && chgCase.ok === true && chgCase.name === 'ChgLink',
+      JSON.stringify(chgCase).slice(0, 160)
+    );
+    const chgUnknown = await server.rpc('tools/call', { name: 'mrvc_change_linked_folder_target', arguments: { root: projChg, name: 'Nope', newTarget: path.join(ROOT, 'ws', 'chg-b') } });
+    check('chg: an unknown link name is refused', chgUnknown.result.isError === true && (resultJson(chgUnknown).error || '').includes('no linked folder'), JSON.stringify(resultJson(chgUnknown)));
+    const chgSelf = await server.rpc('tools/call', { name: 'mrvc_change_linked_folder_target', arguments: { root: projChg, name: 'ChgLink', newTarget: projChg } });
+    check('chg: a target at the project root is refused (safe-target)', chgSelf.result.isError === true && /project root/i.test(resultJson(chgSelf).error || ''), JSON.stringify(resultJson(chgSelf)));
+
+    // -- mrvc_repair_project --
+    const projFix = makeProject('projfix');
+    // the repair candidate sits OUTSIDE the project so the fixed URI takes the
+    // PARENT-N-PROJECT_LOC macro form (an in-project candidate would store a
+    // plain relative URI)
+    fs.mkdirSync(path.join(ROOT, 'ws', 'fix-shared', 'lib'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projFix, '.project'),
+      '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>projfix</name><linkedResources>' +
+        '<link><name>OldLink</name><type>2</type><locationURI>C:/build-machine/work/fix-shared/lib</locationURI></link>' +
+        '<link><name>Ghost</name><type>2</type><locationURI>C:/build-machine/work/never/nobody</locationURI></link>' +
+        '</linkedResources></projectDescription>'
+    );
+    fs.writeFileSync(
+      path.join(projFix, '.cproject'),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n' +
+        '<option id="ilg.gnumcueclipse.managedbuild.cross.riscv.option.target.rvGcc.42" superClass="ilg.gnumcueclipse.managedbuild.cross.riscv.option.target.rvGcc" valueType="enumerated"/>\n' +
+        '<sourceEntries><entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/></sourceEntries>\n' +
+        '</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+    );
+    const fixBefore = resultJson(await server.rpc('tools/call', { name: 'mrvc_audit_project', arguments: { root: projFix } }));
+    check('fix: audit sees the fixable enum finding first', !!fixBefore && fixBefore.fixableCount >= 1 && fixBefore.findings.some((f) => f.code === 'enum-value-missing'), JSON.stringify(fixBefore).slice(0, 220));
+    const fixDo = resultJson(await server.rpc('tools/call', { name: 'mrvc_repair_project', arguments: { root: projFix, includeStaleLinks: true } }));
+    const fixTxt = fs.readFileSync(path.join(projFix, '.cproject'), 'utf8');
+    const fixProjTxt = fs.readFileSync(path.join(projFix, '.project'), 'utf8');
+    check(
+      'fix: the value-less enum option is removed and the resolvable stale link re-pointed',
+      !!fixDo && fixDo.ok === true && fixDo.repaired.length >= 1 && !fixTxt.includes('rvGcc.42') && fixDo.staleLinksRepaired === 1 && fixProjTxt.includes('PARENT-1-PROJECT_LOC/fix-shared/lib'),
+      JSON.stringify(fixDo).slice(0, 900) + ' | ' + fixProjTxt.slice(0, 160)
+    );
+    check(
+      'fix: the unresolvable stale link is reported, not invented',
+      Array.isArray(fixDo.staleLinksRemaining) && fixDo.staleLinksRemaining.length === 1 && fixDo.staleLinksRemaining[0].name === 'Ghost',
+      JSON.stringify(fixDo.staleLinksRemaining)
+    );
+    // v0.3.8 review H4: a no-op repair must not leave a backup directory
+    const projFixNone = makeProject('projfixnone');
+    const fixNoop = resultJson(await server.rpc('tools/call', { name: 'mrvc_repair_project', arguments: { root: projFixNone } }));
+    check(
+      'fix: a no-op repair takes no backup',
+      !!fixNoop && fixNoop.ok === true && fixNoop.fixableCount === 0 && typeof fixNoop.note === 'string' && fixNoop.note.includes('no backup') && fixNoop.backupDir === undefined,
+      JSON.stringify(fixNoop).slice(0, 220)
+    );
+    // re-review #3: only-UNRESOLVABLE stale links stay reported, also without
+    // a backup (the planner reports them, it never invents candidates)
+    const projFixGhost = makeProject('projfixghost');
+    fs.writeFileSync(
+      path.join(projFixGhost, '.project'),
+      '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>projfixghost</name><linkedResources><link><name>Ghost</name><type>2</type><locationURI>C:/build-machine/work/never/nobody</locationURI></link></linkedResources></projectDescription>'
+    );
+    const fixGhost = resultJson(await server.rpc('tools/call', { name: 'mrvc_repair_project', arguments: { root: projFixGhost, includeStaleLinks: true } }));
+    check(
+      'fix: only-unresolvable stale links stay reported without a backup',
+      !!fixGhost && fixGhost.ok === true && fixGhost.backupDir === undefined && typeof fixGhost.note === 'string' && fixGhost.note.includes('no backup') && Array.isArray(fixGhost.staleLinksRemaining) && fixGhost.staleLinksRemaining.length === 1 && fixGhost.staleLinksRemaining[0].name === 'Ghost',
+      JSON.stringify(fixGhost).slice(0, 220)
+    );
+
+    // -- mrvc_rename_project --
+    const projRen = makeProject('projren');
+    fs.writeFileSync(
+      path.join(projRen, 'projren.launch'),
+      '<launchConfiguration type="cdt.launch.application"><stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="projren.elf"/>' +
+        '<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="projren"/>' +
+        '<listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS"><listEntry value="/projren/src/keep.c"/></listAttribute></launchConfiguration>'
+    );
+    const renDo = resultJson(await server.rpc('tools/call', { name: 'mrvc_rename_project', arguments: { root: projRen, newName: 'projren2' } }));
+    const renLaunch = fs.existsSync(path.join(projRen, 'projren2.launch')) ? fs.readFileSync(path.join(projRen, 'projren2.launch'), 'utf8') : '';
+    check(
+      'ren: .project, .wvproj marker and .launch all follow the new name',
+      !!renDo && renDo.ok === true && renDo.oldName === 'projren' && fs.existsSync(path.join(projRen, 'projren2.wvproj')) &&
+        !fs.existsSync(path.join(projRen, 'projren.wvproj')) && !!renLaunch && renLaunch.includes('value="projren2.elf"') && renLaunch.includes('/projren2/src/keep.c'),
+      JSON.stringify(renDo).slice(0, 200) + ' | ' + renLaunch.slice(0, 200)
+    );
+    const renProjTxt = fs.readFileSync(path.join(projRen, '.project'), 'utf8');
+    check('ren: the .project display name is the new one', renProjTxt.includes('<name>projren2</name>'), renProjTxt.slice(0, 160));
+    const renBad = await server.rpc('tools/call', { name: 'mrvc_rename_project', arguments: { root: projRen, newName: 'a/b' } });
+    check('ren: a name with a separator is refused', renBad.result.isError === true && (resultJson(renBad).error || '').includes('single safe path segment'), JSON.stringify(resultJson(renBad)));
+    const renSame = resultJson(await server.rpc('tools/call', { name: 'mrvc_rename_project', arguments: { root: projRen, newName: 'projren2' } }));
+    check('ren: renaming to the SAME name is a no-op', !!renSame && renSame.ok === true && renSame.changed === false, JSON.stringify(renSame).slice(0, 160));
+    const renDev = await server.rpc('tools/call', { name: 'mrvc_rename_project', arguments: { root: projRen, newName: 'CON' } });
+    check('ren: a Windows device name is refused', renDev.result.isError === true && /single safe path segment/.test(resultJson(renDev).error || ''), JSON.stringify(resultJson(renDev)));
+
+    // -- round27 P2-3: EVERY .launch migrates, non-project-named launches keep
+    //    their filename --
+    const projRen3 = makeProject('projren3');
+    const launchXmlFor = (n) =>
+      '<launchConfiguration type="cdt.launch.application"><stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="obj/' + n + '.elf"/>' +
+      '<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="projren3"/>' +
+      '<listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS"><listEntry value="/projren3/src/keep.c"/></listAttribute></launchConfiguration>';
+    fs.writeFileSync(path.join(projRen3, 'projren3.launch'), launchXmlFor('projren3'));
+    fs.writeFileSync(path.join(projRen3, 'Debug.launch'), launchXmlFor('projren3'));
+    const renDo3 = resultJson(await server.rpc('tools/call', { name: 'mrvc_rename_project', arguments: { root: projRen3, newName: 'projren4' } }));
+    const named3 = fs.existsSync(path.join(projRen3, 'projren4.launch')) ? fs.readFileSync(path.join(projRen3, 'projren4.launch'), 'utf8') : '';
+    const debug3 = fs.existsSync(path.join(projRen3, 'Debug.launch')) ? fs.readFileSync(path.join(projRen3, 'Debug.launch'), 'utf8') : '';
+    check(
+      'ren: both .launch files migrate — project-named follows the rename, the other keeps its filename',
+      !!renDo3 && renDo3.ok === true && !!named3 && named3.includes('value="projren4"') && named3.includes('obj/projren4.elf') &&
+        fs.existsSync(path.join(projRen3, 'Debug.launch')) && debug3.includes('value="projren4"') && debug3.includes('obj/projren4.elf') &&
+        !debug3.includes('projren3'),
+      JSON.stringify(renDo3).slice(0, 160) + ' | debug:' + debug3.slice(0, 200)
+    );
+
+    // -- round28 P2-1: a custom-launch-ONLY project (no <oldName>.launch)
+    //    renames fine — no New.launch is demanded, attrs still migrate --
+    const projRen5 = makeProject('projren5');
+    const customXml = (marker) =>
+      '<launchConfiguration type="cdt.launch.application"><stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="obj/' + marker + '.elf"/>' +
+      '<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="projren5"/>' +
+      '<stringAttribute key="marker" value="' + marker + '"/>' +
+      '<listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS"><listEntry value="/projren5/src/keep.c"/></listAttribute></launchConfiguration>';
+    fs.writeFileSync(path.join(projRen5, 'a.launch'), customXml('A'));
+    fs.writeFileSync(path.join(projRen5, 'b.launch'), customXml('B'));
+    const renDo5 = resultJson(await server.rpc('tools/call', { name: 'mrvc_rename_project', arguments: { root: projRen5, newName: 'projren6' } }));
+    const a5 = fs.readFileSync(path.join(projRen5, 'a.launch'), 'utf8');
+    const b5 = fs.readFileSync(path.join(projRen5, 'b.launch'), 'utf8');
+    check(
+      'ren: custom-launch-only project renames WITHOUT a false New.launch failure (round28 P2-1)',
+      !!renDo5 && renDo5.ok === true && renDo5.oldName === 'projren5' &&
+        a5.includes('value="projren6"') && a5.includes('obj/projren6.elf') &&
+        b5.includes('value="projren6"') && b5.includes('marker') && b5.includes('B'),
+      JSON.stringify(renDo5).slice(0, 160) + ' | a:' + a5.slice(0, 120) + ' | b:' + b5.slice(0, 120)
+    );
+    check(
+      'ren: no phantom <newName>.launch is invented for custom-launch projects',
+      !fs.existsSync(path.join(projRen5, 'projren6.launch')),
+      'a launch file was invented'
+    );
+
+    // -- round29 P2: a launch already carrying the NEW name must never be
+    //    silently overwritten — the MCP transaction refuses with ZERO writes
+    //    (the core precheck throws before any write; backups restore as-is)
+    const projRen7 = makeProject('projren7');
+    const collXml = (marker) =>
+      '<launchConfiguration type="cdt.launch.application"><stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="obj/' + marker + '.elf"/>' +
+      '<stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="projren7"/>' +
+      '<stringAttribute key="marker" value="' + marker + '"/>' +
+      '<listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS"><listEntry value="/projren7/src/keep.c"/></listAttribute></launchConfiguration>';
+    fs.writeFileSync(path.join(projRen7, 'projren7.launch'), collXml('OLD'));
+    fs.writeFileSync(path.join(projRen7, 'projren8.launch'), collXml('USER_NEW'));
+    const before7 = {
+      old: fs.readFileSync(path.join(projRen7, 'projren7.launch')),
+      user: fs.readFileSync(path.join(projRen7, 'projren8.launch')),
+      project: fs.readFileSync(path.join(projRen7, '.project')),
+    };
+    const renColl = await server.rpc('tools/call', { name: 'mrvc_rename_project', arguments: { root: projRen7, newName: 'projren8' } });
+    check(
+      'ren: target launch already exists -> refused, no overwrite (round29 P2)',
+      renColl.result.isError === true && /already exists/.test(resultJson(renColl).error || ''),
+      JSON.stringify(resultJson(renColl)).slice(0, 200)
+    );
+    check(
+      'ren: collision refusal left every file byte-identical',
+      fs.readFileSync(path.join(projRen7, 'projren7.launch')).equals(before7.old) &&
+        fs.readFileSync(path.join(projRen7, 'projren8.launch')).equals(before7.user) &&
+        fs.readFileSync(path.join(projRen7, '.project')).equals(before7.project) &&
+        !fs.existsSync(path.join(projRen7, 'projren8.wvproj')) &&
+        fs.existsSync(path.join(projRen7, 'projren7.wvproj')),
+      'a file was modified by the refused rename'
+    );
+
+    // -- round27 P2-1: a write tool must NOT auto-repair an UNRELATED stale
+    //    linked folder (that is mrvc_repair_project's explicit job) --
+    const projPure = makeProject('projpure');
+    fs.mkdirSync(path.join(ROOT, 'Shared'), { recursive: true }); // the stale fix target EXISTS
+    fs.mkdirSync(path.join(ROOT, 'ws', 'othera'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projPure, '.project'),
+      '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>projpure</name><linkedResources>' +
+        '<link><name>Stale</name><type>2</type><location>Z:/old/EXAM/Shared</location></link>' +
+        '<link><name>Other</name><type>2</type><locationURI>PARENT-1-PROJECT_LOC/othera</locationURI></link>' +
+        '</linkedResources></projectDescription>'
+    );
+    const pureChg = resultJson(
+      await server.rpc('tools/call', { name: 'mrvc_change_linked_folder_target', arguments: { root: projPure, name: 'Other', newTarget: path.join(ROOT, 'ws', 'otherb') } })
+    );
+    fs.mkdirSync(path.join(ROOT, 'ws', 'otherb'), { recursive: true });
+    const pureTxt = fs.readFileSync(path.join(projPure, '.project'), 'utf8');
+    check(
+      'pure: re-pointing Other leaves the fixable stale link untouched (no rider repair)',
+      !!pureChg && pureChg.ok === true && pureTxt.includes('Z:/old/EXAM/Shared') && !pureTxt.includes('PARENT-1-PROJECT_LOC/Shared') && pureTxt.includes('otherb'),
+      JSON.stringify(pureChg).slice(0, 160) + ' | ' + pureTxt.slice(0, 260)
+    );
+
+    // -- mrvc_switch_project_type --
+    const projType = makeProject('projtype');
+    // the nature toggle needs a <natures> block, and the C++ inputType lands
+    // under the NAMED "GNU RISC-V Cross C++ Compiler" tool — real EVT projects
+    // carry both
+    fs.writeFileSync(
+      path.join(projType, '.project'),
+      '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>projtype</name><natures><nature>org.eclipse.cdt.core.cnature</nature></natures></projectDescription>'
+    );
+    fs.writeFileSync(
+      path.join(projType, '.cproject'),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n' +
+        '<tool name="GNU RISC-V Cross C++ Compiler" id="ilg.gnumcueclipse.managedbuild.cross.riscv.tool.cpp.compiler.1" superClass="ilg.gnumcueclipse.managedbuild.cross.riscv.tool.cpp.compiler"/>\n' +
+        '<sourceEntries><entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/></sourceEntries>\n' +
+        '</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+    );
+    const typeOn = resultJson(await server.rpc('tools/call', { name: 'mrvc_switch_project_type', arguments: { root: projType, cpp: true } }));
+    const typeProjTxt = fs.readFileSync(path.join(projType, '.project'), 'utf8');
+    const typeCTxt = fs.readFileSync(path.join(projType, '.cproject'), 'utf8');
+    check(
+      'type: to C++ writes the ccnature and the cpp compiler inputType',
+      !!typeOn && typeOn.ok === true && typeOn.changed === true && typeProjTxt.includes('org.eclipse.cdt.core.ccnature') && typeCTxt.includes('cpp.compiler.input'),
+      JSON.stringify(typeOn).slice(0, 160) + ' | natures:' + typeProjTxt.slice(0, 120)
+    );
+    const typeAgain = resultJson(await server.rpc('tools/call', { name: 'mrvc_switch_project_type', arguments: { root: projType, cpp: true } }));
+    check('type: a same-mode call is a no-op', !!typeAgain && typeAgain.ok === true && typeAgain.changed === false, JSON.stringify(typeAgain));
+    const typeOff = resultJson(await server.rpc('tools/call', { name: 'mrvc_switch_project_type', arguments: { root: projType, cpp: false } }));
+    const typeOffProj = fs.readFileSync(path.join(projType, '.project'), 'utf8');
+    const typeOffC = fs.readFileSync(path.join(projType, '.cproject'), 'utf8');
+    check(
+      'type: back to C removes the nature and the cpp inputType',
+      !!typeOff && typeOff.ok === true && typeOff.changed === true && !typeOffProj.includes('ccnature') && !typeOffC.includes('cpp.compiler.input'),
+      JSON.stringify(typeOff).slice(0, 160)
+    );
+
+    // -- round27 P2-2: the conversion covers EVERY configuration --
+    const projType2 = makeProject('projtype2');
+    const OPT = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.';
+    const cfgBlock = (n, inc) =>
+      '<cconfiguration id="c' + n + '" name="' + n + '"><folderInfo><toolChain>' +
+      '<option id="inc' + n + '" superClass="' + OPT + 'c.compiler.include.paths" valueType="includePath">' +
+      '<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/inc' + n + '}&quot;"/></option>' +
+      '<tool name="GNU RISC-V Cross C++ Compiler" id="cpp' + n + '" superClass="' + OPT + 'tool.cpp.compiler"/>' +
+      '</toolChain></folderInfo></cconfiguration>';
+    fs.writeFileSync(
+      path.join(projType2, '.project'),
+      '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>projtype2</name><natures><nature>org.eclipse.cdt.core.cnature</nature></natures></projectDescription>'
+    );
+    fs.writeFileSync(
+      path.join(projType2, '.cproject'),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n' + cfgBlock('obj', 'inc0') + cfgBlock('dbg', 'inc1') + '\n</cproject>'
+    );
+    const type2 = resultJson(await server.rpc('tools/call', { name: 'mrvc_switch_project_type', arguments: { root: projType2, cpp: true } }));
+    const type2Txt = fs.readFileSync(path.join(projType2, '.cproject'), 'utf8');
+    const blocks2 = type2Txt.split('<cconfiguration').slice(1);
+    check(
+      'type: BOTH configurations mirror the cpp include paths (mirrored = 2)',
+      !!type2 && type2.ok === true && type2.mirrored === 2 && blocks2.every((b) => b.includes('cpp.compiler.include.paths')),
+      JSON.stringify(type2).slice(0, 160) + ' | twins:' + (type2Txt.match(/cpp\.compiler\.include\.paths/g) || []).length
+    );
+    check(
+      'type: BOTH configurations gain the cpp compiler inputType',
+      blocks2.length === 2 && blocks2.every((b) => b.includes('cpp.compiler.input')),
+      'blocks with inputType: ' + blocks2.filter((b) => b.includes('cpp.compiler.input')).length
+    );
+    const type2Off = resultJson(await server.rpc('tools/call', { name: 'mrvc_switch_project_type', arguments: { root: projType2, cpp: false } }));
+    const type2OffTxt = fs.readFileSync(path.join(projType2, '.cproject'), 'utf8');
+    const blocks2Off = type2OffTxt.split('<cconfiguration').slice(1);
+    check(
+      'type: back to C removes the inputType from BOTH configurations',
+      !!type2Off && type2Off.ok === true && type2Off.changed === true && blocks2Off.every((b) => !b.includes('cpp.compiler.input')),
+      JSON.stringify(type2Off).slice(0, 160)
+    );
+
+    // -- mrvc_set_config_option: the extended fields --
+    const projField = makeProject('projfield');
+    const warnDo = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'warningsAll', value: true } }));
+    const warnTxt = fs.readFileSync(path.join(projField, '.cproject'), 'utf8');
+    check(
+      'field: warningsAll creates the option with value true',
+      !!warnDo && warnDo.ok === true && warnDo.before['warnings.allwarn'] === false && warnDo.after['warnings.allwarn'] === true && warnTxt.includes('option.warnings.allwarn') && warnTxt.includes('value="true"'),
+      JSON.stringify(warnDo).slice(0, 200)
+    );
+    const dbgDo = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'debugInfoLevel', value: 'max' } }));
+    // v0.3.8 review H3: gcSections defaults ON when absent (MRS C-linker
+    // model) — the false write must materialize value="false" AND the reads
+    // must report the default, not a silent false
+    const gcDo = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'gcSections', value: false } }));
+    const gcTxt = fs.readFileSync(path.join(projField, '.cproject'), 'utf8');
+    check(
+      'field: gcSections false is materialized (model-default-on option really turns off)',
+      !!gcDo && gcDo.ok === true && gcDo.before['c.linker.gcsections'] === true && gcDo.after['c.linker.gcsections'] === false && /gcsections[\s\S]{0,240}?value="false"/.test(gcTxt),
+      JSON.stringify(gcDo).slice(0, 220) + ' | option:' + gcTxt.includes('gcsections')
+    );
+    const dbgTxt = fs.readFileSync(path.join(projField, '.cproject'), 'utf8');
+    check(
+      'field: debugInfoLevel composes the full enum id',
+      !!dbgDo && dbgDo.ok === true && dbgDo.after === 'max' && dbgTxt.includes('option.debugging.level.max'),
+      JSON.stringify(dbgDo).slice(0, 200) + ' | ' + dbgTxt.slice(0, 160)
+    );
+    const dbgDef = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'debugInfoLevel', value: 'default' } }));
+    check('field: debugInfoLevel accepts "default" (a real CDT choice)', !!dbgDef && dbgDef.ok === true && dbgDef.after === 'default', JSON.stringify(dbgDef).slice(0, 160));
+    const stdDo = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'cDialect', value: 'c11' } }));
+    const stdTxt = fs.readFileSync(path.join(projField, '.cproject'), 'utf8');
+    check(
+      'field: cDialect stores the c.compiler.std enum id',
+      !!stdDo && stdDo.ok === true && stdDo.after === 'c11' && stdTxt.includes('option.c.compiler.std.c11'),
+      JSON.stringify(stdDo).slice(0, 200)
+    );
+    const stdBad = await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'cDialect', value: 'default' } });
+    check('field: cDialect refuses "default" (clearing is a guarded no-op)', stdBad.result.isError === true && /default" is not accepted/.test(resultJson(stdBad).error || ''), JSON.stringify(resultJson(stdBad)));
+    const langBad = await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'cDialect', value: 'c99', language: 'cpp' } });
+    check('field: cDialect with language "cpp" is refused', langBad.result.isError === true && /does not apply/.test(resultJson(langBad).error || ''), JSON.stringify(resultJson(langBad)));
+    const userObj = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'userObjects', value: ['libtest.a'] } }));
+    const fieldReload = require('../out/core/cproject.js').Cproject.load(projField, { repairProject: false });
+    const userObjTxt = fs.readFileSync(path.join(projField, '.cproject'), 'utf8');
+    check(
+      'field: userObjects writes both linker twins UNQUOTED (MRS2 model takes them verbatim)',
+      !!userObj && userObj.ok === true && userObj.after.length === 1 && JSON.stringify(fieldReload.listOption('c.linker.otherobjs').values) === '["libtest.a"]' && JSON.stringify(fieldReload.listOption('cpp.linker.otherobjs').values) === '["libtest.a"]' && userObjTxt.includes('value="libtest.a"') && !userObjTxt.includes('&quot;libtest.a'),
+      JSON.stringify(userObj).slice(0, 200) + ' | raw:' + userObjTxt.includes('value="libtest.a"')
+    );
+    const libPath = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'libSearchPaths', value: ['inc'] } }));
+    const libPathTxt = fs.readFileSync(path.join(projField, '.cproject'), 'utf8');
+    check(
+      'field: libSearchPaths stores in-project paths in the workspace_loc spelling',
+      !!libPath && libPath.ok === true && libPath.after[0] === '${workspace_loc:/${ProjName}/inc}' && libPathTxt.includes('${workspace_loc:/${ProjName}/inc}'),
+      JSON.stringify(libPath).slice(0, 220)
+    );
+    const artDo = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'artifactName', value: 'MyFw' } }));
+    const artTxt = fs.readFileSync(path.join(projField, '.cproject'), 'utf8');
+    check(
+      'field: artifactName lands on the build configuration identity',
+      !!artDo && artDo.ok === true && artDo.after.targetName === 'MyFw' && artTxt.includes('artifactName="MyFw"') && typeof artDo.note === 'string' && artDo.note.includes('Target Path'),
+      JSON.stringify(artDo).slice(0, 220)
+    );
+    const artBad = await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'artifactName', value: 'a/b' } });
+    check('field: artifactName refuses path separators', artBad.result.isError === true && /path separators/.test(resultJson(artBad).error || ''), JSON.stringify(resultJson(artBad)));
+    // outputPrefix lives on the C/C++ linker <tool> elements — give the
+    // fixture a real toolchain block first (a minimal .cproject carries none,
+    // and the tool must refuse rather than silently no-op)
+    fs.writeFileSync(
+      path.join(projField, '.cproject'),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<cproject>\n<cconfiguration id="x" name="obj">\n<folderInfo>\n<toolChain>\n' +
+        '<tool id="ilg.gnumcueclipse.managedbuild.cross.riscv.tool.c.linker.1" superClass="ilg.gnumcueclipse.managedbuild.cross.riscv.tool.c.linker"/>\n' +
+        '<tool id="ilg.gnumcueclipse.managedbuild.cross.riscv.tool.cpp.linker.1" superClass="ilg.gnumcueclipse.managedbuild.cross.riscv.tool.cpp.linker"/>\n' +
+        '<sourceEntries><entry flags="VALUE_WORKSPACE_PATH" kind="sourcePath" name=""/></sourceEntries>\n' +
+        '</toolChain>\n</folderInfo>\n</cconfiguration>\n</cproject>'
+    );
+    const prefixDo = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'outputPrefix', value: 'out' } }));
+    const prefixTxt = fs.readFileSync(path.join(projField, '.cproject'), 'utf8');
+    check(
+      'field: outputPrefix lands on the linker tool attribute',
+      !!prefixDo && prefixDo.ok === true && prefixDo.after.outputPrefix === 'out' && prefixTxt.includes('outputPrefix="out"'),
+      JSON.stringify(prefixDo).slice(0, 200) + ' | ' + prefixTxt.slice(0, 120)
+    );
+    const prefixBad = await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'outputPrefix', value: 'out/' } });
+    check(
+      'field: outputPrefix refuses path separators/shell metacharacters (the makefile never mkdirs a prefix subdir)',
+      prefixBad.result.isError === true && /plain name segment/.test(resultJson(prefixBad).error || ''),
+      JSON.stringify(resultJson(prefixBad))
+    );
+    const unknownField = await server.rpc('tools/call', { name: 'mrvc_set_config_option', arguments: { root: projField, field: 'nope', value: 1 } });
+    check('field: an unknown field names the valid set', unknownField.result.isError === true && (resultJson(unknownField).error || '').includes('warningsAll'), JSON.stringify(resultJson(unknownField)));
+
+    // -- mrvc_compile_file (gates only — the real make run needs a machine) --
+    const projCf = makeProject('projcf');
+    const cfUnknown = await server.rpc('tools/call', { name: 'mrvc_compile_file', arguments: { root: projCf, file: 'ghost/nope.c' } });
+    check('cf: an unknown file is refused', cfUnknown.result.isError === true && (resultJson(cfUnknown).error || '').includes('no such file'), JSON.stringify(resultJson(cfUnknown)));
+    const cfExcl = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_build_exclusion', arguments: { root: projCf, path: 'src/keep.c', action: 'exclude' } }));
+    const cfExcluded = await server.rpc('tools/call', { name: 'mrvc_compile_file', arguments: { root: projCf, file: 'src/keep.c' } });
+    check(
+      'cf: an excluded file is refused with the re-include hint',
+      !!cfExcl && cfExcl.ok === true && cfExcluded.result.isError === true && (resultJson(cfExcluded).error || '').includes('excluded from the build'),
+      JSON.stringify(resultJson(cfExcluded))
+    );
+    const cfBadIndex = await server.rpc('tools/call', { name: 'mrvc_compile_file', arguments: { root: projCf, file: 'main.c', configIndex: 5 } });
+    check('cf: an out-of-range configIndex is refused', cfBadIndex.result.isError === true && /out of range/.test(resultJson(cfBadIndex).error || ''), JSON.stringify(resultJson(cfBadIndex)));
+    // v0.3.8 review M7: the three-file contract, directories and
+    // filteredResources-removed files are refused with reasons
+    const projCf2 = makeProject('projcf2');
+    fs.rmSync(path.join(projCf2, '.project'));
+    const cfContract = await server.rpc('tools/call', { name: 'mrvc_compile_file', arguments: { root: projCf2, file: 'main.c' } });
+    check('cf: the three-file contract is enforced', cfContract.result.isError === true && /not a legal MRS project/.test(resultJson(cfContract).error || ''), JSON.stringify(resultJson(cfContract)).slice(0, 200));
+    const cfDir = await server.rpc('tools/call', { name: 'mrvc_compile_file', arguments: { root: projCf, file: 'src' } });
+    check('cf: a directory is refused', cfDir.result.isError === true && /is a directory/.test(resultJson(cfDir).error || ''), JSON.stringify(resultJson(cfDir)));
+    fs.writeFileSync(
+      path.join(projCf, '.project'),
+      '<?xml version="1.0" encoding="UTF-8"?><projectDescription><name>projcf</name><filteredResources><filter><name>src</name><type>6</type><matcher><id>org.eclipse.ui.ide.multiFilter</id><arguments>1.0-name-matches-false-false-keep.c</arguments></matcher></filter></filteredResources></projectDescription>'
+    );
+    const cfRemoved = await server.rpc('tools/call', { name: 'mrvc_compile_file', arguments: { root: projCf, file: 'src/keep.c' } });
+    check(
+      'cf: a logically removed file is refused (it would never reach the makefiles)',
+      cfRemoved.result.isError === true && /logically removed/.test(resultJson(cfRemoved).error || ''),
+      JSON.stringify(resultJson(cfRemoved))
+    );
+    fs.mkdirSync(path.join(projCf, 'obj'), { recursive: true });
+    fs.writeFileSync(path.join(projCf, 'obj', 'gen.c'), 'int g(void){return 0;}\n');
+    const cfOutDir = await server.rpc('tools/call', { name: 'mrvc_compile_file', arguments: { root: projCf, file: 'obj/gen.c' } });
+    check(
+      'cf: files inside an output directory are refused at entry',
+      cfOutDir.result.isError === true && /output directory/.test(resultJson(cfOutDir).error || ''),
+      JSON.stringify(resultJson(cfOutDir))
+    );
+    const exclOutCheck = resultJson(await server.rpc('tools/call', { name: 'mrvc_set_build_exclusion', arguments: { root: projCf, path: 'obj/gen.c', action: 'check' } }));
+    const exclOutMut = await server.rpc('tools/call', { name: 'mrvc_set_build_exclusion', arguments: { root: projCf, path: 'obj/gen.c', action: 'include' } });
+    check(
+      'excl: output directory is reported excluded and cannot be toggled',
+      !!exclOutCheck && exclOutCheck.excluded === true && exclOutCheck.outputDirectory === true && exclOutMut.result.isError === true && /output directory/.test(resultJson(exclOutMut).error || ''),
+      JSON.stringify({ exclOutCheck, exclOutMut: resultJson(exclOutMut) })
+    );
+
+    // -- mrvc_delete_output --
+    const projDel = makeProject('projdel');
+    fs.mkdirSync(path.join(projDel, 'obj', 'sub'), { recursive: true });
+    // a GENERATED makefile (CDT header + target mention) is the ownership
+    // anchor (round5 P1); the claimed output set (round7 P1) decides WHAT is
+    // deleted: the orphan obj/sub/keep.o (no matching source) and the
+    // non-configured .bin (this config builds hex only) are unclaimed
+    fs.writeFileSync(path.join(projDel, 'obj', 'makefile'), '# Automatically-generated file. Do not edit!\nall: projdel.elf\nprojdel.elf: main.o\n');
+    fs.writeFileSync(path.join(projDel, 'obj', 'projdel.hex'), 'x');
+    fs.writeFileSync(path.join(projDel, 'obj', 'projdel.bin'), 'x');
+    fs.writeFileSync(path.join(projDel, 'obj', 'sub', 'keep.o'), 'x');
+    const delKeep = resultJson(await server.rpc('tools/call', { name: 'mrvc_delete_output', arguments: { root: projDel, scope: 'active', keepImages: true } }));
+    check(
+      'del: keepImages clears the claimed makefile, spares the images AND the unclaimed survivors',
+      !!delKeep &&
+        delKeep.ok === true &&
+        delKeep.filesCleared === 1 &&
+        fs.existsSync(path.join(projDel, 'obj', 'projdel.hex')) &&
+        fs.existsSync(path.join(projDel, 'obj', 'projdel.bin')) &&
+        fs.existsSync(path.join(projDel, 'obj', 'sub', 'keep.o')) &&
+        Array.isArray(delKeep.survivors) &&
+        delKeep.survivors.includes('projdel.bin') &&
+        delKeep.survivors.includes('sub/keep.o'),
+      JSON.stringify(delKeep).slice(0, 240)
+    );
+    // (round3/round7) an images-plus-data directory refuses the whole-dir
+    // delete while files the build does not own are inside
+    const delWipe = await server.rpc('tools/call', { name: 'mrvc_delete_output', arguments: { root: projDel, scope: 'active' } });
+    check(
+      'del: the whole-dir delete refuses while unclaimed files are inside',
+      delWipe.result.isError === true && /not written by this build/.test(resultJson(delWipe).error || '') && fs.existsSync(path.join(projDel, 'obj', 'projdel.hex')),
+      JSON.stringify(resultJson(delWipe)).slice(0, 200)
+    );
+    // removing the survivors lets the whole-dir delete through (the keep-clear
+    // took the generated makefile with it — a rebuild re-writes it first)
+    fs.writeFileSync(path.join(projDel, 'obj', 'makefile'), '# Automatically-generated file. Do not edit!\nall: projdel.elf\nprojdel.elf: main.o\n');
+    fs.rmSync(path.join(projDel, 'obj', 'sub', 'keep.o'), { force: true });
+    fs.rmSync(path.join(projDel, 'obj', 'projdel.bin'), { force: true });
+    const delWipe2 = resultJson(await server.rpc('tools/call', { name: 'mrvc_delete_output', arguments: { root: projDel, scope: 'active' } }));
+    check(
+      'del: without keepImages the whole output directory goes (once unclaimed files are gone)',
+      !!delWipe2 && delWipe2.ok === true && delWipe2.removedDir === 'obj' && !fs.existsSync(path.join(projDel, 'obj')),
+      JSON.stringify(delWipe2).slice(0, 200)
+    );
+    // (review round7 P1) the claimed output set IS the build model: makefile
+    // family, objects+deps for every scanned source, product, image, flash
+    // script — and nothing the build does not write
+    const { buildOutputFiles: bof } = require('../out/core/makefile.js');
+    const claimedSet = bof(require('../out/core/cproject.js').Cproject.load(projDel, { repairProject: false }));
+    check(
+      'del: buildOutputFiles claims the makefile family, objects, deps, su, map, product, image and flash scripts',
+      ['makefile', 'sources.mk', 'objects.mk', 'subdir.mk', 'src/subdir.mk', 'main.o', 'main.d', 'main.su', 'src/keep.o', 'src/keep.d', 'src/keep.su', 'projdel.elf', 'projdel.hex', 'projdel.map', 'mrvc_flash.cfg', 'mrs2_flash.cfg'].every((f) => claimedSet.includes(f)) &&
+        !claimedSet.includes('projdel.bin') &&
+        !claimedSet.includes('sub/keep.o'),
+      JSON.stringify(claimedSet).slice(0, 300)
+    );
+    const delSkip = resultJson(await server.rpc('tools/call', { name: 'mrvc_delete_output', arguments: { root: projDel, scope: 'active' } }));
+    check('del: a never-built output dir is a skipped no-op', !!delSkip && delSkip.ok === true && delSkip.skipped === true, JSON.stringify(delSkip));
+    const delBad = await server.rpc('tools/call', { name: 'mrvc_delete_output', arguments: { root: projDel, scope: 'nope' } });
+    check('del: an unknown scope is refused', delBad.result.isError === true && /scope must be/.test(resultJson(delBad).error || ''), JSON.stringify(resultJson(delBad)));
+
+    // -- mrvc_set_power_output (gate) / mrvc_check_wchlink_firmware (tolerant) --
+    const pwNo = await server.rpc('tools/call', { name: 'mrvc_set_power_output', arguments: { root: projDel, rail: '5v' } });
+    check(
+      'power: no verified Power-Off Reset receipt is refused',
+      pwNo.result.isError === true && /Power-Off Reset|power-verified/i.test(resultJson(pwNo).error || ''),
+      JSON.stringify(resultJson(pwNo))
+    );
+    const fwChk = resultJson(await server.rpc('tools/call', { name: 'mrvc_check_wchlink_firmware', arguments: { mrsInstallPath: FAKE } }));
+    check(
+      'firmware: the read-only probe returns a graceful state',
+      !!fwChk && typeof fwChk.state === 'string' && typeof fwChk.ok === 'boolean' && ['no-link', 'up-to-date', 'upgrade-needed', 'error'].includes(fwChk.state),
+      JSON.stringify(fwChk).slice(0, 200)
+    );
+  });
 
     // env steering: the var is set on THIS process; the child inherits it
     process.env['MRVC_MRS_INSTALL_PATH'] = FAKE;
@@ -1140,20 +1867,28 @@ async function withServer(label, fn) {
     const toolsSrc = fs.readFileSync(path.join(rootDir, 'src', 'mcp', 'tools.ts'), 'utf8');
     const m = toolsSrc.match(/export const TOOL_NAMES = \[([\s\S]*?)\] as const;/);
     const names = m ? [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]) : [];
-    check('docs: TOOL_NAMES declares eighteen tools', names.length === 18, String(names.length));
+    check('docs: TOOL_NAMES declares twenty-seven tools', names.length === 27, String(names.length));
     // the mrvc-ai ZCode plugin wrapper's package.json is its bundle's version
     // source — the round3 strict name check knocked it down to 0.0.0; the
     // parent allowlist in server.ts must keep carrying both family names
     const serverSrc = fs.readFileSync(path.join(rootDir, 'src', 'mcp', 'server.ts'), 'utf8');
     check('docs: server version allowlist covers mrvc and the mrvc-ai wrapper', serverSrc.includes("'mrvc-ai'") && serverSrc.includes("MRVC_FAMILY_PACKAGE_NAMES"), '');
     const readme = fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8');
-    check('docs: README names the eighteen tools', readme.includes('十八个工具'));
+    check('docs: README names the twenty-seven tools', readme.includes('二十七个工具'));
     check('docs: README no longer claims eight tools', !readme.includes('八工具包装'));
     check('docs: README lists the batch-5 write tools', readme.includes('mrvc_set_config_option') && readme.includes('mrvc_manage_configurations') && readme.includes('mrvc_add_linked_folder'), '');
+    check(
+      'docs: README lists the batch-6 tools',
+      ['mrvc_repair_project', 'mrvc_set_build_exclusion', 'mrvc_change_linked_folder_target', 'mrvc_rename_project', 'mrvc_switch_project_type', 'mrvc_compile_file', 'mrvc_delete_output', 'mrvc_set_power_output', 'mrvc_check_wchlink_firmware'].every((n) => readme.includes(n)),
+      ''
+    );
     // the header comment drifted once already (round4 P3.1: still said
     // "TEN tools" at thirteen) — pin it to the same count
     const header = fs.readFileSync(__filename, 'utf8').slice(0, 800);
-    check('docs: this test file header names the eighteen tools', /EIGHTEEN tools/.test(header) && !/THIRTEEN tools/.test(header) && !/TEN tools/.test(header));
+    check(
+      'docs: this test file header names the twenty-seven tools',
+      /TWENTY-SEVEN tools/.test(header) && !/EIGHTEEN tools/.test(header) && !/THIRTEEN tools/.test(header) && !/TEN tools/.test(header)
+    );
   }
 
   console.log(failures ? '\n' + failures + ' FAILURES' : '\nall mcp server tests passed');

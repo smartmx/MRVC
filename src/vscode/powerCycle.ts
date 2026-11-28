@@ -268,6 +268,9 @@ async function powerOffResetInner(
   // the MCP power tool's gate: a marker-verified MANUAL reset records the
   // receipt with the sequence fingerprint (voltage/delay/board cfg/openocd) —
   // never blocks or fails the reset itself
-  writePowerAck(project.root, fingerprintPowerPlan({ voltage, delayMs, boardCfg, openocdExe: openocd }));
+  const pack = writePowerAck(project.root, fingerprintPowerPlan({ voltage, delayMs, boardCfg, openocdExe: openocd }));
+  if (!pack) {
+    void vscode.window.showWarningMessage(t('receiptNotSaved', project.projectName));
+  }
   vscode.window.showInformationMessage(t('powerResetDone', project.projectName));
 }

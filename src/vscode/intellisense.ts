@@ -15,6 +15,7 @@ import { ProjectStore, getInstall, MrsProject } from './projects';
 import { Cproject, foldPathOnPlatform } from '../core/cproject';
 import { ToolchainInfo, withRealSuffix } from '../core/toolchain';
 import { buildCompileEntries, partitionByReference, contextDatabases, versionAtLeast, CompileCommandEntry } from '../core/intellisense';
+import { assertContainedMetaFile, resolveContainedMetaDir } from '../core/outputHistory';
 import { t } from '../core/i18n';
 import {
   stripJsonc,
@@ -23,19 +24,67 @@ import {
   indentOf,
   reindent,
   objectProps,
+  objectPropsAt,
   arrayElements,
   hadTrailingCommaFn,
 } from '../core/jsonc';
 
 const CONFIG_NAME = 'MRVC';
 
-function writeIfChanged(file: string, content: string): boolean {
+const RENAME_SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
+
+function assertRegularOrMissing(file: string): void {
   try {
-    if (fs.existsSync(file) && fs.readFileSync(file, 'utf-8') === content) return false;
-  } catch {
-    // fall through to write
+    const st = fs.lstatSync(file);
+    if (st.isSymbolicLink() || !st.isFile()) {
+      throw new Error(`refusing to write linked or non-regular metadata file: ${file}`);
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e;
   }
-  fs.writeFileSync(file, content, 'utf-8');
+}
+
+function writeIfChanged(file: string, content: string): boolean {
+  assertRegularOrMissing(file);
+  try {
+    if (fs.readFileSync(file, 'utf-8') === content) return false;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e;
+  }
+  const prior = fs.lstatSync(file, { throwIfNoEntry: false });
+  if (prior) fs.accessSync(file, fs.constants.W_OK);
+  const dir = path.dirname(file);
+  const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`);
+  try {
+    const fd = fs.openSync(tmp, 'wx', prior ? 0o600 : 0o666);
+    try {
+      fs.writeFileSync(fd, content, 'utf-8');
+      if (prior && process.platform !== 'win32') fs.fchmodSync(fd, prior.mode & 0o777);
+    } finally {
+      fs.closeSync(fd);
+    }
+    assertRegularOrMissing(file);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        fs.renameSync(tmp, file);
+        break;
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException)?.code;
+        if (attempt < 4 && (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES')) {
+          Atomics.wait(RENAME_SLEEP_BUF, 0, 0, 10);
+          continue;
+        }
+        throw e;
+      }
+    }
+  } catch (e) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // ignore temp cleanup failure
+    }
+    throw e;
+  }
   return true;
 }
 
@@ -45,11 +94,16 @@ const CACHE_PATH_KEY = 'C_Cpp.intelliSenseCachePath';
 const CACHE_SIZE_KEY = 'C_Cpp.intelliSenseCacheSize';
 
 /** one workspace-settings key MRVC manages: the value plus the type a hand
- *  edit must keep (a path stays a string, a size stays a number) */
-interface WorkspaceSettingWrite {
+ *  edit must keep (a path stays a string, a size stays a number, the
+ *  files.associations object stays an object). `removeKeys` asks for keys to
+ *  DELETE inside a managed object (plain-JSON files only — a JSONC file
+ *  cannot have entries surgically removed without comma/comment surgery, so
+ *  there the removal is silently skipped and the caller keeps its entries) */
+export interface WorkspaceSettingWrite {
   key: string;
-  value: string | number;
-  kind: 'string' | 'number';
+  value: string | number | Record<string, string>;
+  kind: 'string' | 'number' | 'object';
+  removeKeys?: readonly string[];
 }
 
 /**
@@ -62,9 +116,11 @@ interface WorkspaceSettingWrite {
  * never overwrite what we do not understand. MRVC only writes when the
  * corresponding setting is configured, and never deletes what it finds.
  */
-function writeWorkspaceCacheSettings(settingsFile: string, writes: WorkspaceSettingWrite[]): PropsWrite {
+export function writeWorkspaceCacheSettings(settingsFile: string, writes: WorkspaceSettingWrite[]): PropsWrite {
   let raw: string;
   try {
+    const st = fs.lstatSync(settingsFile);
+    if (st.isSymbolicLink() || !st.isFile()) return 'unreadable';
     raw = fs.readFileSync(settingsFile, 'utf-8');
   } catch {
     raw = ''; // absent — a fresh plain-JSON file is created below
@@ -78,13 +134,27 @@ function writeWorkspaceCacheSettings(settingsFile: string, writes: WorkspaceSett
     } catch {
       return 'unreadable';
     }
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'unreadable';
+    if (!isPlainObject(parsed)) return 'unreadable';
   }
   if (raw === stripped) {
     const settings = (parsed ?? {}) as Record<string, unknown>;
     for (const w of writes) {
       const existing = settings[w.key];
-      if (existing !== undefined && existing !== null && typeof existing !== w.kind) return 'unreadable';
+      if (existing !== undefined && existing !== null) {
+        // `typeof [] === 'object'` — an array in place of the associations
+        // object is a hand edit we must not overwrite (review H3)
+        if (typeof existing !== w.kind || (w.kind === 'object' && Array.isArray(existing))) return 'unreadable';
+      }
+      if (w.kind === 'object') {
+        const value = w.value as Record<string, string>;
+        const merged = { ...(isPlainObject(existing) ? existing : {}), ...value };
+        // removals happen AFTER the merge so a pruned key cannot re-enter
+        // through `value`, and the equality check sees the final shape
+        for (const k of w.removeKeys ?? []) delete merged[k];
+        if (sameSettingValue(existing, merged)) continue;
+        settings[w.key] = merged;
+        continue;
+      }
       if (existing === w.value) continue;
       settings[w.key] = w.value;
     }
@@ -100,35 +170,160 @@ function writeWorkspaceCacheSettings(settingsFile: string, writes: WorkspaceSett
   const pending: WorkspaceSettingWrite[] = [];
   for (const w of writes) {
     const mine = props.find((p) => p.key === w.key);
-    if (mine) {
-      let frag: unknown;
+    if (!mine) {
+      pending.push(w);
+      continue;
+    }
+    let frag: unknown;
+    try {
+      frag = JSON.parse(stripped.slice(mine.value.start, mine.value.end));
+    } catch {
+      return 'unreadable';
+    }
+    if (w.kind !== 'object') {
+      if (frag !== null && typeof frag !== w.kind) return 'unreadable'; // hand edit — never touch
+      if (frag === w.value) continue; // already the desired value
+      edits.push({ start: mine.value.start, end: valueTokenEnd(stripped, mine.value.start, mine.value.end), text: JSON.stringify(w.value) });
+      continue;
+    }
+    // ---- kind 'object': merge key-by-key INSIDE the existing object, so
+    // the user's sibling entries, comments and layout survive (review H3).
+    // Replacing the whole value span would flatten the object to one line
+    // and permanently drop every comment inside it. NOTE: `removeKeys` is
+    // plain-JSON only — a JSONC file keeps its stale entries (surgical
+    // removal would need comma/comment reconstruction around the gap).
+    if (frag !== null && !isPlainObject(frag)) return 'unreadable'; // scalar/array where an object must sit
+    if (frag === null) {
+      // null carries nothing to preserve — replace the token outright
+      edits.push({
+        start: mine.value.start,
+        end: valueTokenEnd(stripped, mine.value.start, mine.value.end),
+        text: formatSettingObject(w.value as Record<string, string>, indentOf(stripped, mine.keyStart)),
+      });
+      continue;
+    }
+    const openPos = skipWs(stripped, mine.value.start);
+    if (stripped[openPos] !== '{') return 'unreadable';
+    const objClose = matchBracket(stripped, openPos);
+    if (objClose < 0) return 'unreadable';
+    const nested = objectPropsAt(stripped, openPos, trailingCommas);
+    if (!nested) return 'unreadable';
+    const keyIndent = indentOf(stripped, mine.keyStart);
+    const inserts: Array<[string, string]> = [];
+    for (const [k, v] of Object.entries(w.value as Record<string, string>)) {
+      const p = nested.find((np) => np.key === k);
+      if (!p) {
+        inserts.push([k, v]);
+        continue;
+      }
+      let pv: unknown;
       try {
-        frag = JSON.parse(stripped.slice(mine.value.start, mine.value.end));
+        pv = JSON.parse(stripped.slice(p.value.start, p.value.end));
       } catch {
         return 'unreadable';
       }
-      if (frag !== null && typeof frag !== w.kind) return 'unreadable'; // hand edit — never touch
-      if (frag === w.value) continue; // already the desired value
-      edits.push({ start: mine.value.start, end: mine.value.end, text: JSON.stringify(w.value) });
-    } else {
-      pending.push(w);
+      if (pv === v) continue; // entry already as desired
+      // replace ONLY the value token: a line-end comment behind it survives
+      edits.push({ start: p.value.start, end: valueTokenEnd(stripped, p.value.start, p.value.end), text: JSON.stringify(v) });
     }
+    if (!inserts.length) continue;
+    const lines = inserts.map(([k, v]) => `${JSON.stringify(k)}: ${JSON.stringify(v)}`);
+    // where the object's closer sits decides the layout: on its own line the
+    // new entries take that line's place (the closer keeps its indent);
+    // an inline object gets entries on fresh lines at the key indent + 2
+    const closerLineStart = stripped.lastIndexOf('\n', objClose - 1) + 1;
+    const closerOnOwnLine = /^[ \t]*$/.test(stripped.slice(closerLineStart, objClose));
+    const closeIndent = closerOnOwnLine ? indentOf(stripped, objClose) : keyIndent;
+    let propIndent = closeIndent + '  ';
+    if (nested.length) {
+      const firstLineStart = stripped.lastIndexOf('\n', nested[0].keyStart - 1) + 1;
+      propIndent = /^[ \t]*$/.test(stripped.slice(firstLineStart, nested[0].keyStart))
+        ? indentOf(stripped, nested[0].keyStart)
+        : keyIndent + '  ';
+      if (!hadTrailingCommaFn(trailingCommas, objClose)) {
+        // the separator goes right behind the last value token, BEFORE any
+        // line-end comment, so `"*.h": "c", // note` keeps its note in place
+        const last = nested[nested.length - 1];
+        const tokenEnd = valueTokenEnd(stripped, last.value.start, last.value.end);
+        edits.push({ start: tokenEnd, end: tokenEnd, text: ',' });
+      }
+    }
+    const body = lines.map((l) => propIndent + l).join(',\n');
+    if (closerOnOwnLine) edits.push({ start: closerLineStart, end: closerLineStart, text: `${body}\n` });
+    else edits.push({ start: objClose, end: objClose, text: `\n${body}\n${closeIndent}` });
   }
   if (pending.length) {
     const rootIndent = indentOf(stripped, rootOpen) + '  ';
     const empty = stripped.slice(rootOpen + 1, rootClose).trim() === '';
-    const sep = props.length === 0 || hadTrailingCommaFn(trailingCommas, rootClose) ? '' : ',';
-    const body = pending.map((w) => `"${w.key}": ${JSON.stringify(w.value)}`).join(`,\n${rootIndent}`);
-    const text = empty
-      ? `\n${rootIndent}${body}\n${indentOf(stripped, rootClose)}`
-      : `${sep}\n${rootIndent}${body}`;
-    edits.push({ start: rootClose, end: rootClose, text });
+    const body = pending
+      .map((w) => {
+        const value = w.kind === 'object' ? formatSettingObject(w.value as Record<string, string>, rootIndent) : JSON.stringify(w.value);
+        return `"${w.key}": ${value}`;
+      })
+      .join(`,\n${rootIndent}`);
+    if (empty) {
+      edits.push({ start: rootClose, end: rootClose, text: `\n${rootIndent}${body}\n${indentOf(stripped, rootClose)}` });
+    } else {
+      // non-empty root: the separator goes right behind the LAST value token
+      // (before any trailing line-end comment) and the entries take the
+      // closer's own line when it has one — never a lone comma line above
+      // the new keys nor `value}` glued together (review L2)
+      const last = props[props.length - 1];
+      if (!hadTrailingCommaFn(trailingCommas, rootClose)) {
+        const tokenEnd = valueTokenEnd(stripped, last.value.start, last.value.end);
+        edits.push({ start: tokenEnd, end: tokenEnd, text: ',' });
+      }
+      const closerLineStart = stripped.lastIndexOf('\n', rootClose - 1) + 1;
+      if (/^[ \t]*$/.test(stripped.slice(closerLineStart, rootClose))) {
+        edits.push({ start: closerLineStart, end: closerLineStart, text: `${rootIndent}${body}\n` });
+      } else {
+        edits.push({ start: rootClose, end: rootClose, text: `\n${rootIndent}${body}\n${indentOf(stripped, rootOpen)}` });
+      }
+    }
   }
   if (!edits.length) return 'unchanged';
   edits.sort((a, b) => b.start - a.start || b.end - a.end);
   let out = raw;
   for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
   return writeIfChanged(settingsFile, out) ? 'written' : 'unchanged';
+}
+
+/** plain (non-array) object test — `typeof [] === 'object'` would let an
+ * array through every object guard (review H3) */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** end of the VALUE TOKEN inside a span that may include trailing
+ * whitespace/comments (objectProps extends the LAST property's span to the
+ * container's closer, and a comment before a comma is blanked to spaces on
+ * the stripped view) — splicing the raw span would delete the user's
+ * line-end comment. */
+function valueTokenEnd(stripped: string, start: number, end: number): number {
+  let i = end;
+  while (i > start && /\s/.test(stripped[i - 1])) i--;
+  return i;
+}
+
+/** managed-setting equality: scalars by identity, objects entry-wise — a
+ * freshly built `{ ...existing }` literal is never `===` the parsed one, so
+ * the identity test alone would rewrite an unchanged object every pass */
+function sameSettingValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!isPlainObject(a) || !isPlainObject(b)) return false;
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  return ka.length === kb.length && ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && a[k] === b[k]);
+}
+
+/** render a `kind: 'object'` value over several lines at the property's own
+ * indent — the inserted body stays readable instead of one long line */
+function formatSettingObject(value: Record<string, string>, indent: string): string {
+  const entries = Object.entries(value);
+  if (!entries.length) return '{}';
+  const inner = indent + '  ';
+  const lines = entries.map(([k, v]) => `${inner}${JSON.stringify(k)}: ${JSON.stringify(v)}`);
+  return `{\n${lines.join(',\n')}\n${indent}}`;
 }
 
 /**
@@ -306,20 +501,17 @@ export function switchContext(workspaceRoot: string, projectRoot: string, projec
   // copy the project's PRIVATE database over the _active.json slot — the
   // shared database (_shared.json) is declared separately in the
   // c_cpp_properties array and stays stable across context switches
-  const dir = dbDir(workspaceRoot);
-  const src = ccDbPath(dir, dbFileName(projectRoot, projectName));
-  const dst = ccDbPath(dir, '_active.json');
-  if (!src || !dst) return false;
   try {
-    if (!fs.existsSync(src)) return false;
-    const content = fs.readFileSync(src, 'utf-8');
-    try {
-      if (fs.existsSync(dst) && fs.readFileSync(dst, 'utf-8') === content) return false;
-    } catch {
-      // fall through to copy
-    }
-    fs.copyFileSync(src, dst);
-    return true;
+    const realCcDir = resolveContainedMetaDir(workspaceRoot, ['.vscode', 'mrvc', 'cc'], false);
+    if (!realCcDir) return false;
+    const src = ccDbPath(realCcDir, dbFileName(projectRoot, projectName));
+    const dst = ccDbPath(realCcDir, '_active.json');
+    if (!src || !dst) return false;
+    const srcInfo = assertContainedMetaFile(realCcDir, path.basename(src), true);
+    if (!srcInfo.exists) return false;
+    const dstInfo = assertContainedMetaFile(realCcDir, '_active.json', true);
+    const content = fs.readFileSync(srcInfo.path, 'utf-8');
+    return writeIfChanged(dstInfo.path, content);
   } catch {
     return false;
   }
@@ -383,13 +575,12 @@ export function maybePromptCppTools(context: vscode.ExtensionContext, store: Pro
 export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResult {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) return { projects: 0, entries: 0, updated: false, error: 'no workspace folder' };
-  const vscodeDir = path.join(folder.uri.fsPath, '.vscode');
   try {
     const all = store.all;
     // nothing loaded (e.g. a generic Eclipse workspace activated us) — do
     // not pollute .vscode with an empty database and a bare MRVC entry
     if (!all.length) return { projects: 0, entries: 0, updated: false };
-    fs.mkdirSync(vscodeDir, { recursive: true });
+    resolveContainedMetaDir(folder.uri.fsPath, ['.vscode'], true);
 
     // 1. classify by cross-project reference count: _shared.json carries
     // every file exactly ONE project compiles (deterministic parameters —
@@ -398,8 +589,7 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
     // with canonical fallbacks so it covers the whole context class.
     // _active.json = the active context's database (copied on switch).
     const install = getInstall();
-    const ccDir = dbDir(folder.uri.fsPath);
-    fs.mkdirSync(ccDir, { recursive: true });
+    const ccDir = resolveContainedMetaDir(folder.uri.fsPath, ['.vscode', 'mrvc', 'cc'], true)!;
     let firstTc: ToolchainInfo | null = null;
     let firstCp: Cproject | null = null;
     let entries = 0;
@@ -525,9 +715,9 @@ export function ensureIntellisenseConfig(store: ProjectStore): IntellisenseResul
         mine.cppStandard = 'gnu++14';
       }
       try {
-        const wfVscodeDir = path.join(wf.uri.fsPath, '.vscode');
-        fs.mkdirSync(wfVscodeDir, { recursive: true });
-        const r = writePropsFile(path.join(wfVscodeDir, 'c_cpp_properties.json'), mine);
+        const wfVscodeDir = resolveContainedMetaDir(wf.uri.fsPath, ['.vscode'], true)!;
+        const propsInfo = assertContainedMetaFile(wfVscodeDir, 'c_cpp_properties.json', true);
+        const r = writePropsFile(propsInfo.path, mine);
         if (r === 'written') propsUpdated = true;
         else if (r === 'unreadable') unreadableFolders.push(wf.name);
       } catch {
@@ -596,14 +786,21 @@ export function applyCacheOverrides(): CacheOverridesResult {
   // runtime types: get<T> is a compile-time assertion only — a hand-edited
   // settings value can be anything
   const rawPath = vscode.workspace.getConfiguration('mrvc').get<unknown>('intellisense.cachePath', '');
-  if (rawPath === undefined || rawPath === null || rawPath === '') {
-    // not configured — the path key is simply not written
-  } else if (typeof rawPath === 'string') {
-    const t = rawPath.trim();
-    if (t) writes.push({ key: CACHE_PATH_KEY, value: t, kind: 'string' });
-  } else {
-    invalidSettings.push('mrvc.intellisense.cachePath: not a string (skipped)');
+  // v0.3.8 user ruling: cache governance is GATED by cachePath — with no
+  // path configured NOTHING is written. The old behavior let the size key
+  // ride alone, so the schema default (5120) landed uninvited in every
+  // workspace's settings.json at activation. cacheSize only takes effect
+  // once a cachePath is set.
+  if (rawPath === undefined || rawPath === null || (typeof rawPath === 'string' && rawPath.trim() === '')) {
+    return { unreadable: [], invalidSettings: [] };
   }
+  if (typeof rawPath !== 'string') {
+    // present but the wrong type: reported so the user can fix it — still
+    // nothing written (a size-only write was the old standalone shape)
+    return { unreadable: [], invalidSettings: ['mrvc.intellisense.cachePath: not a string (skipped)'] };
+  }
+  const t = rawPath.trim();
+  if (t) writes.push({ key: CACHE_PATH_KEY, value: t, kind: 'string' });
   const rawSize = vscode.workspace.getConfiguration('mrvc').get<unknown>('intellisense.cacheSize', 0);
   if (typeof rawSize === 'number' && Number.isFinite(rawSize) && rawSize > 0) {
     // round26 §4.1: a fractional MB would floor to 0 (= "no cap" for
@@ -623,8 +820,9 @@ export function applyCacheOverrides(): CacheOverridesResult {
   if (!writes.length) return { unreadable, invalidSettings };
   for (const wf of vscode.workspace.workspaceFolders ?? []) {
     try {
-      fs.mkdirSync(path.join(wf.uri.fsPath, '.vscode'), { recursive: true });
-      const r = writeWorkspaceCacheSettings(path.join(wf.uri.fsPath, '.vscode', 'settings.json'), writes);
+      const wfVscode = resolveContainedMetaDir(wf.uri.fsPath, ['.vscode'], true)!;
+      const settingsInfo = assertContainedMetaFile(wfVscode, 'settings.json', true);
+      const r = writeWorkspaceCacheSettings(settingsInfo.path, writes);
       if (r === 'unreadable') unreadable.push(wf.name);
     } catch {
       unreadable.push(wf.name);

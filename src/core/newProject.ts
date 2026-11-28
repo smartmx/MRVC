@@ -106,6 +106,10 @@ export interface CreateProjectResult {
   projectRoot: string;
   /** display name renameProject actually applied */
   finalName: string;
+  /** set when the final rename failed midway (locked files etc.) — the
+   *  project is created and usable under `finalName`, and the pre-rename
+   *  state (launches, .project, markers, .template) has been restored */
+  warning?: string;
 }
 
 /**
@@ -174,8 +178,13 @@ export function createProjectFromTemplate(template: TemplateChip, opts: CreatePr
   const parent = path.resolve(opts.parentDir);
   const projectRoot = path.resolve(parent, name);
   // containment: the name is user input — prove the target stays inside
-  // the chosen parent folder before touching the disk
-  if (projectRoot !== parent && !projectRoot.startsWith(parent + path.sep)) {
+  // the chosen parent folder before touching the disk. path.relative is
+  // the strict test: a `parent + sep` prefix check fails on a filesystem
+  // ROOT ("D:\", "/") because the root already ends in a separator and the
+  // doubled separator matches no normal child path — typing a bare drive
+  // root in the wizard location box used to report "Invalid project name"
+  // for a perfectly legal child (review P3)
+  if (!isInsideParent(parent, projectRoot)) {
     throw new Error(`Invalid project name "${opts.projectName}"`);
   }
   if (fs.existsSync(projectRoot)) {
@@ -258,19 +267,121 @@ export function createProjectFromTemplate(template: TemplateChip, opts: CreatePr
     }
   }
 
+  // (round30 P2) snapshot the extracted template BEFORE any creation step
+  // mutates it: the fresh <name>.wvproj marker below and the launch
+  // pre-rename are BOTH steps the failure path must undo — a snapshot taken
+  // after them would "restore" the mixed state (pre-renamed launch + two
+  // .wvproj markers) instead of the template's original file set.
+  // (review L1) a corrupt/third-party zip without a .project must not leave
+  // the extracted folder behind blocking every retry ("already exists") —
+  // clean it up and report clearly, same shape as extraction failure
+  let snapshot: {
+    launches: Array<{ name: string; data: Buffer }>;
+    project: Buffer;
+    wvprojs: Array<{ name: string; data: Buffer }>;
+    template: Buffer | undefined;
+  };
+  try {
+    snapshot = {
+      launches: fs
+        .readdirSync(projectRoot)
+        .filter((f) => f.toLowerCase().endsWith('.launch'))
+        .map((f) => ({ name: f, data: fs.readFileSync(path.join(projectRoot, f)) })),
+      project: fs.readFileSync(path.join(projectRoot, '.project')),
+      wvprojs: fs
+        .readdirSync(projectRoot)
+        .filter((f) => f.toLowerCase().endsWith('.wvproj'))
+        .map((f) => ({ name: f, data: fs.readFileSync(path.join(projectRoot, f)) })),
+      template: fs.existsSync(path.join(projectRoot, '.template')) ? fs.readFileSync(path.join(projectRoot, '.template')) : undefined,
+    };
+  } catch (e) {
+    try {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    } catch {
+      // keep the partial dir rather than masking the snapshot error
+    }
+    throw new Error(`Template is not a valid MRS project (${e instanceof Error ? e.message : String(e)})`);
+  }
+
   // MRS2: an empty <name>.wvproj marks the project (content gets rebuilt
   // by the IDE on open)
   fs.writeFileSync(path.join(projectRoot, `${name}.wvproj`), '', 'utf-8');
 
-  // rename from the template display name to the requested one
+  // the template display name drives the launch migration: the launch named
+  // after the TEMPLATE follows the project rename; user-named launches keep
+  // their filenames. NEVER rename an arbitrary first launch when several
+  // exist — a multi-launch template would clobber a user launch (round28
+  // P2-2). Real MRS zips ship the launch as a bare ".launch" (no basename).
   const oldName = readProjectDisplayName(projectRoot);
+  const launches = fs.readdirSync(projectRoot).filter((f) => f.toLowerCase().endsWith('.launch'));
+  const namedLaunch = oldName ? launches.find((f) => f.toLowerCase() === `${oldName.toLowerCase()}.launch`) : undefined;
+  const bareLaunch = launches.find((f) => f.toLowerCase() === '.launch');
+  const singleLaunch = launches.length === 1 ? launches[0] : undefined;
+  const preRename = namedLaunch ?? bareLaunch ?? singleLaunch; // template-named, then MRS's bare marker, then unambiguous single
+  if (preRename && preRename.toLowerCase() !== `${name.toLowerCase()}.launch`) {
+    // (round29 P2) a launch already carrying the requested name must NEVER be
+    // overwritten by the template launch — fs.renameSync replaces the target
+    // on Windows. Pick a unique fallback name ("Name-template",
+    // "Name-template-2", …) instead: both launches survive and renameProject
+    // migrates every launch's attrs anyway, so nothing is lost.
+    let preTarget = `${name}.launch`;
+    if (launches.some((f) => f.toLowerCase() === preTarget.toLowerCase())) {
+      let k = 1;
+      do {
+        preTarget = `${name}-template${k > 1 ? '-' + k : ''}.launch`;
+        k++;
+      } while (launches.some((f) => f.toLowerCase() === preTarget.toLowerCase()));
+    }
+    fs.renameSync(path.join(projectRoot, preRename), path.join(projectRoot, preTarget));
+  }
+
+  // rename from the template display name to the requested one
   if (oldName && oldName !== name) {
+    // (round29 P3-1 / round30 P2) the snapshot above was taken BEFORE the
+    // fresh marker write and the launch pre-rename — the catch below can
+    // therefore undo BOTH creation steps as well as the rename itself, and
+    // the created project stays fully consistent under the template display
+    // name; nothing needs manual repair.
     try {
       renameProject(projectRoot, name);
-    } catch {
-      // name change is cosmetic — the project still opens under the
-      // template name rather than failing the whole creation
-      return { projectRoot, finalName: oldName ?? name };
+    } catch (e) {
+      // restore the extracted template state exactly: drop launch/marker
+      // files creation or the failed rename ADDED (the pre-renamed launch,
+      // the fresh marker), rewrite every snapshotted file
+      try {
+        const keepL = new Set(snapshot.launches.map((l) => l.name.toLowerCase()));
+        const keepW = new Set(snapshot.wvprojs.map((w) => w.name.toLowerCase()));
+        for (const f of fs.readdirSync(projectRoot)) {
+          const low = f.toLowerCase();
+          const added = (low.endsWith('.launch') && !keepL.has(low)) || (low.endsWith('.wvproj') && !keepW.has(low));
+          if (added) fs.rmSync(path.join(projectRoot, f), { force: true });
+        }
+        for (const l of snapshot.launches) fs.writeFileSync(path.join(projectRoot, l.name), l.data);
+        fs.writeFileSync(path.join(projectRoot, '.project'), snapshot.project);
+        for (const w of snapshot.wvprojs) fs.writeFileSync(path.join(projectRoot, w.name), w.data);
+        if (snapshot.template !== undefined) fs.writeFileSync(path.join(projectRoot, '.template'), snapshot.template);
+      } catch {
+        // best effort — the warning below still reports the failure
+      }
+      const actual = readProjectDisplayName(projectRoot) ?? oldName ?? name;
+      // real MRS template zips carry NO .wvproj — the fresh marker was ours,
+      // and the restore correctly removed it. But a project without ANY
+      // marker fails the three-file contract (the project store skips the
+      // folder, MRS2 refuses to open it) — write one back under the
+      // RESTORED display name so the rolled-back project stays legal and
+      // openable (review M1)
+      if (snapshot.wvprojs.length === 0) {
+        try {
+          fs.writeFileSync(path.join(projectRoot, `${actual}.wvproj`), '', 'utf-8');
+        } catch {
+          // best effort — the warning below still reports the failure
+        }
+      }
+      return {
+        projectRoot,
+        finalName: actual,
+        warning: `project rename failed (${e instanceof Error ? e.message : String(e)}) — files were restored to the pre-rename state; the project is created as "${actual}" instead of "${name}"`,
+      };
     }
   }
   return { projectRoot, finalName: name };
@@ -284,4 +395,20 @@ function readProjectDisplayName(projectRoot: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Strict child-of test via path.relative: `child === parent` and anything
+ * outside (escape or a different root) refuse. Works for a filesystem ROOT
+ * parent ("D:\", "/") where a `parent + sep` prefix test cannot. ONLY a
+ * genuine parent segment escapes: `rel === ".."` or a `..` FOLLOWED BY a
+ * separator — a child merely NAMED "..Blink" is a legal directory name and
+ * must pass (review round2 P3: startsWith('..') also swallowed it).
+ */
+export function isInsideParent(parent: string, child: string): boolean {
+  const rel = path.relative(parent, child);
+  if (rel === '') return false;
+  if (path.isAbsolute(rel)) return false;
+  if (rel === '..' || rel.startsWith(`..${path.sep}`) || rel.startsWith(`../`)) return false;
+  return true;
 }

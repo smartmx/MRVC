@@ -1,0 +1,211 @@
+{
+  "name": "MRVC QingKe Listing",
+  "scopeName": "source.mrvc-lst",
+  "patterns": [
+    {
+      "comment": "objdump file format banner",
+      "match": "^([^:\\r\\n]+):[ \\t]+(file format)[ \\t]+(\\S+)[ \\t]*$",
+      "captures": {
+        "1": { "name": "string.unquoted.path.lst" },
+        "2": { "name": "storage.type.lst" },
+        "3": { "name": "entity.name.type.lst" }
+      }
+    },
+    {
+      "comment": "Disassembly of section header",
+      "match": "^(Disassembly of section)[ \\t]+([^:\\r\\n]+)(:)[ \\t]*$",
+      "captures": {
+        "1": { "name": "keyword.control.lst" },
+        "2": { "name": "entity.name.section.lst" },
+        "3": { "name": "punctuation.separator.lst" }
+      }
+    },
+    {
+      "comment": "ELF all-headers / relocation / content section headings",
+      "match": "^(?:Sections|Program Header|Dynamic Section|Version References|SYMBOL TABLE|RELOCATION RECORDS FOR \\[[^\\]]+\\]|Contents of section [^:\\r\\n]+|Idx Name\\b.*):?[ \\t]*$",
+      "name": "markup.heading.lst"
+    },
+    {
+      "comment": "GAS listing page banner",
+      "match": "^RISC-V GAS[ \\t]+\\S+.*page \\d+[ \\t]*$",
+      "name": "markup.heading.lst"
+    },
+    {
+      "comment": "function or symbol entry header (supports demangled C++ signatures)",
+      "match": "^([0-9a-fA-F]{1,16})[ \\t]+(<[^\\r\\n]+>)(:)[ \\t]*$",
+      "captures": {
+        "1": { "name": "constant.numeric.address.lst" },
+        "2": { "name": "entity.name.function.lst" },
+        "3": { "name": "punctuation.separator.lst" }
+      }
+    },
+    {
+      "comment": "objdump disassembly line: address + bounded hex words + QingKe RISC-V insn + optional # annotation",
+      "match": "^[ \\t]*([0-9a-fA-F]+):[ \\t]+((?:[0-9a-fA-F]{2,8}[ \\t]+){1,4})([^#\\r\\n]+?)(?:[ \\t]+(#.*))?[ \\t]*$",
+      "captures": {
+        "1": { "name": "constant.numeric.address.lst" },
+        "2": { "name": "comment.line.machine-code.lst" },
+        "3": {
+          "patterns": [
+            { "include": "#symbol-ref" },
+            { "include": "source.mrvc-qingke" }
+          ]
+        },
+        "4": {
+          "name": "comment.line.number-sign.lst",
+          "patterns": [
+            { "include": "#symbol-ref" }
+          ]
+        }
+      }
+    },
+    {
+      "comment": "objdump raw hex / continuation word line without mnemonic",
+      "match": "^[ \\t]*([0-9a-fA-F]+):[ \\t]+((?:[0-9a-fA-F]{2,8}(?:[ \\t]+[0-9a-fA-F]{2,8}){0,7}))[ \\t]*$",
+      "captures": {
+        "1": { "name": "constant.numeric.address.lst" },
+        "2": { "name": "comment.line.machine-code.lst" }
+      }
+    },
+    {
+      "comment": "objdump zero-skipping ellipsis",
+      "match": "^[ \\t]*\\.\\.\\.[ \\t]*$",
+      "name": "comment.line.ellipsis.lst"
+    },
+    {
+      "comment": "GAS -Wa,-adhlns interleaved C source marker line",
+      "match": "^[ \\t]*(\\d+):([^\\r\\n*]+)[ \\t]+(\\*\\*\\*\\*)(.*)$",
+      "captures": {
+        "1": { "name": "constant.numeric.line-number.lst" },
+        "2": { "name": "string.unquoted.path.lst" },
+        "3": { "name": "comment.line.marker.lst" },
+        "4": {
+          "patterns": [
+            { "include": "#c-source-fragments" }
+          ]
+        }
+      }
+    },
+    {
+      "comment": "GAS -Wa,-adhlns listing line with offset, hex bytes and assembly",
+      "match": "^[ \\t]*(\\d+)[ \\t]+([0-9a-fA-F]{4}|\\?{4})[ \\t]+([0-9a-fA-F]{2,})[ \\t]+(.+?)[ \\t]*$",
+      "captures": {
+        "1": { "name": "constant.numeric.line-number.lst" },
+        "2": { "name": "constant.numeric.address.lst" },
+        "3": { "name": "comment.line.machine-code.lst" },
+        "4": {
+          "patterns": [
+            { "include": "#symbol-ref" },
+            { "include": "source.mrvc-qingke" }
+          ]
+        }
+      }
+    },
+    {
+      "comment": "GAS -Wa,-adhlns continuation hex bytes line",
+      "match": "^[ \\t]*(\\d+)[ \\t]+([0-9a-fA-F]{2,})[ \\t]*$",
+      "captures": {
+        "1": { "name": "constant.numeric.line-number.lst" },
+        "2": { "name": "comment.line.machine-code.lst" }
+      }
+    },
+    {
+      "comment": "GAS -Wa,-adhlns directive/label listing line (line number + wide tab/spaces + source)",
+      "match": "^[ \\t]*(\\d+)[ \\t]{6,}([^0-9\\s].*?)[ \\t]*$",
+      "captures": {
+        "1": { "name": "constant.numeric.line-number.lst" },
+        "2": { "patterns": [{ "include": "source.mrvc-qingke" }] }
+      }
+    },
+    {
+      "comment": "objdump --all-headers ELF section table row",
+      "match": "^[ \\t]*(\\d+)[ \\t]+(\\.[A-Za-z0-9_.$]+)[ \\t]+([0-9a-fA-F]+)[ \\t]+([0-9a-fA-F]+)[ \\t]+([0-9a-fA-F]+)[ \\t]+([0-9a-fA-F]+)[ \\t]+(2\\*\\*\\d+)[ \\t]*$",
+      "captures": {
+        "1": { "name": "constant.numeric.lst" },
+        "2": { "name": "entity.name.section.lst" },
+        "3": { "name": "constant.numeric.hex.lst" },
+        "4": { "name": "constant.numeric.address.lst" },
+        "5": { "name": "constant.numeric.address.lst" },
+        "6": { "name": "constant.numeric.hex.lst" },
+        "7": { "name": "storage.modifier.lst" }
+      }
+    },
+    {
+      "comment": "objdump --all-headers section attribute flags",
+      "match": "\\b(?:CONTENTS|ALLOC|LOAD|RELOC|READONLY|CODE|DATA|DEBUGGING|NEVER_LOAD|EXCLUDE)\\b",
+      "name": "storage.modifier.lst"
+    },
+    {
+      "comment": "objdump relocation entry (OFFSET TYPE VALUE)",
+      "match": "^([0-9a-fA-F]{8,16})[ \\t]+(R_RISCV_[A-Z0-9_]+)[ \\t]+(.+?)[ \\t]*$",
+      "captures": {
+        "1": { "name": "constant.numeric.address.lst" },
+        "2": { "name": "support.type.relocation.lst" },
+        "3": { "name": "entity.name.function.lst" }
+      }
+    },
+    {
+      "comment": "objdump symbol table row",
+      "match": "^([0-9a-fA-F]{8,16})[ \\t]+(?:[lgwu! ][w ][C ][W ][I ][dD ][fFO ][ \\t]+)?(\\*ABS\\*|\\*UND\\*|\\*COM\\*|\\.[A-Za-z0-9_.$]+)[ \\t]+([0-9a-fA-F]{8,16})[ \\t]+(.+?)[ \\t]*$",
+      "captures": {
+        "1": { "name": "constant.numeric.address.lst" },
+        "2": { "name": "entity.name.section.lst" },
+        "3": { "name": "constant.numeric.hex.lst" },
+        "4": { "name": "entity.name.function.lst" }
+      }
+    },
+    {
+      "comment": "objdump --source function prologue marker (symbol():)",
+      "match": "^([A-Za-z_~$][A-Za-z0-9_~:<>,*& .()-]*\\)):[ \\t]*$",
+      "captures": {
+        "1": { "name": "entity.name.function.lst" }
+      }
+    },
+    {
+      "comment": "objdump --source file:line header",
+      "match": "^(?:[A-Za-z]:)?[^:\\r\\n*?\"<>|]+\\.(?:[cChHsS]|cpp|cxx|cc):\\d+[ \\t]*$",
+      "name": "string.unquoted.path.lst"
+    },
+    {
+      "include": "#c-source-fragments"
+    }
+  ],
+  "repository": {
+    "symbol-ref": {
+      "comment": "target symbol annotation such as <main+0x14>",
+      "match": "(<)([^>\\r\\n]+?)(?:(\\+)(0x[0-9a-fA-F]+))?(>)",
+      "captures": {
+        "1": { "name": "punctuation.definition.tag.lst" },
+        "2": { "name": "entity.name.function.lst" },
+        "3": { "name": "keyword.operator.lst" },
+        "4": { "name": "constant.numeric.hex.lst" },
+        "5": { "name": "punctuation.definition.tag.lst" }
+      }
+    },
+    "c-source-fragments": {
+      "patterns": [
+        {
+          "comment": "multi-line C block comment in --source output",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "name": "comment.block.lst"
+        },
+        {
+          "comment": "C++ line comment in --source output",
+          "match": "//.*",
+          "name": "comment.line.double-slash.lst"
+        },
+        {
+          "comment": "string literal in --source output",
+          "match": "\"(?:[^\"\\\\]|\\\\.)*\"?",
+          "name": "string.quoted.double.lst"
+        },
+        {
+          "comment": "hex or decimal number in --source output",
+          "match": "\\b(?:0[xX][0-9a-fA-F]+|\\d+)\\b",
+          "name": "constant.numeric.lst"
+        }
+      ]
+    }
+  }
+}

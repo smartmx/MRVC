@@ -2,7 +2,7 @@
   "name": "mrvc",
   "displayName": "MRVC",
   "description": "Unofficial, independent project — not developed or supported by WCH or MounRiver. MRVC opens, configures and builds MounRiver (MRS) projects for WCH MCUs directly in VSCode; for development and debugging use.",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "publisher": "smartmx",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -33,7 +33,8 @@
   ],
   "activationEvents": [
     "onView:mrvc.projectExplorer",
-    "onCommand:mrvc.openProject"
+    "onCommand:mrvc.openProject",
+    "onLanguage:mrvc-qingke"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -139,7 +140,7 @@
         "mrvc.intellisense.cachePath": {
           "type": "string",
           "default": "",
-          "description": "Automatically write C_Cpp.intelliSenseCachePath into every workspace's .vscode/settings.json (a workspace value overrides the user-level one), so the cpptools ipch cache lands on a drive of your choice instead of filling C:. Use a directory OUTSIDE any opened project folder (e.g. F:\\mrvc-cache); pair with mrvc.intellisense.cacheSize to cap it. Empty = the path key is not written (the size key still is, unless mrvc.intellisense.cacheSize is 0). Clear the cache any time with the MRVC: Clear C/C++ IntelliSense Cache command. / 自动把 C_Cpp.intelliSenseCachePath 写入各工作区的 .vscode/settings.json（工作区值覆盖用户级配置），让 cpptools 的 ipch 缓存落到指定盘符而不是撑满 C 盘。请填写任何已打开工程文件夹之外的目录（如 F:\\mrvc-cache），并建议配合 mrvc.intellisense.cacheSize 限容；留空 = 不写路径键（size 键仍会写入，除非 mrvc.intellisense.cacheSize 填 0）。随时可用 MRVC: Clear C/C++ IntelliSense Cache 命令清缓存。",
+          "description": "Automatically write C_Cpp.intelliSenseCachePath into every workspace's .vscode/settings.json (a workspace value overrides the user-level one), so the cpptools ipch cache lands on a drive of your choice instead of filling C:. Use a directory OUTSIDE any opened project folder (e.g. F:\\mrvc-cache); pair with mrvc.intellisense.cacheSize to cap it. Empty = cache governance is OFF — NEITHER key is written. Clear the cache any time with the MRVC: Clear C/C++ IntelliSense Cache command. / 自动把 C_Cpp.intelliSenseCachePath 写入各工作区的 .vscode/settings.json（工作区值覆盖用户级配置），让 cpptools 的 ipch 缓存落到指定盘符而不是撑满 C 盘。请填写任何已打开工程文件夹之外的目录（如 F:\\mrvc-cache），并建议配合 mrvc.intellisense.cacheSize 限容；留空 = 缓存治理整体关闭，两个键都不写。随时可用 MRVC: Clear C/C++ IntelliSense Cache 命令清缓存。",
           "order": 1
         },
         "mrvc.intellisense.cacheSize": {
@@ -147,7 +148,7 @@
           "default": 5120,
           "minimum": 0,
           "multipleOf": 1,
-          "description": "Automatically write C_Cpp.intelliSenseCacheSize into every workspace's .vscode/settings.json (a workspace value overrides the user-level one), pinning the cpptools ipch cache disk cap in MB. Default 5120 — the same value as cpptools' own default — so the cap is pinned explicitly in the workspace regardless of user-side changes. 0 = MRVC never touches this key. Pair with mrvc.intellisense.cachePath to relocate the cache as well. / 自动把 C_Cpp.intelliSenseCacheSize 写入各工作区的 .vscode/settings.json（工作区值覆盖用户级配置），显式固定 cpptools ipch 缓存的磁盘上限（MB）。默认 5120——与 cpptools 通用默认一致，写入工作区后不受用户侧改动影响。0 = MRVC 不触碰此键。可与 mrvc.intellisense.cachePath 搭配搬移缓存位置。",
+          "description": "Automatically write C_Cpp.intelliSenseCacheSize into every workspace's .vscode/settings.json (a workspace value overrides the user-level one), pinning the cpptools ipch cache disk cap in MB. Default 5120 — the same value as cpptools' own default. ONLY takes effect when mrvc.intellisense.cachePath is set — with cachePath empty MRVC writes NEITHER key. 0 = the size key is not written. / 自动把 C_Cpp.intelliSenseCacheSize 写入各工作区的 .vscode/settings.json（工作区值覆盖用户级配置），显式固定 cpptools ipch 缓存的磁盘上限（MB）。默认 5120——与 cpptools 通用默认一致。**仅在 mrvc.intellisense.cachePath 已设置时生效**——cachePath 留空时 MRVC 两个键都不写。0 = 不写此键。",
           "order": 1
         },
         "mrvc.build.analysis": {
@@ -261,6 +262,44 @@
         }
       }
     },
+    "languages": [
+      {
+        "id": "mrvc-qingke",
+        "aliases": [
+          "MRVC QingKe"
+        ],
+        "configuration": "./syntaxes/qingke-risc-v-language-configuration.json"
+      },
+      {
+        "id": "mrvc-objdump-lst",
+        "aliases": [
+          "MRVC Disassembly Listing"
+        ]
+      },
+      {
+        "id": "mrvc-ld-map",
+        "aliases": [
+          "MRVC GNU LD Map"
+        ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mrvc-qingke",
+        "scopeName": "source.mrvc-qingke",
+        "path": "./syntaxes/qingke-risc-v.tmLanguage"
+      },
+      {
+        "language": "mrvc-objdump-lst",
+        "scopeName": "source.mrvc-lst",
+        "path": "./syntaxes/qingke-objdump-lst.tmLanguage.json"
+      },
+      {
+        "language": "mrvc-ld-map",
+        "scopeName": "source.mrvc-ld-map",
+        "path": "./syntaxes/gnu-ld-map.tmLanguage.json"
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
@@ -831,62 +870,62 @@
         {
           "command": "mrvc.searchInAllProjects",
           "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
-          "group": "3_search@1"
+          "group": "0_search@1"
         },
         {
           "command": "mrvc.syncSettings",
           "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
-          "group": "4_sync@1"
+          "group": "3_sync@1"
         },
         {
           "command": "mrvc.batchMacros",
           "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
-          "group": "4_sync@2"
+          "group": "3_sync@2"
         },
         {
           "command": "mrvc.generateSolution",
           "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
-          "group": "4_sync@3"
+          "group": "3_sync@3"
         },
         {
           "command": "mrvc.flashUtility",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.tool.linkUtility",
-          "group": "5_tools@1"
+          "when": "view == mrvc.projectExplorer && mrvc.tool.linkUtility",
+          "group": "4_tools@1"
         },
         {
           "command": "mrvc.ispTool",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.tool.ispStudio",
-          "group": "5_tools@2"
+          "when": "view == mrvc.projectExplorer && mrvc.tool.ispStudio",
+          "group": "4_tools@2"
         },
         {
           "command": "mrvc.touchkeyTool",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.tool.touchkey",
-          "group": "5_tools@3"
+          "when": "view == mrvc.projectExplorer && mrvc.tool.touchkey",
+          "group": "4_tools@3"
         },
         {
           "command": "mrvc.uiDesigner",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.tool.uiDesigner",
-          "group": "5_tools@4"
+          "when": "view == mrvc.projectExplorer && mrvc.tool.uiDesigner",
+          "group": "4_tools@4"
         },
         {
           "command": "mrvc.hexBinTool",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.tool.hexBinStudio",
-          "group": "5_tools@5"
+          "when": "view == mrvc.projectExplorer && mrvc.tool.hexBinStudio",
+          "group": "4_tools@5"
         },
         {
           "command": "mrvc.comTransmit",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.tool.comTransmit",
-          "group": "5_tools@6"
+          "when": "view == mrvc.projectExplorer && mrvc.tool.comTransmit",
+          "group": "4_tools@6"
         },
         {
           "command": "mrvc.wchToolKit",
-          "when": "view == mrvc.projectExplorer && mrvc.hasProjects && mrvc.mrs3Active && mrvc.tool.wchToolKit",
-          "group": "5_tools@7"
+          "when": "view == mrvc.projectExplorer && mrvc.mrs3Active && mrvc.tool.wchToolKit",
+          "group": "4_tools@7"
         },
         {
           "command": "mrvc.sdiPrintMonitor",
           "when": "view == mrvc.projectExplorer && mrvc.hasProjects",
-          "group": "5_tools@8"
+          "group": "4_tools@8"
         },
         {
           "command": "mrvc.createProject",
@@ -901,17 +940,17 @@
         {
           "command": "mrvc.exportMcp",
           "when": "view == mrvc.projectExplorer",
-          "group": "7_settings@1"
+          "group": "5_settings@1"
         },
         {
           "command": "mrvc.clearIntelliSenseCache",
           "when": "view == mrvc.projectExplorer",
-          "group": "7_settings@2"
+          "group": "5_settings@2"
         },
         {
           "command": "mrvc.openSettings",
           "when": "view == mrvc.projectExplorer",
-          "group": "7_settings@3"
+          "group": "5_settings@3"
         }
       ],
       "view/item/context": [
@@ -1483,6 +1522,11 @@
       {
         "command": "mrvc.searchInProject",
         "key": "ctrl+h",
+        "when": "mrvc.hasActiveProject"
+      },
+      {
+        "command": "mrvc.searchInAllProjects",
+        "key": "ctrl+shift+h",
         "when": "mrvc.hasActiveProject"
       }
     ],

@@ -199,6 +199,13 @@ const WHITELIST = [
   /^extension\/out\/extension\.js$/,
   /^extension\/out\/extension\.js\.map$/,
   /^extension\/mcp\/mcp-server\.js$/, // stdio MCP server (0.3.6, own folder) — no map on purpose
+  // RISC-V assembly grammar (0.3.8, MRVC's own — instruction/CSR data from
+  // the open ISA + QingKe manuals) plus the build-artifact grammars (lst /
+  // ld map, 0.3.8 clean-room too) — purely declarative, no activation cost
+  /^extension\/syntaxes\/qingke-risc-v\.tmLanguage$/,
+  /^extension\/syntaxes\/qingke-risc-v-language-configuration\.json$/,
+  /^extension\/syntaxes\/qingke-objdump-lst\.tmLanguage\.json$/,
+  /^extension\/syntaxes\/gnu-ld-map\.tmLanguage\.json$/,
   /^extension\/resources\/icon\.png$/,
   /^extension\/media\/[a-z_]+\.svg$/,
   // the koffi runtime: JS entry + its subtree, POSIX prebuilds included

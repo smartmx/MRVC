@@ -73,7 +73,7 @@ if (MRS3_ROOT) {
   const cmd = pkg.contributes.commands.find((c) => c.command === 'mrvc.wchToolKit');
   check('menu: the mrvc.wchToolKit command is declared', !!cmd && typeof cmd.title === 'string');
   const item = pkg.contributes.menus['view/title'].find((m) => m.command === 'mrvc.wchToolKit');
-  check('menu: it lives in the tools group of the view title menu', !!item && item.group === '5_tools@7');
+  check('menu: it lives in the tools group of the view title menu', !!item && item.group === '4_tools@7');
   check('menu: shown only when MRS3 is the active installation', !!item && item.when.includes('mrvc.mrs3Active'));
   const nls = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.nls.json'), 'utf-8'));
   const nlsZh = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.nls.zh-cn.json'), 'utf-8'));

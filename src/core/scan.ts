@@ -372,12 +372,13 @@ export function scanSources(cp: Cproject, opts?: { includeExcluded?: boolean }):
     } catch {
       /* unreadable root — keep the entry's own spelling */
     }
-    // a named entry whose top-level directory is itself logically REMOVED
-    // (filteredResources) is skipped whole — recursion would only surface
-    // unreadable directories under the removed tree (symmetry with the
-    // linked walk's removal skip; round26 follow-up)
+    // a named entry whose top-level directory is an output directory or
+    // logically REMOVED (filteredResources) is skipped whole — output dirs
+    // never contribute compiled sources, and removed trees must not surface
+    // unreadable directories (round26 follow-up)
+    if (configNames.has(fold(segs[0]))) continue;
     if (isRemoved(base)) continue;
-    walk(dir, dir, base, entry.excluding, configNames, isCpp, addFile, [], includeExcluded, scanErrors, isRemoved);
+    walk(dir, dir, base, entry.excluding, new Set<string>(), isCpp, addFile, [], includeExcluded, scanErrors, isRemoved);
   }
 
   // 2. linked folders, always scanned (MRS scans basic.linkedFolders)
@@ -411,7 +412,7 @@ export function scanSources(cp: Cproject, opts?: { includeExcluded?: boolean }):
       }
     }
     const tokens = [...rootTokens.filter((t) => !(fold(t) === fold(name) && named.has(fold(name)))), ...linkedTokens];
-    walk(target, target, name, tokens, configNames, isCpp, addFile, [], includeExcluded, scanErrors, isRemoved);
+    walk(target, target, name, tokens, linkedOutputNames(target), isCpp, addFile, [], includeExcluded, scanErrors, isRemoved);
   }
   inLinkedWalk = false;
 
@@ -473,7 +474,10 @@ function walk(
     }
     if (excludedHere && !includeExcluded) continue;
     if (ent.isDirectory()) {
-      if (ent.name.startsWith('.') || SKIP_DIRS.has(ent.name) || configNames.has(fold(ent.name))) continue;
+      // Output directories sit directly at the physical walk root (`dir === fsRoot`
+      // — projectRoot or linked-project root); nested source subdirectories (e.g.
+      // `User/obj` or `Lib/Vendor/obj`) must remain scannable.
+      if (ent.name.startsWith('.') || SKIP_DIRS.has(ent.name) || (dir === fsRoot && configNames.has(fold(ent.name)))) continue;
       if (skipSubtree?.(logic)) continue; // logically removed — do not descend
       walk(fsRoot, full, logic, excluded, configNames, isCpp, add, logicBases, includeExcluded, errors, skipSubtree);
     } else if (ent.isFile()) {
@@ -553,6 +557,44 @@ export function exclusionTokens(cp: Cproject): ExclusionTokens {
     }
   }
   return { rootTokens, dirTokens };
+}
+
+/** Configuration output directory names of a linked folder when its target
+ *  is itself a CDT/MRS project root (has a parseable `.cproject`, regardless
+ *  of `.wvproj`); plain non-project linked directories return an empty set. */
+function linkedOutputNames(target: string): Set<string> {
+  if (!fs.existsSync(path.join(target, '.cproject'))) return new Set<string>();
+  try {
+    return new Set(Cproject.load(target, { repairProject: false }).configurationNames.map((n) => fold(n)));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+/**
+ * True when `logic` points to (or inside) a top-level configuration output
+ * directory on disk (or the output directory of a linked `.cproject` project).
+ */
+export function isOutputDirLogicPath(cp: Cproject, logic: string): boolean {
+  const norm = toPosix(logic).replace(/^\/+/, '');
+  if (!norm) return false;
+  const top = norm.includes('/') ? norm.slice(0, norm.indexOf('/')) : norm;
+  const target = findLink(cp, top);
+  if (target) {
+    const child = norm.includes('/') ? norm.slice(top.length + 1).split('/')[0] : '';
+    if (!child || !linkedOutputNames(target).has(fold(child))) return false;
+    try {
+      return fs.lstatSync(path.join(target, child)).isDirectory();
+    } catch {
+      return true;
+    }
+  }
+  if (!cp.configurationNames.some((n) => fold(n) === fold(top))) return false;
+  try {
+    return fs.lstatSync(path.join(cp.projectRoot, top)).isDirectory();
+  } catch {
+    return true;
+  }
 }
 
 /**

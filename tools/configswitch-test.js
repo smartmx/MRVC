@@ -822,6 +822,37 @@ if (!realSrc) {
   );
 }
 
+// --- review P1: a configuration name IS its output directory name — adding
+// or renaming onto an EXISTING project directory is refused (the batch
+// delete-output commands would otherwise recursive-delete real sources)
+{
+  const pOcc = makeProject(path.join(scratch, 'occupied'), ['obj']);
+  fs.mkdirSync(path.join(pOcc, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(pOcc, 'src', 'main.c'), 'int main(void){return 0;}\n');
+  let threwAdd = '';
+  try {
+    addConfiguration(pOcc, 'src', 'obj');
+  } catch (e) {
+    threwAdd = String(e.message || e);
+  }
+  check(
+    'occupied: adding a config named like an existing directory is refused',
+    threwAdd.includes('already exists') && threwAdd.includes('output directory'),
+    threwAdd.slice(0, 140)
+  );
+  let threwRen = '';
+  try {
+    renameConfiguration(pOcc, 'obj', 'src');
+  } catch (e) {
+    threwRen = String(e.message || e);
+  }
+  check('occupied: renaming onto an existing directory is refused', threwRen.includes('already exists'), threwRen.slice(0, 140));
+  check(
+    'occupied: nothing written — config list intact, sources intact',
+    JSON.stringify(listConfigurations(pOcc)) === '["obj"]' && fs.existsSync(path.join(pOcc, 'src', 'main.c'))
+  );
+}
+
 if (failures > 0) {
   console.log(`\n${failures} FAILED`);
   process.exit(1);

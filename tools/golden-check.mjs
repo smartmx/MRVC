@@ -135,7 +135,7 @@ for (const proj of projects) {
   // a fixed riscv-none-elf- prefix was an analysis artifact that inflated
   // the HarmonyOS diff list)
   const goldenTc = TcFor(inferPrefixFromGolden(goldenMakefile));
-  const res = generateMakefiles(cp, goldenTc, { headerTool: `MRS Version: ${verStr}`, mrs2Style, autoMathLib });
+  const res = generateMakefiles(cp, goldenTc, { headerTool: `MRS Version: ${verStr}`, mrs2Style, autoMathLib, goldenSizTarget: true });
 
   const goldenDir = path.join(proj, 'obj');
   const files = ['makefile', 'sources.mk', 'objects.mk', ...res.dirs.filter(Boolean).map((d) => `${d}/subdir.mk`)];

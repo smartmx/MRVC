@@ -121,6 +121,11 @@ const { prepareFlash } = require('../out/core/flash.js');
   fs.mkdirSync(dir, { recursive: true });
   const cfg = inside(dir, 'board.cfg');
   fs.writeFileSync(cfg, '# cfg\n');
+  // prepareFlash's gate (round3 P1) opens the image and validates the HEX
+  // structure — the fixture must ship a real, minimal, valid Intel HEX or
+  // the plan is refused before any escaping is exercised
+  fs.mkdirSync(inside(dir, 'CH32[v2]$x'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'CH32[v2]$x', 'app.hex'), ':0400000021436587AC\n:00000001FF\n');
 
   // bracketed path: the metacharacters must land escaped
   const plan = prepareFlash({
@@ -145,19 +150,23 @@ const { prepareFlash } = require('../out/core/flash.js');
     fwFragment
   );
 
-  // normal path: byte-stable (plain quoted, forward slashes)
+  // normal path: byte-stable (plain quoted, forward slashes) — the gate
+  // needs a real image here too
+  const normalFw = path.join(dir, 'normal', 'app.hex');
+  fs.mkdirSync(path.join(dir, 'normal'), { recursive: true });
+  fs.writeFileSync(normalFw, ':0400000021436587AC\n:00000001FF\n');
   const plan2 = prepareFlash({
     buildDir: dir,
     address: '0x00000000',
     verify: true,
     reset: true,
     boardCfg: cfg,
-    firmware: 'C:/Work/app.hex',
+    firmware: normalFw,
     eraseAll: false,
     banks: 1,
   });
   const script2 = fs.readFileSync(plan2.scriptPath, 'utf8');
-  check('tcl: a normal path stays byte-stable (plain quoted)', script2.includes('"C:/Work/app.hex"'), script2.split('\n').find((l) => l.includes('app.hex')));
+  check('tcl: a normal path stays byte-stable (plain quoted)', script2.includes(`"${normalFw.replace(/\\/g, '/')}"`), script2.split('\n').find((l) => l.includes('app.hex')));
 
   // line breaks are refused outright
   let threw = false;
@@ -234,20 +243,26 @@ const { buildPsScript, buildPsFirmwareCheckScript } = require('../out/core/wlink
 
 const out = require('../out/core/output.js');
 {
+  // the ownership anchor every probe directory needs (the claimed-set model
+  // gates ANY deletion on a generated makefile naming the target)
+  const GEN = '# Automatically-generated file. Do not edit!';
+  const writeAnchor = (dir) => fs.writeFileSync(path.join(dir, 'makefile'), `${GEN}\nall: app.elf\napp.elf: main.o\n`);
+
   const proj = inside(ROOT, 'ws/proj');
   fs.mkdirSync(inside(proj, 'obj'), { recursive: true });
   fs.writeFileSync(inside(proj, 'obj/keep.hex'), 'x');
   fs.writeFileSync(inside(proj, 'obj/gone.o'), 'x');
+  writeAnchor(inside(proj, 'obj'));
 
-  const cleared = out.clearOutputDir(proj, path.join(proj, 'obj'), ['keep.hex']);
-  check('output: a normal directory still clears (keep list honoured)', cleared === 1 && fs.existsSync(inside(proj, 'obj/keep.hex')), String(cleared));
+  const cleared = out.clearOutputDir(proj, path.join(proj, 'obj'), ['keep.hex'], 'app', ['gone.o']);
+  check('output: a normal directory still clears (keep list honoured)', cleared.removed === 1 && fs.existsSync(inside(proj, 'obj/keep.hex')), JSON.stringify(cleared));
 
   // case-mismatched spelling must not read as "outside the project" (win32)
   if (process.platform === 'win32') {
     const upper = path.join(path.dirname(proj), path.basename(proj).toUpperCase(), 'obj');
     let caseOk = false;
     try {
-      out.clearOutputDir(proj, upper);
+      out.clearOutputDir(proj, upper, ['keep.hex'], 'app', ['makefile']);
       caseOk = true;
     } catch (e) {
       caseOk = false;
@@ -258,7 +273,7 @@ const out = require('../out/core/output.js');
   // outside the project is still refused
   let refused = false;
   try {
-    out.clearOutputDir(proj, path.join(ROOT, 'elsewhere'));
+    out.clearOutputDir(proj, path.join(ROOT, 'elsewhere'), [], 'app', ['makefile']);
   } catch (e) {
     refused = /outside the project root/.test(e instanceof Error ? e.message : String(e));
   }
@@ -284,7 +299,7 @@ const out = require('../out/core/output.js');
   if (made) {
     let linkRefused = false;
     try {
-      out.clearOutputDir(proj, linkDir);
+      out.clearOutputDir(proj, linkDir, [], 'app', ['makefile']);
     } catch (e) {
       // the leaf junction can be caught by either guard: the real-path
       // re-verification ("resolves outside ... through a link") fires first,
@@ -315,7 +330,7 @@ const out = require('../out/core/output.js');
     if (made) {
       let ancestorRefused = false;
       try {
-        out.clearOutputDir(proj, path.join(subLink, 'obj'));
+        out.clearOutputDir(proj, path.join(subLink, 'obj'), [], 'app', ['makefile']);
       } catch (e) {
         ancestorRefused = /outside the project root/.test(e instanceof Error ? e.message : String(e));
       }
@@ -341,7 +356,7 @@ const out = require('../out/core/output.js');
         const sentinel = inside(proj, 'self-survival.txt');
         fs.writeFileSync(sentinel, 'x');
         try {
-          out.clearOutputDir(proj, path.join(backLink, path.basename(proj)));
+          out.clearOutputDir(proj, path.join(backLink, path.basename(proj)), [], 'app', ['makefile']);
         } catch (e) {
           selfRefused = /outside the project root/.test(e instanceof Error ? e.message : String(e));
         }
@@ -358,8 +373,9 @@ const out = require('../out/core/output.js');
   // follow-up review: a RELATIVE dir resolves against the PROJECT, not cwd
   fs.mkdirSync(inside(proj, 'rel/obj'), { recursive: true });
   fs.writeFileSync(inside(proj, 'rel/obj/a.o'), 'x');
-  const relCleared = out.clearOutputDir(proj, path.join('rel', 'obj'));
-  check('output: a relative dir resolves against the project root (not cwd)', relCleared === 1, String(relCleared));
+  writeAnchor(inside(proj, 'rel/obj'));
+  const relCleared = out.clearOutputDir(proj, path.join('rel', 'obj'), [], 'app', ['a.o']);
+  check('output: a relative dir resolves against the project root (not cwd)', relCleared.removed === 1, JSON.stringify(relCleared));
 }
 
 // ---- H3②: cmake export escaping ---------------------------------------------

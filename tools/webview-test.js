@@ -9,21 +9,48 @@ const Module = require('module');
 const path = require('path');
 const fs = require('fs');
 
-const stubPanel = {
-  html: '',
-  title: '',
-  visible: true,
-  reveal() {},
-  dispose() {},
-  onDidDispose() { return { dispose() {} }; },
-  webview: {
-    onDidReceiveMessage() { return { dispose() {} }; },
-    postMessage() { return Promise.resolve(true); },
-  },
+// each createWebviewPanel() yields a FRESH panel (multi-session Properties):
+// `stubPanel` always points at the newest one, `panels` keeps every panel
+let stubPanel;
+const panels = [];
+const makePanel = () => {
+  const p = {
+    title: '',
+    revealCount: 0,
+    disposed: false,
+    reveal() {
+      this.revealCount++;
+    },
+    dispose() {
+      if (this.disposed) return;
+      this.disposed = true;
+      for (const cb of this._disposeCbs.splice(0)) cb();
+    },
+    _disposeCbs: [],
+    onDidDispose(cb) {
+      this._disposeCbs.push(cb);
+      return { dispose() {} };
+    },
+    webview: {
+      _handlers: [],
+      _posted: [],
+      onDidReceiveMessage(cb) {
+        this._handlers.push(cb);
+        return { dispose() {} };
+      },
+      postMessage(msg) {
+        this._posted.push(msg);
+        return Promise.resolve(true);
+      },
+    },
+  };
+  panels.push(p);
+  stubPanel = p;
+  return p;
 };
 const vscodeStub = {
   window: {
-    createWebviewPanel: () => stubPanel,
+    createWebviewPanel: makePanel,
     showErrorMessage: () => undefined,
     showInformationMessage: () => undefined,
     showWarningMessage: () => undefined,
@@ -109,8 +136,8 @@ const { ConfigView } = require(path.join(__dirname, '..', 'out', 'vscode', 'conf
 const { FIELDS } = require('../out/vscode/configView.js');
 
 let failures = 0;
-const check = (name, cond) => {
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
+const check = (name, cond, extra) => {
+  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond || extra === undefined ? '' : ` | ${extra}`}`);
   if (!cond) failures++;
 };
 
@@ -135,6 +162,24 @@ const realCp = Cproject.load(PROJ);
 const realTpl = readTemplate(PROJ);
 const realPf = readProjectFile(PROJ);
 const store = {
+  // multi-session wiring: ConfigView subscribes onDidChange and resolves
+  // sessions via get(root) — method shorthand so {...store} spreads (the
+  // dup/cpp sub-stores) keep resolving against their OWN active
+  _changeCbs: [],
+  onDidChange(cb) {
+    this._changeCbs.push(cb);
+    // a REAL unsubscription — a no-op dispose would make the "listener
+    // unregistered on dispose" assertion below vacuous
+    return {
+      dispose: () => {
+        const i = this._changeCbs.indexOf(cb);
+        if (i >= 0) this._changeCbs.splice(i, 1);
+      },
+    };
+  },
+  get(root) {
+    return root === this.active.root ? this.active : undefined;
+  },
   active: {
     root: PROJ,
     projectName: 'LED<x>"</script>', // hostile name: injection probe
@@ -154,6 +199,9 @@ const store = {
   all: [],
 };
 const ctx = { subscriptions: [], extensionUri: { fsPath: path.join(__dirname, '..') } };
+// minimal store for single-project ConfigView fixtures: the constructor only
+// requires an onDidChange subscription source (syncWithStore is never fired)
+const stubStore = (active) => ({ active, all: [], onDidChange: () => ({ dispose() {} }) });
 const view = new ConfigView(store, ctx);
 (async () => {
 await view.show(store.active);
@@ -200,7 +248,7 @@ await view.show(store.active);
     );
     check(
       'webview: saved re-baselines the dirty snapshot',
-      /e\.data\.command === 'saved'[\s\S]{0,400}pristine = JSON\.stringify/.test(html)
+      /e\.data\.command === 'saved'[\s\S]{0,400}rebaseAndFlash\(\)/.test(html) && /e\.data\.command === 'savedDl'[\s\S]{0,2000}rebaseAndFlash\(\)/.test(html)
     );
     // P3-3: empty Add/Rename input is reported, not silently dropped
     check('webview: empty configuration name shows an error', html.includes("'Name is required.'"));
@@ -250,6 +298,7 @@ await view.show(store.active);
     );
     if (dupCp && dupCp.duplicateConfigurationNames.length === 1) {
       const dupStore = {
+        onDidChange: () => ({ dispose() {} }), // never fired in this fixture
         active: {
           root: dupRoot,
           projectName: 'Dup',
@@ -278,6 +327,9 @@ await view.show(store.active);
         'dup: both rows render (same name, distinct indices)',
         (dupHtml.match(new RegExp(`class="cfgrow[^"]*" data-name="${dupCp.configurationNames[0]}" data-index="`, 'g')) || []).length === 2
       );
+      // unregister its store listener (shared _changeCbs array) so the
+      // multi-session block's exact `length === 0` assertion holds
+      dupView.dispose();
     }
   }
   // round-2 P3-1: Apply sends saveDl and save back to back. Only the property
@@ -1302,7 +1354,7 @@ await view.show(store.active);
       };
       const savedCreate = vscodeStub.window.createWebviewPanel;
       vscodeStub.window.createWebviewPanel = () => panelA;
-      const viewA = new ConfigView({ active: projA, all: [] }, ctx);
+      const viewA = new ConfigView(stubStore(projA), ctx);
       await viewA.show(projA);
       vscodeStub.window.createWebviewPanel = savedCreate;
       const ENUM = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.target.align.';
@@ -1362,7 +1414,7 @@ await view.show(store.active);
       };
       const savedCreate2 = vscodeStub.window.createWebviewPanel;
       vscodeStub.window.createWebviewPanel = () => panelC;
-      const viewC = new ConfigView({ active: projC, all: [] }, ctx);
+      const viewC = new ConfigView(stubStore(projC), ctx);
       await viewC.show(projC);
       vscodeStub.window.createWebviewPanel = savedCreate2;
       check('unknown enum: rendered as a selected "(current)" option', /<option value="futurechoice" selected>\(current\) futurechoice<\/option>/.test(panelC.webview.html));
@@ -1409,12 +1461,12 @@ await view.show(store.active);
       };
       const savedCreate3 = vscodeStub.window.createWebviewPanel;
       vscodeStub.window.createWebviewPanel = () => panelD;
-      const viewD = new ConfigView({ active: projD, all: [] }, ctx);
+      const viewD = new ConfigView(stubStore(projD), ctx);
       await viewD.show(projD);
       vscodeStub.window.createWebviewPanel = savedCreate3;
       // every control posts back the value it rendered — exactly what the
       // page does when the user clicks Apply without editing anything
-      const untouched = Object.fromEntries(viewD.initial);
+      const untouched = Object.fromEntries(viewD.initialFor(projD.root) ?? []);
       check('apply noop: snapshot covers the whole form', Object.keys(untouched).length > 100);
       for (const h of handlersD) h({ command: 'save', values: untouched });
       await new Promise((r) => setTimeout(r, 300));
@@ -1461,7 +1513,7 @@ await view.show(store.active);
       };
       const savedCreateE = vscodeStub.window.createWebviewPanel;
       vscodeStub.window.createWebviewPanel = () => panelE;
-      const viewE = new ConfigView({ active: projE, all: [] }, ctx);
+      const viewE = new ConfigView(stubStore(projE), ctx);
       await viewE.show(projE);
       vscodeStub.window.createWebviewPanel = savedCreateE;
       const savedErr = vscodeStub.window.showErrorMessage;
@@ -1561,7 +1613,7 @@ await view.show(store.active);
       };
       const savedCreateP = vscodeStub.window.createWebviewPanel;
       vscodeStub.window.createWebviewPanel = () => panelP;
-      const viewP = new ConfigView({ active: projP, all: [] }, ctx);
+      const viewP = new ConfigView(stubStore(projP), ctx);
       await viewP.show(projP);
       vscodeStub.window.createWebviewPanel = savedCreateP;
       const savedWarnP = vscodeStub.window.showWarningMessage;
@@ -1690,6 +1742,443 @@ await view.show(store.active);
     }
 
     fs.rmSync(scratch2, { recursive: true, force: true });
+
+    // ---- multi-session Properties panels (antigravity multiproperties) ----
+    {
+      const panelA = panels[0]; // view's first session (PROJ), created at the top
+      const n0 = panels.length;
+      // re-show of the ALREADY-OPEN project: reveal only — no new panel, the
+      // rendered HTML (and any unsaved edits it carries) stays untouched
+      const htmlA = panelA.webview.html;
+      const revealsBefore = panelA.revealCount;
+      await view.show(store.active);
+      check('multi: re-show of the open project adds no panel', panels.length === n0);
+      check('multi: re-show reveals without re-rendering', panelA.webview.html === htmlA && panelA.revealCount === revealsBefore + 1);
+      // a different project root gets its own panel and its own title
+      const projB = {
+        ...store.active,
+        root: PROJ + 'B',
+        projectName: 'LEDb',
+        buildDir: path.join(PROJ + 'B', 'obj'),
+        hexPath: path.join(PROJ + 'B', 'obj', 'x.hex'),
+      };
+      await view.show(projB);
+      const panelB = stubPanel;
+      check('multi: a second project gets its OWN panel', panels.length === n0 + 1 && panelB !== panelA);
+      check('multi: the second panel carries its own title', panelB.title === 'Properties - LEDb');
+      // 'close' through the panel's own message channel disposes it and drops
+      // the session — reopening then creates a FRESH panel
+      for (const h of panelB.webview._handlers) await h({ command: 'close' });
+      check('multi: close disposes the panel', panelB.disposed === true);
+      await view.show(projB);
+      const panelB2 = stubPanel;
+      check('multi: reopening after close creates a fresh panel', panels.length === n0 + 2 && !panelB2.disposed);
+      // store sync: the store no longer knows projB -> syncWithStore disposes
+      // the orphan panel(s); the project that IS in the store survives
+      for (const cb of store._changeCbs) cb();
+      check('multi: store removal disposed the orphan panel', panelB2.disposed === true);
+      check('multi: the surviving project panel is untouched', !panelA.disposed);
+      // duplicate project names -> folder hint in the title (EVT multi-project)
+      const projC = { ...store.active, root: PROJ + 'C' }; // same projectName as A
+      store.all = [store.active, projC];
+      const nBeforeC = panels.length;
+      await view.show(projC);
+      const panelC = stubPanel;
+      const hintC = path.basename(PROJ + 'C'); // folder name differs from the project name -> hint = folder
+      check(
+        'multi: duplicate project names get a folder hint in the title',
+        panels.length === nBeforeC + 1 && panelC.title.endsWith(`(${hintC})`),
+        `panels=${panels.length} title=${JSON.stringify(panelC.title)}`
+      );
+      store.all = [];
+
+      // ---- configuration-identity gate (review P2): after an EXTERNAL
+      // configuration switch (MRS / MCP reordered .cproject), the still-open
+      // panel renders the OLD configuration — Apply must refuse instead of
+      // writing the drafts into the NEW active one ----
+      {
+        const cfgA = path.join(__dirname, '..', '.scratch', 'cfgid');
+        fs.rmSync(cfgA, { recursive: true, force: true });
+        fs.mkdirSync(cfgA, { recursive: true });
+        for (const f of ['.project', '.template']) {
+          const s = path.join(PROJ, f);
+          if (fs.existsSync(s)) fs.copyFileSync(s, path.join(cfgA, f));
+        }
+        // duplicate the config block, then rename the ROW-1 copy via our own
+        // core API (row-indexed — regex surgery would hit the wrong name=),
+        // so the fixture has two distinct configurations (the PROJ tree
+        // ships only one)
+        const cpRaw = fs.readFileSync(path.join(PROJ, '.cproject'), 'utf-8');
+        const mBlock = cpRaw.match(/<cconfiguration\b[\s\S]*?<\/cconfiguration>/);
+        if (mBlock) {
+          const block = mBlock[0];
+          const second = block.replace(/(id="[^"]*?)(\d*)"/g, (all, head, num) => `${head}${num}9"`);
+          const at = cpRaw.indexOf(block) + block.length;
+          fs.writeFileSync(path.join(cfgA, '.cproject'), cpRaw.slice(0, at) + '\n\t' + second + cpRaw.slice(at), 'utf-8');
+        }
+        const cpCfg = Cproject.load(cfgA);
+        const namesCfg = cpCfg.configurationNames;
+        if (namesCfg.length > 1) {
+          const { renameConfiguration, switchConfiguration: switchCfg } = require('../out/core/configSwitch.js');
+          renameConfiguration(cfgA, namesCfg[0], 'dbg', 1);
+          const namesNow = Cproject.load(cfgA).configurationNames;
+          const projCfg = {
+            root: cfgA,
+            projectName: 'Cfg',
+            projectDisplayName: 'Cfg',
+            buildDir: path.join(cfgA, namesCfg[0]),
+            hexPath: path.join(cfgA, namesCfg[0], 'x.hex'),
+            kernel: undefined,
+            template: readTemplate(cfgA),
+            cproject: Cproject.load(cfgA),
+            projectFile: readProjectFile(cfgA),
+            toolchain: () => null,
+            logicPathOf: () => undefined,
+            reload() {
+              this.cproject = Cproject.load(cfgA);
+              this.template = readTemplate(cfgA);
+            },
+          };
+          const viewCfg = new ConfigView(stubStore(projCfg), ctx);
+          await viewCfg.show(projCfg);
+          const panelCfg = stubPanel;
+          // EXTERNAL switch: reorder .cproject so the OTHER configuration
+          // becomes active (what an MCP mrvc_switch / MRS save would do)
+          switchCfg(cfgA, namesNow[1]);
+          projCfg.reload();
+          const untouchedCfg = Object.fromEntries(viewCfg.initialFor(cfgA) ?? []);
+          const bytesBefore = fs.readFileSync(path.join(cfgA, '.cproject'));
+          for (const h of panelCfg.webview._handlers) await h({ command: 'save', values: untouchedCfg });
+          await new Promise((r) => setTimeout(r, 300));
+          check(
+            'cfgid: Apply after an EXTERNAL config switch is refused (no silent rewrite)',
+            fs.readFileSync(path.join(cfgA, '.cproject')).equals(bytesBefore) && !panelCfg.webview._posted.some((m) => m.command === 'saved'),
+            JSON.stringify(panelCfg.webview._posted).slice(0, 120)
+          );
+          // the offered reload path re-baselines — a second Apply then writes
+          for (const h of panelCfg.webview._handlers) await h({ command: 'save', values: untouchedCfg });
+          await new Promise((r) => setTimeout(r, 300));
+          // the stub dialog picks nothing (= cancel) — still untouched after
+          // the second refusal
+          check(
+            'cfgid: repeated Apply stays refused until the page is reloaded',
+            fs.readFileSync(path.join(cfgA, '.cproject')).equals(bytesBefore)
+          );
+          // re-base the session onto the externally switched configuration:
+          // the modal returns the RELOAD choice once — the re-render records
+          // the NEW active configuration's fingerprint, so the saveDl
+          // sequence below passes the identity gate
+          const savedWarn = vscodeStub.window.showWarningMessage;
+          vscodeStub.window.showWarningMessage = async () => 'Reload the page (discard these edits)';
+          for (const h of panelCfg.webview._handlers) await h({ command: 'save', values: untouchedCfg });
+          await new Promise((r) => setTimeout(r, 300));
+          vscodeStub.window.showWarningMessage = savedWarn;
+
+          // round3 P2: saveDl commits only fields the user actually CHANGED —
+          // an external .template edit (another window's Target Path save)
+          // survives a saveDl whose form still carries the render-time value
+          const tplFile = path.join(cfgA, '.template');
+          const tplBeforeText = fs.readFileSync(tplFile, 'utf8');
+          const renderedTarget = (tplBeforeText.match(/Target Path[ \t]*=[ \t]*(.+)/) || [])[1] || 'obj/x.hex';
+          // NOTE: the external overwrite below touches ONLY Target Path — the
+          // Erase All sequence later needs its render-time value intact so
+          // the three posted states never collide with the baseline
+          fs.writeFileSync(tplFile, tplBeforeText.replace(/Target Path[ \t]*=[ \t]*.+/, 'Target Path = obj\\EXT.elf'));
+          const dlValues = {
+            Address: '0x00000000',
+            'Flash Type': 'Internal',
+            CLKSpeed: '1',
+            'Target Path': renderedTarget, // the RENDER-time value — externally overwritten meanwhile
+            eraseAll: 'true', // flip to true this round
+            program: 'true',
+            verify: 'true',
+            reset: 'true',
+            sdiPrintf: 'false',
+            disableCodeProtect: 'false',
+            clearCodeFlash: 'false',
+            disablePower: 'false',
+          };
+          for (const h of panelCfg.webview._handlers) await h({ command: 'saveDl', values: dlValues });
+          await new Promise((r) => setTimeout(r, 300));
+          const tplAfter = fs.readFileSync(tplFile, 'utf8');
+          check('cfgid: saveDl commits the field the user changed (Erase All=true)', /Erase All[ \t]*=[ \t]*true/.test(tplAfter), tplAfter.slice(0, 200));
+
+          // round4 P1: the saveDl baseline must REBASE after every commit —
+          // a second saveDl in the SAME panel that UNCHECKS a field has to
+          // write the new value, not skip it as "unchanged since first
+          // render" while the disk keeps the checked value from Apply #1
+          const mkDl = (eraseAll) => ({ ...dlValues, eraseAll });
+          for (const h of panelCfg.webview._handlers) await h({ command: 'saveDl', values: mkDl('false') });
+          await new Promise((r) => setTimeout(r, 300));
+          const tplMid = fs.readFileSync(tplFile, 'utf8');
+          check('cfgid: second saveDl UNCHECKS against the LAST commit (baseline rebased)', /Erase All[ \t]*=[ \t]*false/.test(tplMid), JSON.stringify(tplMid));
+          for (const h of panelCfg.webview._handlers) await h({ command: 'saveDl', values: mkDl('true') });
+          await new Promise((r) => setTimeout(r, 300));
+          const tplEnd = fs.readFileSync(tplFile, 'utf8');
+          check(
+            'cfgid: third saveDl CHECKS again against the last commit (disk follows the checkbox, not the first render)',
+            /Erase All[ \t]*=[ \t]*true/.test(tplEnd),
+            JSON.stringify(tplEnd)
+          );
+
+          // round5 P1: an EXTERNAL same-field edit survives TWO unedited
+          // Applies. The savedDl payload carries the merged disk values and
+          // the front-end refreshes its controls to them — the stale
+          // checkbox is corrected on the spot instead of being re-committed
+          // by the next Apply.
+          const tplFile5 = path.join(cfgA, '.template');
+          fs.writeFileSync(tplFile5, 'Erase All=false\r\nTarget Path=obj\\EXT.elf\r\n'); // external editor turns it OFF
+          const stalePosted = { ...mkDl('true') }; // the panel still shows true
+          for (const h of panelCfg.webview._handlers) await h({ command: 'saveDl', values: stalePosted });
+          await new Promise((r) => setTimeout(r, 300));
+          // the panel has been REFRESHED to false by the savedDl payload —
+          // simulate the corrected panel posting what it now SHOWS
+          for (const h of panelCfg.webview._handlers) await h({ command: 'saveDl', values: { ...mkDl('false') } });
+          await new Promise((r) => setTimeout(r, 300));
+          const tpl5 = fs.readFileSync(tplFile5, 'utf8');
+          check(
+            'cfgid: TWO applies after an external OFF keep the disk OFF (controls refreshed by savedDl)',
+            /Erase All[ \t]*=[ \t]*false/.test(tpl5),
+            JSON.stringify(tpl5)
+          );
+          // and a genuine user check ON still lands (differs from baseline)
+          for (const h of panelCfg.webview._handlers) await h({ command: 'saveDl', values: mkDl('true') });
+          await new Promise((r) => setTimeout(r, 300));
+          const tpl5b = fs.readFileSync(tplFile5, 'utf8');
+          check('cfgid: the panel checking ON lands (user decision vs refreshed baseline)', /Erase All[ \t]*=[ \t]*true/.test(tpl5b), JSON.stringify(tpl5b));
+
+          // round6 P1-C: an external edit that REMOVES the key entirely —
+          // the display model renders it OFF, the next unedited Apply must
+          // NOT re-add the key to disk (twice), and a real user OFF→ON still
+          // writes it
+          const tplFile6 = path.join(cfgA, '.template');
+          fs.writeFileSync(tplFile6, 'Target Path=obj\\EXT.elf\r\nProgram=true\r\n'); // key REMOVED
+          for (const h of panelCfg.webview._handlers) await h({ command: 'saveDl', values: mkDl('true') }); // panel posts its stale true
+          await new Promise((r) => setTimeout(r, 300));
+          // savedDl refreshed the panel to OFF — the corrected panel posts OFF
+          for (const h of panelCfg.webview._handlers) await h({ command: 'saveDl', values: mkDl('false') });
+          await new Promise((r) => setTimeout(r, 300));
+          const tpl6 = fs.readFileSync(tplFile6, 'utf8');
+          check(
+            'cfgid: an externally REMOVED key is not re-added by no-op applies',
+            !/Erase All[ \t]*=/.test(tpl6),
+            JSON.stringify(tpl6)
+          );
+          // the refreshed panel shows OFF; a user checking ON writes the key
+          for (const h of panelCfg.webview._handlers) await h({ command: 'saveDl', values: mkDl('true') });
+          await new Promise((r) => setTimeout(r, 300));
+          const tpl6b = fs.readFileSync(tplFile6, 'utf8');
+          check('cfgid: checking ON after a removed key writes it back', /Erase All[ \t]*=[ \t]*true/.test(tpl6b), JSON.stringify(tpl6b));
+
+          viewCfg.dispose();
+        } else {
+          console.log('SKIP  cfgid (fixture project has a single configuration)');
+        }
+        fs.rmSync(cfgA, { recursive: true, force: true });
+      }
+
+      // ---- (review round7 P2-D) Target Path: the editable field shows the
+      // STORED .template value; the resolved target moves to a read-only
+      // hint. An unedited Apply no longer rewrites a stale cross-project
+      // Target Path into the project's own artifact ----
+      {
+        const dA = path.join(__dirname, '..', '.scratch', 'dl-target');
+        fs.rmSync(dA, { recursive: true, force: true });
+        fs.mkdirSync(dA, { recursive: true });
+        for (const f of ['.project', '.cproject', '.template']) {
+          const s = path.join(PROJ, f);
+          if (fs.existsSync(s)) fs.copyFileSync(s, path.join(dA, f));
+        }
+        // the MACRAW shape: a cross-project Target Path that does not exist,
+        // while the project's own artifact does
+        fs.mkdirSync(path.join(dA, 'obj'), { recursive: true });
+        fs.writeFileSync(path.join(dA, 'obj', 'self.hex'), 'firmware\n');
+        let tplText = fs.readFileSync(path.join(dA, '.template'), 'utf8');
+        tplText = /Target Path[ \t]*=/.test(tplText)
+          ? tplText.replace(/Target Path[ \t]*=.+/, 'Target Path = ../master/latest.hex')
+          : 'Target Path = ../master/latest.hex\r\n' + tplText;
+        fs.writeFileSync(path.join(dA, '.template'), tplText);
+        const projD = {
+          root: dA,
+          projectName: 'D',
+          projectDisplayName: 'D',
+          buildDir: path.join(dA, 'obj'),
+          hexPath: path.join(dA, 'obj', 'self.hex'),
+          kernel: undefined,
+          template: readTemplate(dA),
+          cproject: Cproject.load(dA),
+          projectFile: readProjectFile(dA),
+          toolchain: () => null,
+          logicPathOf: () => undefined,
+          reload() {
+            this.cproject = Cproject.load(dA);
+            this.template = readTemplate(dA);
+          },
+        };
+        const viewD = new ConfigView(stubStore(projD), ctx);
+        await viewD.show(projD);
+        const htmlD = stubPanel.webview.html;
+        const mInput = htmlD.match(/id="dl-target"[^>]*value="([^"]*)"/);
+        const mEff = htmlD.match(/id="dl-effective">([^<]*)</);
+        check('dl: the Target File input shows the STORED .template value', !!mInput && mInput[1] === '../master/latest.hex', JSON.stringify(mInput && mInput[1]));
+        check('dl: the effective target is a separate read-only hint', !!mEff && /self\.hex$/.test(mEff[1]), JSON.stringify(mEff && mEff[1]));
+        check('dl: the hint carries no data-dlkey (never collected)', !!mEff && !/<span id="dl-effective"[^>]*data-dlkey/.test(htmlD), JSON.stringify(mEff && mEff[1]));
+
+        // unedited Apply: the stale cross-project Target Path survives untouched
+        const dlD = {
+          Address: '0x08000000',
+          'Flash Type': 'Internal',
+          CLKSpeed: '1',
+          'Target Path': '../master/latest.hex', // exactly what the input shows
+          eraseAll: 'false',
+          program: 'true',
+          verify: 'true',
+          reset: 'false',
+          sdiPrintf: 'false',
+          disableCodeProtect: 'false',
+          clearCodeFlash: 'false',
+          disablePower: 'false',
+        };
+        for (const h of stubPanel.webview._handlers) await h({ command: 'saveDl', values: dlD });
+        await new Promise((r) => setTimeout(r, 300));
+        const tplAfterD = fs.readFileSync(path.join(dA, '.template'), 'utf8');
+        check('dl: an UNEDITED Apply keeps the stale cross-project Target Path', /Target Path[ \t]*=[ \t]*\.\.\/master\/latest\.hex/.test(tplAfterD), JSON.stringify(tplAfterD.slice(0, 200)));
+        const savedDlMsgs = stubPanel.webview._posted.filter((m) => m.command === 'savedDl');
+        check('dl: savedDl carries the effective target for the hint', savedDlMsgs.length >= 1 && typeof savedDlMsgs[0].effectiveTarget === 'string' && /self\.hex$/.test(savedDlMsgs[0].effectiveTarget), JSON.stringify(savedDlMsgs[0]));
+        // an explicit edit still writes (the only way the target changes here)
+        for (const h of stubPanel.webview._handlers) await h({ command: 'saveDl', values: { ...dlD, 'Target Path': 'obj/self.hex' } });
+        await new Promise((r) => setTimeout(r, 300));
+        const tplEdit = fs.readFileSync(path.join(dA, '.template'), 'utf8');
+        check('dl: an explicit edit writes the new target', /Target Path[ \t]*=[ \t]*obj(\/|\\)self\.hex/.test(tplEdit), JSON.stringify(tplEdit.slice(0, 200)));
+        viewD.dispose();
+
+        // ABSENT keys: a session that RENDERED without Target Path / Flash Type /
+        // DebugInterfaceMode / CLKSpeed must not add any of them on an unedited Apply
+        fs.writeFileSync(path.join(dA, '.template'), 'Address=0x08000000\r\n');
+        const projD2 = { ...projD, template: readTemplate(dA) };
+        projD2.reload = function () {
+          this.template = readTemplate(dA);
+        };
+        const viewD2 = new ConfigView(stubStore(projD2), ctx);
+        await viewD2.show(projD2);
+        const htmlD2 = stubPanel.webview.html;
+        const mInput2 = htmlD2.match(/id="dl-target"[^>]*value="([^"]*)"/);
+        const mEff2 = htmlD2.match(/id="dl-effective">([^<]*)</);
+        check('dl: an absent key renders an empty input (the hint still resolves)', !!mInput2 && mInput2[1] === '' && !!mEff2 && /self\.hex$/.test(mEff2[1]), JSON.stringify([mInput2 && mInput2[1], mEff2 && mEff2[1]]));
+        const dlMinimalPosted = { ...dlD, 'Target Path': '', DebugInterfaceMode: '0' };
+        for (const h of stubPanel.webview._handlers) await h({ command: 'saveDl', values: dlMinimalPosted });
+        await new Promise((r) => setTimeout(r, 300));
+        const tplAbsent = fs.readFileSync(path.join(dA, '.template'), 'utf8');
+        check(
+          'dl: an unedited Apply on absent keys does NOT add Target Path / Flash Type / DebugInterfaceMode / CLKSpeed',
+          !/Target Path[ \t]*=|Flash Type[ \t]*=|DebugInterfaceMode[ \t]*=|CLKSpeed[ \t]*=/.test(tplAbsent),
+          JSON.stringify(tplAbsent)
+        );
+        // an explicit user change on one absent key writes ONLY that key
+        for (const h of stubPanel.webview._handlers) await h({ command: 'saveDl', values: { ...dlMinimalPosted, CLKSpeed: '2' } });
+        await new Promise((r) => setTimeout(r, 300));
+        const tplClk = fs.readFileSync(path.join(dA, '.template'), 'utf8');
+        check(
+          'dl: explicitly editing CLKSpeed writes CLKSpeed=2 without inventing other absent keys',
+          /CLKSpeed[ \t]*=[ \t]*2/.test(tplClk) && !/Target Path[ \t]*=|Flash Type[ \t]*=|DebugInterfaceMode[ \t]*=/.test(tplClk),
+          JSON.stringify(tplClk)
+        );
+        viewD2.dispose();
+        fs.rmSync(dA, { recursive: true, force: true });
+      }
+
+      // ---- cross-panel Apply diff isolation (per-session baselines) ----
+      {
+        const isoA = path.join(__dirname, '..', '.scratch', 'apply-iso-a');
+        const isoB = path.join(__dirname, '..', '.scratch', 'apply-iso-b');
+        fs.rmSync(isoA, { recursive: true, force: true });
+        fs.rmSync(isoB, { recursive: true, force: true });
+        fs.cpSync(PROJ, isoA, { recursive: true });
+        fs.cpSync(PROJ, isoB, { recursive: true });
+        // deterministic fixtures: A=most, B=none — the baselines MUST differ
+        const OPT_BASE = 'ilg.gnumcueclipse.managedbuild.cross.riscv.option.'; // enum ids are stored as full ids (align-test parity)
+        const cpA = Cproject.load(isoA);
+        cpA.setOptionValue('optimization.level', 'most');
+        cpA.save();
+        const cpB = Cproject.load(isoB);
+        cpB.setOptionValue('optimization.level', 'none');
+        cpB.save();
+        const bytesB = fs.readFileSync(path.join(isoB, '.cproject'));
+        const mkIso = (root, name) => ({
+          root,
+          projectName: name,
+          projectDisplayName: name,
+          buildDir: path.join(root, 'obj'),
+          hexPath: path.join(root, 'obj', 'x.hex'),
+          kernel: undefined,
+          template: readTemplate(root),
+          cproject: Cproject.load(root),
+          projectFile: readProjectFile(root),
+          toolchain: () => null,
+          logicPathOf: () => undefined,
+          reload() {},
+        });
+        const viewIso = new ConfigView(stubStore(mkIso(isoA, 'IsoA')), ctx);
+        await viewIso.show(mkIso(isoA, 'IsoA'));
+        const panelIsoA = stubPanel;
+        await viewIso.show(mkIso(isoB, 'IsoB')); // second panel; A's baseline must survive this render
+        const untouchedA = Object.fromEntries(viewIso.initialFor(isoA) ?? []);
+        check('iso: baseline captured for panel A', Object.keys(untouchedA).length > 100);
+        // the user edits ONLY the optimization level — to exactly the value
+        // B's baseline holds ('none'). A SHARED baseline would classify the
+        // edit as unchanged and silently swallow it; a per-session baseline
+        // (A rendered 'most') must write it.
+        const edited = { ...untouchedA, optlevel: 'none' };
+        for (const h of panelIsoA.webview._handlers) await h({ command: 'save', values: edited });
+        await new Promise((r) => setTimeout(r, 300));
+        check(
+          'iso: an edit matching the OTHER panel baseline still lands (per-session diff baseline)',
+          Cproject.load(isoA).optionValue('optimization.level') === OPT_BASE + 'optimization.level.none',
+          String(Cproject.load(isoA).optionValue('optimization.level'))
+        );
+        check('iso: project B was never written', fs.readFileSync(path.join(isoB, '.cproject')).equals(bytesB));
+        viewIso.dispose();
+        fs.rmSync(isoA, { recursive: true, force: true });
+        fs.rmSync(isoB, { recursive: true, force: true });
+      }
+
+      // ---- WCH-Link ops are serialised across panels ----
+      {
+        const projectsMod = require('../out/vscode/projects.js');
+        const wlinkMod = require('../out/core/wlink.js');
+        const savedInstall = projectsMod.getInstall;
+        const savedRun = wlinkMod.runWlinkOp;
+        projectsMod.getInstall = () => ({ resourcesDir: 'X:/nonexistent-resources' });
+        let started = 0;
+        wlinkMod.runWlinkOp = () => {
+          started++;
+          return new Promise(() => {}); // never resolves — holds the busy lock
+        };
+        for (const h of panelA.webview._handlers) await h({ command: 'dlOp', op: 'queryMcuId', chipId: 6 });
+        check('iso-dl: the first panel operation started (busy lock held)', started === 1);
+        for (const h of panelC.webview._handlers) await h({ command: 'dlOp', op: 'queryMcuId', chipId: 6 });
+        check(
+          'iso-dl: the overlapping operation of a second panel is refused with the busy hint',
+          started === 1 && panelC.webview._posted.some((m) => m.command === 'dlLog' && m.text.includes('Another WCH-Link operation')),
+          JSON.stringify(panelC.webview._posted).slice(0, 140)
+        );
+        projectsMod.getInstall = savedInstall;
+        wlinkMod.runWlinkOp = savedRun;
+      }
+
+      // view-level dispose closes the still-open session panels and detaches
+      // the store listener — assert the PRE-dispose liveness explicitly (no
+      // hard-coded panel indices: they would depend on whether the external
+      // C++ fixture tree exists on this machine)
+      check('multi: pre-dispose state (A and C still open)', !panelA.disposed && !panelC.disposed);
+      view.dispose();
+      check('multi: view.dispose closes its open panels', panelA.disposed && panelC.disposed);
+      check('multi: the store listener is unregistered on dispose', store._changeCbs.length === 0, String(store._changeCbs.length));
+      const disposedNow = panels.filter((p) => p.disposed).length;
+      for (const cb of store._changeCbs) cb();
+      check('multi: disposed view ignores store events', panels.filter((p) => p.disposed).length === disposedNow);
+    }
+
     console.log(failures ? `\n${failures} FAILURES` : '\nwebview render verification passed');
     process.exit(failures ? 1 : 0);
   })();

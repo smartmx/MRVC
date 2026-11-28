@@ -88,8 +88,21 @@ export class MrsProject {
   }
 
   get hexPath(): string {
+    // the default download target follows the generator's naming: the
+    // PREFIXED image when one exists on disk, else the prefix-less legacy
+    // image, else the prefixed path (the "run Build first" message points
+    // at the name the NEXT build will produce) — a bare targetName lookup
+    // handed a STALE prefix-less image to the flasher (review round2 P2)
     const ext = this.cproject.flashFormat === 'binary' ? 'bin' : 'hex';
-    return path.join(this.buildDir, `${this.cproject.targetName}.${ext}`);
+    const prefix = this.cproject.outputPrefix;
+    const stem = `${this.cproject.targetName}.${ext}`;
+    if (prefix) {
+      const prefixed = path.join(this.buildDir, `${prefix}${stem}`);
+      if (fs.existsSync(prefixed)) return prefixed;
+    }
+    const legacy = path.join(this.buildDir, stem);
+    if (fs.existsSync(legacy)) return legacy;
+    return path.join(this.buildDir, `${prefix}${stem}`);
   }
 
   toolchain(install: MrsInstall | null, request: string): ToolchainInfo | null {

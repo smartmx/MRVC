@@ -359,7 +359,7 @@ async function downloadProjectInner(
   // receipt WITH the fingerprint of the plan that ran (script sha binds
   // address/verify/reset/eraseAll/banks; plus firmware/board cfg paths, cfg
   // content and the openocd binary) — never blocks or fails the download
-  writeFlashAck(
+  const ack = writeFlashAck(
     project.root,
     fingerprintFlashPlan({
       scriptPath: plan.scriptPath,
@@ -374,6 +374,9 @@ async function downloadProjectInner(
       powerOn: powerOn ?? null,
     })
   );
+  if (!ack) {
+    void vscode.window.showWarningMessage(t('receiptNotSaved', project.projectName));
+  }
   // SDI Printf: MRS's native reset+enable pass (see core/wlink `sdiPrint`).
   // The VSCode SDI PRINT monitor is deliberately NOT opened here — the user
   // may keep their own serial tool (e.g. SSCOM) on the WCH-Link CDC port, and

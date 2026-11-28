@@ -8,7 +8,8 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { encodeArtifact } from './platformEncoding';
+import { ansiArtifactEncoding, decodeArtifact, encodeArtifact } from './platformEncoding';
+import { recordWrittenFiles } from './outputHistory';
 import { analysisFlags } from './analysis';
 import { Cproject } from './cproject';
 import { LogicDirMap, dirGroups, extGroups, scanSources, assertScannableLinkedFolders } from './scan';
@@ -26,6 +27,7 @@ import {
   userObjects,
   userLibs,
   wchLibsOptions,
+  linkerMapName,
 } from './flags';
 import { ToolchainInfo } from './toolchain';
 
@@ -86,7 +88,7 @@ function assertInsideBuildDir(buildDir: string, target: string): void {
 export function generateMakefiles(
   cp: Cproject,
   tc: ToolchainInfo,
-  opts: { headerTool?: string; analysis?: boolean; mrs2Style?: boolean; autoMathLib?: boolean } = {}
+  opts: { headerTool?: string; analysis?: boolean; mrs2Style?: boolean; autoMathLib?: boolean; goldenSizTarget?: boolean } = {}
 ): GenerateResult {
   const buildDir = path.join(cp.projectRoot, cp.configName);
   fs.mkdirSync(buildDir, { recursive: true });
@@ -150,6 +152,11 @@ export function generateMakefiles(
   // The runtime default is on (it emulates the installed 2.5.x); the golden
   // harness turns it off for goldens older than 2.3.0.
   const autoMathLib = opts.autoMathLib ?? true;
+  // Historical MRS goldens emit `<target>.siz` in SECONDARY_SIZE & clean; at
+  // runtime the print-size recipe prints to stdout and never creates a .siz
+  // file, so using a .PHONY goal avoids deleting a user-saved `<target>.siz`
+  // during `clean` / output cleanup (review round8 P1-A).
+  const goldenSizTarget = opts.goldenSizTarget ?? false;
 
   const isCpp = cp.isCpp;
   // round18 P2-1: scanSources silently skips linked folders whose target is
@@ -246,6 +253,7 @@ export function generateMakefiles(
   const wchLibs = wchLibsOptions(cp, tc.name);
 
   const written: string[] = [];
+  const writtenRels: string[] = [];
   let sourceCount = 0;
 
   const writeMk = (rel: string, content: string) => {
@@ -287,6 +295,7 @@ export function generateMakefiles(
     // superset — pure-ASCII content stays byte-identical.
     fs.writeFileSync(file, encodeArtifact(native));
     written.push(file);
+    writtenRels.push(toPosix(rel));
   };
 
   const canonicalGroups = extGroups(isCpp);
@@ -565,10 +574,18 @@ export function generateMakefiles(
         t += '\n';
       }
       if (listVar) t += `SECONDARY_LIST += \\\n${target}.lst \\\n\n`;
-      if (sizeVar) t += `SECONDARY_SIZE += \\\n${target}.siz \\\n\n`;
+      if (sizeVar) {
+        t += goldenSizTarget ? `SECONDARY_SIZE += \\\n${target}.siz \\\n\n` : `SECONDARY_SIZE += mrvc-print-size\n\n`;
+      }
     }
 
-    const elfExt = cp.artifactExtension || 'elf';
+    // (review round6 P2) ONE primary product naming for the generator, the
+    // clean rule and the MCP report: a static library archives `.a`
+    // (regardless of the configured artifactExtension — the ar recipe has
+    // always emitted .a), an executable uses the configured extension
+    // (default .elf). Type-switch projects (elf → staticLib) previously got
+    // a main-build rule naming .elf with NO recipe for it.
+    const elfExt = isExe ? cp.artifactExtension || 'elf' : 'a';
     const elfTarget = `${target}.${elfExt}`;
     const pre = cp.prebuildStep.trim();
     const post = cp.postbuildStep.trim();
@@ -626,19 +643,25 @@ export function generateMakefiles(
         if (cp.optionBool('printsize.totals')) szFlags += ' --totals';
         const szOther = cp.optionValue('printsize.other')?.trim();
         if (szOther) szFlags += ` ${szOther}`;
-        t += `${target}.siz: ${elfTarget}\n`;
-        if (mrs2Style) {
-          // 2.x: no @ on the size line (it echoes in the build output —
-          // visible in MRS2's own build records) and the tail is an empty line
-          t += `\t${sizeTool} ${szFlags} "${elfTarget}"\n\n`;
+        if (goldenSizTarget) {
+          t += `${target}.siz: ${elfTarget}\n`;
+          if (mrs2Style) {
+            // 2.x: no @ on the size line (it echoes in the build output —
+            // visible in MRS2's own build records) and the tail is an empty line
+            t += `\t${sizeTool} ${szFlags} "${elfTarget}"\n\n`;
+          } else {
+            t += `\t@\t${sizeTool} ${szFlags} "${elfTarget}"\n`;
+            t += `\t@\t@\n`;
+          }
         } else {
-          t += `\t@\t${sizeTool} ${szFlags} "${elfTarget}"\n`;
-          t += `\t@\t@\n`;
+          // print-size writes to terminal stdout only, never creating a .siz file
+          t += `.PHONY: mrvc-print-size\nmrvc-print-size: ${elfTarget}\n`;
+          t += mrs2Style ? `\t${sizeTool} ${szFlags} "${elfTarget}"\n\n` : `\t@\t${sizeTool} ${szFlags} "${elfTarget}"\n\t@\t@\n`;
         }
       }
     } else {
-      t += `${target}.a: $(OBJS) $(USER_OBJS)\n`;
-      t += `\t@\t@\t${ar} -cr "${target}.a" $(OBJS) $(USER_OBJS)\n`;
+      t += `${elfTarget}: $(OBJS) $(USER_OBJS)\n`;
+      t += `\t@\t@\t${ar} -cr "${elfTarget}" $(OBJS) $(USER_OBJS)\n`;
       t += `\t@\t@\n`;
     }
 
@@ -656,7 +679,8 @@ export function generateMakefiles(
           ? '$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(S_DEPS)$(S_UPPER_DEPS)$(ASM_DEPS)$(ASM_UPPER_DEPS)$(C_DEPS)'
           : '$(ASM_UPPER_DEPS)$(OBJS)$(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE)$(ASM_DEPS)$(S_DEPS)$(S_UPPER_DEPS)$(C_DEPS)') +
       extraCleanVars;
-    t += `# Other Targets\nclean:\n\t-$(RM) ${cleanVars} ${target}.${isExe ? elfExt : 'a'}\n`;
+    const cleanFileVars = goldenSizTarget ? cleanVars : cleanVars.replace(/\$\(SECONDARY_SIZE\)/g, '');
+    t += `# Other Targets\nclean:\n\t-$(RM) ${cleanFileVars} ${elfTarget}\n`;
     // 2.x golden: the clean tail is an empty line, not "\t-@"
     t += mrs2Style ? `\n` : `\t-@\n`;
     if (hasSecondaries) {
@@ -673,6 +697,7 @@ export function generateMakefiles(
     writeMk('makefile', t);
   }
 
+  recordWrittenFiles(cp.projectRoot, buildDir, writtenRels, ansiArtifactEncoding());
   return { files: written, dirs: dirsAsc, sourceCount };
 }
 
@@ -695,6 +720,170 @@ export function objectTargetFor(logicName: string): string {
   const dir = path.posix.dirname(posixPath);
   const base = stripExt(path.posix.basename(posixPath));
   return (dir === '.' ? base : `${dir}/${base}`) + '.o';
+}
+
+/**
+ * The flash image file names one configuration produces. The generator
+ * (buildArtifact step above) writes `${outputPrefix}${targetName}.hex/.bin`
+ * — the delete-output "keep hex/bin" lists MUST derive from the same naming
+ * or a prefixed image (target `app`, prefix `boot_` → `boot_app.hex`) is
+ * deleted while a stale prefix-less `app.hex` survives it (review P2). The
+ * prefix-less legacy names stay on the keep list too: images built before
+ * an output prefix was configured must not be silently destroyed either.
+ */
+export function imageKeepNames(targetName: string, outputPrefix: string): string[] {
+  const stem = `${outputPrefix}${targetName}`;
+  return [`${stem}.hex`, `${stem}.bin`, `${targetName}.hex`, `${targetName}.bin`];
+}
+
+/**
+ * The flash image a configuration PRODUCES, in download-priority order:
+ * the prefixed name first (what the generator writes today), then the
+ * prefix-less legacy name (what earlier builds left behind). The default
+ * download path shares this so a configured output prefix actually steers
+ * the default target — with only the legacy name considered, a stale
+ * prefix-less `app.hex` was chosen over the current `boot_app.hex`
+ * (review round2 P2).
+ */
+export function imageCandidates(targetName: string, outputPrefix: string, flashFormat: 'binary' | 'ihex' | 'hex'): string[] {
+  const ext = flashFormat === 'binary' ? 'bin' : 'hex';
+  const out = [`${outputPrefix}${targetName}.${ext}`];
+  if (outputPrefix) out.push(`${targetName}.${ext}`);
+  return out;
+}
+
+/**
+ * The produced artifacts of one configuration, by its own artifact type —
+ * static-library projects archive .a (0.3.2), exe projects link elf/hex/bin.
+ * The name follows the GENERATOR's: `outputPrefix + targetName` (round3 P2
+ * — a bare targetName lookup reported a STALE prefix-less image, size
+ * included, to the caller). A MISSING candidate is a null-size entry, NOT
+ * an error: single-format images (hex-only) and custom artifact extensions
+ * are legitimate, and an ENOENT here would mask the real build result
+ * (review round4 P2). Used by the MCP build report AND the download target
+ * resolution so both speak the same naming.
+ */
+/**
+ * (review round6 P2) the ONE primary product naming shared by the
+ * generator's main-build rule, the clean rule and the MCP product report:
+ * a static library archives `.a` (the ar recipe's actual output), an
+ * executable uses its configured artifactExtension (default .elf).
+ */
+function primaryProduct(cp: { artifactType: string; targetName: string; outputPrefix: string; artifactExtension: string }): string {
+  const ext = cp.artifactType === 'staticLib' ? 'a' : cp.artifactExtension || 'elf';
+  return `${cp.outputPrefix}${cp.targetName}.${ext}`;
+}
+
+export function productsFor(
+  cp: {
+    artifactType: 'exe' | 'staticLib';
+    targetName: string;
+    outputPrefix: string;
+    artifactExtension: string;
+    createFlash: boolean;
+    createListing: boolean;
+  },
+  buildDir: string,
+  flashExts: string[] = []
+): Array<{ file: string; size: number | null }> {
+  const dir = path.resolve(buildDir);
+  // the SAME product set the generator emits (review round5/round6 P2): the
+  // primary product with the ONE naming (staticLib archives .a, exe uses
+  // the configured extension), then the secondaries the project actually
+  // enables — no invented elf/hex/bin triple, no stale fallback names
+  const names: string[] = [primaryProduct(cp)];
+  if (cp.artifactType === 'exe') {
+    if (cp.createFlash) for (const ext of flashExts) names.push(`${cp.outputPrefix}${cp.targetName}.${ext}`);
+    if (cp.createListing) names.push(`${cp.outputPrefix}${cp.targetName}.lst`);
+  }
+  const out: Array<{ file: string; size: number | null }> = [];
+  for (const cand of names) {
+    const f = path.resolve(dir, cand);
+    if (f !== dir && !f.startsWith(dir + path.sep)) throw new Error(`artifact path escapes the build directory: ${cand}`);
+    out.push({ file: f, size: fs.existsSync(f) ? fs.statSync(f).size : null });
+  }
+  return out;
+}
+
+/**
+ * (review round7 P1) the FILE-LEVEL claimed output set of one configuration:
+ * every path (relative to the build/output directory, posix separators)
+ * that the build system actually writes — the generated makefile family
+ * (makefile / sources.mk / objects.mk / <dir>/subdir.mk), every object,
+ * dependency and deterministic stack-usage (.su) file the compiler emits for
+ * the scanned sources, the primary product (staticLib archives .a, exe links
+ * its configured extension), the linker map file (-Wl,-Map), the flash
+ * images / listing / size report the secondaries write, and the flash script
+ * MRVC's download planning writes into the build directory (plus legacy
+ * mrs2_flash.cfg).
+ *
+ * The delete-output commands delete ONLY paths from this set: linker inputs
+ * (a vendor .a reached through USER_OBJS), stored images and any other user
+ * data inside the output directory are NOT in the set and survive every
+ * clear — the same distinction the clean recipe makes ($(OBJS)… are
+ * removed, $(USER_OBJS) are not). The layout is golden-byte-identical to
+ * MRS's own builds, so the set describes MRS-built projects too.
+ *
+ * Dynamic-numbered -fdump-rtl-expand dumps in the build root (whose names
+ * embed varying pass counters) and post-build step outputs are deliberately
+ * NOT claimed — their exact paths cannot be enumerated reliably, and keeping
+ * them after a clear is the safe direction. A missing linked-folder target
+ * makes scanSources skip that tree (fewer claimed objects): stale outputs
+ * there are then simply kept, which is the safe direction for a DELETE
+ * operation (unlike a build, where the explicit assertScannableLinkedFolders
+ * gate is what refuses).
+ */
+export function buildOutputFiles(cp: Cproject): string[] {
+  const map = scanSources(cp);
+  const rels = new Set<string>(['makefile', 'sources.mk', 'objects.mk']);
+  for (const [dir, files] of map) {
+    rels.add(dir ? `${toPosix(dir)}/subdir.mk` : 'subdir.mk');
+    for (const f of files) {
+      const obj = objectTargetFor(f.logicName);
+      rels.add(obj);
+      rels.add(obj.slice(0, -2) + '.d');
+      rels.add(obj.slice(0, -2) + '.su');
+    }
+  }
+  const target = cp.outputPrefix + cp.targetName;
+  if (cp.artifactType === 'exe') {
+    if (cp.createFlash) for (const ext of flashExtensions(cp)) rels.add(`${target}.${ext}`);
+    if (cp.createListing) rels.add(`${target}.lst`);
+    // linker always emits -Wl,-Map,"${mapName}"; claim it when it lands in
+    // the output directory so deleting build outputs never trips on .map
+    const buildDir = path.resolve(cp.projectRoot, cp.configName);
+    const mapAbs = path.resolve(buildDir, linkerMapName(cp));
+    const mapRel = path.relative(buildDir, mapAbs);
+    if (mapRel && !path.isAbsolute(mapRel) && mapRel !== '..' && !mapRel.startsWith('..' + path.sep)) {
+      rels.add(toPosix(mapRel));
+    }
+  }
+  rels.add(primaryProduct(cp));
+  rels.add('mrvc_flash.cfg');
+  rels.add('mrs2_flash.cfg');
+  return [...rels];
+}
+
+/**
+ * Legacy Print-Size makefile guard (review round8 P1-A): older MRVC-generated
+ * makefiles listed `<target>.siz` in `SECONDARY_SIZE` and passed
+ * `$(SECONDARY_SIZE)` to `$(RM)` inside `clean`, even though the size recipe
+ * only printed to stdout. If a user upgraded MRVC and runs `clean` or `rebuild`
+ * BEFORE regenerating that makefile, pass `SECONDARY_SIZE=` so a hand-saved
+ * `<target>.siz` survives. Custom makefiles whose `.siz:` recipe redirects stdout
+ * (`>`) or non-generated makefiles are left untouched.
+ */
+export function legacyPrintSizeCleanOverride(buildDir: string): string[] {
+  try {
+    const text = decodeArtifact(fs.readFileSync(path.join(buildDir, 'makefile')));
+    if (!text.includes('Automatically-generated file. Do not edit!')) return [];
+    if (!/SECONDARY_SIZE\s*\+=\s*(?:\\\r?\n)?[^\r\n]*\.siz\b/.test(text)) return [];
+    const rule = text.match(/^[^\r\n#]*\.siz\s*:[^\r\n]*\r?\n([ \t]+[^\r\n]*)/m);
+    if (!rule || rule[1].includes('>')) return [];
+    return ['SECONDARY_SIZE='];
+  } catch {
+    return [];
+  }
 }
 
 /** the command-line make argument for one object target. The task wrapper

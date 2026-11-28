@@ -389,7 +389,12 @@ export function repairProjectConfig(root: string, findings: AuditFinding[]): Rep
   const cprojectFindings = findings.filter((f) => f.file === '.cproject' && f.fixable);
   if (cprojectFindings.length) {
     backup(root, backupDir, '.cproject');
-    const cp = Cproject.load(root);
+    // repair:false — the REPAIR pass must only make the repairs it reports.
+    // The default repairProject:true would ride the first-open stale-link
+    // auto-repair on this load, silently rewriting .project beyond the
+    // findings the caller agreed to fix (v0.3.8 review H4; stale links have
+    // their own explicit, counted repair path — repairLinkedResources)
+    const cp = Cproject.load(root, { repairProject: false });
     for (const f of cprojectFindings) {
       if (f.code !== 'enum-value-missing' || !f.optionId) continue;
       const opt = cp.config.findAll((e) => e.name === 'option' && e.attr('id') === f.optionId)[0];

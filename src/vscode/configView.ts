@@ -797,25 +797,113 @@ const LIST_MODES: Record<string, 'dir' | 'file' | 'ldfile' | 'text'> = {
   cppldflags: 'text',
 };
 
-export class ConfigView {
-  private panel: vscode.WebviewPanel | null = null;
-  private project: MrsProject | null = null;
-  /** the chip db of the project's install — the Download Settings page needs
-   *  it to resolve SDK series ids (queryMcuId result) to display names */
-  private dlChipDb: ChipDb | undefined;
+/** the download-page boolean keys — a MISSING key and an explicit 'false'
+ *  both render unchecked, but only an explicit write goes back to disk */
+const DL_BOOLEAN_KEYS = ['Erase All', 'Program', 'Verify', 'Reset', 'SDIPrintf', 'Disable Code-Protect', 'Clear CodeFlash', 'Disable Power Output'] as const;
+const isOn = (v: string | undefined): boolean => (v ?? '').trim().toLowerCase() === 'true';
+/**
+ * (review round6 P1-C) the DISPLAY model of the download settings: every
+ * boolean key is normalized to an explicit 'true'/'false' so the diff
+ * baseline and the savedDl refresh payload never confuse "the key is
+ * absent" with "the user unchecked it". The STORAGE model keeps the
+ * distinction — set() writes into the raw template and an absent key that
+ * matches the displayed 'false' is never re-added to disk.
+ *
+ * (review round7 P2-D) 'Target Path' joins the display model: the editable
+ * input shows the STORED value (an absent key renders ''), so an unedited
+ * Apply compares equal against this baseline and never re-adds or rewrites
+ * the key. The RESOLVED target (what a download would actually flash) is a
+ * separate read-only hint that is not collected at all.
+ */
+function dlControlValues(raw: Record<string, string>): Record<string, string> {
+  const controls = { ...raw };
+  for (const k of DL_BOOLEAN_KEYS) controls[k] = isOn(raw[k]) ? 'true' : 'false';
+  controls['Address'] = (raw['Address'] ?? '').trim();
+  controls['Flash Type'] = raw['Flash Type'] === 'External' ? 'External' : 'Internal';
+  controls['DebugInterfaceMode'] = raw['DebugInterfaceMode'] === '1' ? '1' : '0';
+  controls['CLKSpeed'] = raw['CLKSpeed'] === '2' || raw['CLKSpeed'] === '3' ? raw['CLKSpeed'] : '1';
+  controls['Target Path'] = raw['Target Path'] ?? '';
+  return controls;
+}
+
+interface ConfigSession {
+  readonly key: string;
+  project: MrsProject;
+  readonly panel: vscode.WebviewPanel;
   /** Apply's diff baseline: for every control, the value the page rendered.
    *  Apply posts ALL controls back; only fields whose posted value differs
    *  from this snapshot are written, so untouched options stay byte-identical
    *  (and a value our dropdown cannot represent is echoed back, not replaced
    *  by the browser's first-entry fallback). */
-  private initial = new Map<string, string>();
+  readonly initial: Map<string, string>;
+  /** the chip db of the project's install — the Download Settings page needs
+   *  it to resolve SDK series ids (queryMcuId result) to display names */
+  dlChipDb: ChipDb | undefined;
+  /** guards async callbacks (Wlink / dialogs / store sync) after dispose */
+  disposed: boolean;
+  /** the active configuration's CONTENT fingerprint at RENDER time. An
+   *  external switch (MRS / MCP) reorders .cproject before Apply — the
+   *  rendered controls and the diff baseline still describe the OLD
+   *  configuration, and applying them would write those drafts into the
+   *  NEW active one (review P2). A content hash (not the id attribute)
+   *  keeps working for hand-imported projects whose ids are missing or
+   *  duplicated (review round2 P2). */
+  renderedConfigFp?: string;
+  /** the .template values at RENDER time — the download-settings write
+   *  commits only fields whose posted value differs from this snapshot, so
+   *  an EXTERNAL .template edit (another window changing Target Path / Erase
+   *  All) survives an Apply whose form was never touched there (review
+   *  round3 P2). */
+  renderedTpl?: Record<string, string>;
+}
+
+export class ConfigView implements vscode.Disposable {
+  /** one session per open Properties panel, keyed by ProjectStore.key(root) */
+  private readonly sessions = new Map<string, ConfigSession>();
+  /** serialises WCH-Link hardware operations across open Properties panels */
+  private dlOpBusy = false;
+  private readonly storeSub: vscode.Disposable;
 
   constructor(
     private store: ProjectStore,
     private context: vscode.ExtensionContext,
     /** optional: only used to refuse a configuration switch mid-build */
     private build?: { isBuilding(root: string): boolean }
-  ) {}
+  ) {
+    this.storeSub = this.store.onDidChange(() => this.syncWithStore());
+  }
+
+  dispose(): void {
+    this.storeSub.dispose();
+    for (const session of [...this.sessions.values()]) {
+      session.panel.dispose();
+    }
+    this.sessions.clear();
+  }
+
+  /** the Apply diff baseline of the session open for `root` (undefined when
+   *  no Properties panel is open for it) — test/inspection accessor */
+  initialFor(root: string): ReadonlyMap<string, string> | undefined {
+    return this.sessions.get(ProjectStore.key(root))?.initial;
+  }
+
+  /**
+   * Resolve a Manage/selector row addressed by (name, index) from a possibly
+   * STALE rendered page (review round2 P2): an external reorder (another
+   * window / MCP setActive) moves rows — matching the row's RENDER-TIME
+   * content fingerprint finds its CURRENT position; a fingerprint that is
+   * gone means the configuration was deleted or rewritten externally and
+   * the whole page must be refreshed. Returns the CURRENT index.
+   */
+  private resolveRowIndex(freshFps: string[], index: number, fp: string | undefined, what: string): number {
+    if (fp !== undefined) {
+      if (freshFps[index] === fp) return index;
+      const moved = freshFps.indexOf(fp);
+      if (moved >= 0) return moved; // reordered externally — address by identity
+      throw new Error(`${what}: the configuration list changed — reopen the dialog and retry`);
+    }
+    return index; // no fingerprint available (legacy caller) — index as-is
+  }
 
   async show(proj?: MrsProject): Promise<void> {
     const project = proj ?? this.store.active;
@@ -823,46 +911,116 @@ export class ConfigView {
       vscode.window.showErrorMessage(t('noActiveProject'));
       return;
     }
-    this.project = project;
-    if (this.panel) {
-      this.panel.reveal();
-    } else {
-      this.panel = vscode.window.createWebviewPanel('mrvc.config', `Properties - ${project.projectName}`, vscode.ViewColumn.Active, {
+
+    const key = ProjectStore.key(project.root);
+    const existing = this.sessions.get(key);
+    if (existing && !existing.disposed) {
+      // reveal without re-rendering so any unsaved edits & scroll position survive
+      existing.project = project;
+      existing.panel.title = this.panelTitle(project);
+      existing.panel.reveal();
+      return;
+    }
+
+    const panel = vscode.window.createWebviewPanel(
+      'mrvc.config',
+      this.panelTitle(project),
+      vscode.ViewColumn.Active,
+      {
         enableScripts: true,
         retainContextWhenHidden: true,
-      });
-      this.panel.onDidDispose(() => {
-        this.panel = null;
-      });
-      this.panel.webview.onDidReceiveMessage((m) => this.onMessage(m));
-    }
-    this.panel.title = `Properties - ${project.projectName}`;
-    this.panel.webview.html = this.render(project);
+      }
+    );
+    const session: ConfigSession = {
+      key,
+      project,
+      panel,
+      initial: new Map<string, string>(),
+      dlChipDb: undefined,
+      disposed: false,
+    };
+    this.sessions.set(key, session);
+
+    panel.onDidDispose(() => {
+      session.disposed = true;
+      if (this.sessions.get(key) === session) {
+        this.sessions.delete(key);
+      }
+    });
+    panel.webview.onDidReceiveMessage((m) => this.onMessage(session, m));
+    panel.webview.html = this.render(session);
+    this.refreshTitles();
   }
 
-  private async onMessage(m: {
-    command: string;
-    values?: Record<string, string>;
-    mode?: 'dir' | 'file' | 'ldfile';
-    path?: string;
-    op?: string;
-    name?: string;
-    newName?: string;
-    /** the configuration row's index — disambiguates two same-named rows */
-    index?: number;
-    copyFrom?: string;
-    /** the Copy-from dropdown's row index (rows may share a name) */
-    copyFromIndex?: number;
-    chipId?: number;
-    clkSpeed?: number;
-    dbgMode?: number;
-    eraseMode?: number;
-    memVal?: number;
-  }): Promise<void> {
-    const project = this.project;
-    if (!project || !this.panel) return;
+  private post(session: ConfigSession, msg: unknown): void {
+    if (session.disposed) return;
+    void session.panel.webview.postMessage(msg);
+  }
+
+  private panelTitle(project: MrsProject): string {
+    const sameNameCount = this.store.all.filter((p) => p.projectName === project.projectName).length;
+    if (sameNameCount > 1) {
+      const folder = path.basename(project.root);
+      const hint = folder !== project.projectName ? folder : path.basename(path.dirname(project.root));
+      if (hint) return `Properties - ${project.projectName} (${hint})`;
+    }
+    return `Properties - ${project.projectName}`;
+  }
+
+  private refreshTitles(): void {
+    for (const session of this.sessions.values()) {
+      if (!session.disposed) {
+        session.panel.title = this.panelTitle(session.project);
+      }
+    }
+  }
+
+  private syncWithStore(): void {
+    for (const session of [...this.sessions.values()]) {
+      const latest = this.store.get(session.project.root);
+      if (!latest) {
+        session.panel.dispose();
+        continue;
+      }
+      session.project = latest;
+      if (!session.disposed) {
+        session.panel.title = this.panelTitle(latest);
+      }
+    }
+  }
+
+  private async onMessage(
+    session: ConfigSession,
+    m: {
+      command: string;
+      values?: Record<string, string>;
+      mode?: 'dir' | 'file' | 'ldfile';
+      path?: string;
+      op?: string;
+      name?: string;
+      newName?: string;
+      /** the configuration row's index — disambiguates two same-named rows */
+      index?: number;
+      copyFrom?: string;
+      /** the Copy-from dropdown's row index (rows may share a name) */
+      copyFromIndex?: number;
+      /** the acted row's RENDER-TIME content fingerprint — resolves an
+       *  externally reordered list back to the row's current position
+       *  (review round2 P2) */
+      fp?: string;
+      /** the Copy-from row's fingerprint (same staleness reason) */
+      copyFromFp?: string;
+      chipId?: number;
+      clkSpeed?: number;
+      dbgMode?: number;
+      eraseMode?: number;
+      memVal?: number;
+    }
+  ): Promise<void> {
+    if (session.disposed) return;
+    const project = session.project;
     if (m.command === 'close') {
-      this.panel.dispose();
+      session.panel.dispose();
       return;
     }
     if (m.command === 'switchConfig' && m.name) {
@@ -871,22 +1029,30 @@ export class ConfigView {
       // mid-build: the running make task has its cwd fixed on the old dir and
       // its record would be filed for whichever config the page now shows.
       if (this.build?.isBuilding(project.root)) {
-        this.panel.webview.html = this.render(project);
+        if (!session.disposed) session.panel.webview.html = this.render(session);
         void vscode.window.showWarningMessage(t('buildAlreadyRunning', project.projectName));
         return;
       }
       try {
-        const res = switchConfiguration(project.root, m.name, m.index);
+        // (review round2 P2) resolve the possibly-STALE rendered index by the
+        // row's content fingerprint: an external reorder (another window /
+        // MCP setActive) moves rows between render and click — identity, not
+        // position, decides which configuration is acted on
+        const freshFps = Cproject.load(project.root).configurationFingerprints();
+        const resolvedIndex = this.resolveRowIndex(freshFps, m.index ?? 0, m.fp, 'switch');
+        const res = switchConfiguration(project.root, m.name, resolvedIndex);
         project.reload();
         // every field changes with the configuration — full reload, not the
         // per-field Apply diff
-        this.panel.webview.html = this.render(project);
-        this.panel.title = `Properties - ${project.projectName}`;
+        if (!session.disposed) {
+          session.panel.webview.html = this.render(session);
+          session.panel.title = this.panelTitle(project);
+        }
         if (res.changed) {
           void vscode.window.showInformationMessage(t('configSwitched', res.active));
         }
       } catch (e) {
-        this.panel.webview.html = this.render(project);
+        if (!session.disposed) session.panel.webview.html = this.render(session);
         void vscode.window.showErrorMessage(t('configSwitchFailed', e instanceof Error ? e.message : String(e)));
       }
       return;
@@ -896,28 +1062,34 @@ export class ConfigView {
       // so the same mid-build guard applies; errors stay inside the dialog
       // (a full re-render would close it and lose the message).
       if (this.build?.isBuilding(project.root)) {
-        this.panel.webview.postMessage({ command: 'cfgError', text: t('buildAlreadyRunning', project.projectName) });
+        this.post(session, { command: 'cfgError', text: t('buildAlreadyRunning', project.projectName) });
         return;
       }
       try {
+        // (review round2 P2) the SAME staleness resolution as switchConfig:
+        // address the acted row by its rendered content fingerprint
+        const freshFpsMg = Cproject.load(project.root).configurationFingerprints();
         if (m.command === 'addConfig') {
           if (!m.name?.trim()) throw new Error('Name is required.');
           // the Copy-from dropdown reports a ROW; pass the name AND the index
           // so two same-named source rows resolve to the clicked one
           const names = Cproject.load(project.root).configurationNames;
-          const srcIdx =
+          const srcRaw =
             typeof m.copyFromIndex === 'number' && m.copyFromIndex >= 0 && m.copyFromIndex < names.length
               ? m.copyFromIndex
               : undefined;
+          const srcIdx = srcRaw !== undefined ? this.resolveRowIndex(freshFpsMg, srcRaw, m.copyFromFp, 'add') : undefined;
           addConfiguration(project.root, m.name.trim(), srcIdx !== undefined ? names[srcIdx] : m.copyFrom, srcIdx);
           void vscode.window.showInformationMessage(t('configAdded', m.name.trim()));
         } else if (m.command === 'renameConfig') {
           if (!m.name || !m.newName?.trim()) throw new Error('Name is required.');
-          renameConfiguration(project.root, m.name, m.newName.trim(), m.index);
+          const renameIdx = this.resolveRowIndex(freshFpsMg, m.index ?? 0, m.fp, 'rename');
+          renameConfiguration(project.root, m.name, m.newName.trim(), renameIdx);
           void vscode.window.showInformationMessage(t('configRenamed', m.newName.trim()));
         } else if (m.command === 'deleteConfig') {
           if (!m.name) throw new Error('Select a configuration first.');
-          deleteConfiguration(project.root, m.name, m.index);
+          const delIdx = this.resolveRowIndex(freshFpsMg, m.index ?? 0, m.fp, 'delete');
+          deleteConfiguration(project.root, m.name, delIdx);
           void vscode.window.showInformationMessage(t('configDeleted', m.name));
         } else {
           return;
@@ -925,10 +1097,12 @@ export class ConfigView {
         // names/ids/order changed — rebuild the page so the selector, the
         // dialog rows and (for an active rename) every field show the truth
         project.reload();
-        this.panel.webview.html = this.render(project);
-        this.panel.title = `Properties - ${project.projectName}`;
+        if (!session.disposed) {
+          session.panel.webview.html = this.render(session);
+          session.panel.title = this.panelTitle(project);
+        }
       } catch (e) {
-        this.panel.webview.postMessage({
+        this.post(session, {
           command: 'cfgError',
           text: e instanceof Error ? e.message : String(e),
         });
@@ -937,10 +1111,43 @@ export class ConfigView {
     }
     if (m.command === 'saveDl' && m.values) {
       try {
+        // (review round2 P2) the SAME configuration-identity gate as save —
+        // the chained saveDl lands AFTER the property save, and an external
+        // switch in between would otherwise let the stale form's Target Path
+        // revert the .template to the OLD configuration's artifact.
+        const freshCpDl = Cproject.load(project.root);
+        if (freshCpDl.activeConfigurationFingerprint() !== session.renderedConfigFp) {
+          throw new Error(t('propertiesConfigChangedShort'));
+        }
         const tpl = readTemplate(project.root);
+        // (review round3 P2) only fields the user actually CHANGED are
+        // committed — "changed" means the posted value differs from the
+        // LAST-COMMITTED CONTROL snapshot. When the posted value equals that
+        // snapshot but the disk moved (another window edited .template), the
+        // external value wins: an untouched form must not revert someone
+        // else's save.
+        // (review round4 P1) the snapshot REBASES to the committed control
+        // values after every save — the uncheck-then-Apply flow needs the
+        // checkbox's own history, not the disk's.
+        // (review round5 P1) the rebased snapshot must be the COMMITTED
+        // values ONLY, never the merged disk values: rebasing onto the disk
+        // (which carries the external edit) would classify the stale posted
+        // checkbox as "changed" on the NEXT Apply and re-commit it. The
+        // baseline tracks what THIS panel last sent; the disk's own story
+        // stays with the disk.
+        const renderedTpl = session.renderedTpl ?? {};
+        const renderedControls = dlControlValues(renderedTpl);
+        let tplDirty = false;
+        // (review round6 P1-C) the comparison runs against the DISPLAY model
+        // (missing boolean keys render as 'false') while `tpl` stays the raw
+        // storage — an absent 'Erase All' key means OFF on the page, so a
+        // panel that still shows 'true' commits a real change; a panel that
+        // agrees with the displayed 'false' never writes the key back
         const set = (k: string, v: string): void => {
+          if (v === renderedControls[k]) return;
           if (!(k in tpl.values)) tpl.order.push(k);
           tpl.values[k] = v;
+          tplDirty = true;
         };
         const addr = (m.values['Address'] ?? '').trim();
         if (addr && !ADDRESS_RE.test(addr)) {
@@ -965,13 +1172,24 @@ export class ConfigView {
         ] as const) {
           set(name, m.values[key] === 'true' ? 'true' : 'false');
         }
-        writeTemplate(project.root, tpl);
+        if (tplDirty) writeTemplate(project.root, tpl);
         project.reload();
-        // NOT 'saved': Apply sends saveDl and save back to back, and only the
-        // property save may re-baseline the webview's dirty snapshot. If the
-        // property save then fails, resetting it here would hide the unapplied
-        // edits from the configuration-switch / Manage confirm (round-2 P3-1).
-        this.panel.webview.postMessage({ command: 'savedDl' });
+        // (review round4 P1 + round5 P1) the baseline and the savedDl payload
+        // both use the DISPLAY model (missing boolean keys are 'false'):
+        // after the write the panel SHOWS the disk truth — a stale checkbox
+        // is corrected on the spot instead of lying in wait to be
+        // re-committed by the next Apply. The payload keys the frontend's
+        // data-dlkey refresh reads, so absent keys arrive as explicit
+        // 'false' and the checkbox is UNCHECKED — never re-added to disk by
+        // a following no-op Apply (review round6 P1-C).
+        const controls = dlControlValues(tpl.values);
+        session.renderedTpl = controls;
+        // (review round7 P2-D) the effective-target hint refreshes from the
+        // RELOADED project — the editable input keeps the stored value (the
+        // data-dlkey refresh above), the read-only span shows what a download
+        // would flash now
+        const effectiveTarget = displayTargetPath(project.root, resolveDownloadTarget(project)) || (controls['Target Path'] ?? '');
+        this.post(session, { command: 'savedDl', values: { ...controls }, effectiveTarget });
         vscode.window.showInformationMessage(t('downloadSettingsSaved', path.basename(project.root)));
       } catch (e) {
         vscode.window.showErrorMessage(t('downloadSettingsSaveFailed', e instanceof Error ? e.message : String(e)));
@@ -981,7 +1199,7 @@ export class ConfigView {
     if (m.command === 'dlOp' && m.op) {
       const install = getInstall();
       if (!install) {
-        this.panel.webview.postMessage({ command: 'dlLog', text: t('installNotFound') });
+        this.post(session, { command: 'dlLog', text: t('installNotFound') });
         return;
       }
       const op = m.op as WlinkOp;
@@ -993,26 +1211,38 @@ export class ConfigView {
         memVal: m.memVal,
       };
       if (op !== 'queryMcuId' && (!args.chipId || args.chipId <= 0)) {
-        this.panel.webview.postMessage({ command: 'dlLog', text: 'Unknown chip series — pick the chip in the Chip / Target page first.' });
+        this.post(session, { command: 'dlLog', text: 'Unknown chip series — pick the chip in the Chip / Target page first.' });
         return;
       }
-      void runWlinkOp(install, op, args).then((r) => {
-        let text = describeResult(op, r);
-        let mcuType: string | undefined;
-        // the queryMcuId result is an SDK SERIES id — resolve the MRS-parity
-        // display name (flash.json type, e.g. 6 -> CH32V30x) from the chip db
-        // (round: remote panel showed the raw id while MRS2 showed CH32V30x)
-        if (op === 'queryMcuId' && r.result !== undefined) {
-          mcuType = this.dlChipDb?.series.find((s2) => s2.id === r.result)?.mcuType;
-          if (mcuType) text = `Linked MCU type: ${mcuType} (family id ${r.result})`;
-        }
-        this.panel?.webview.postMessage({ command: 'dlLog', text, op, result: r.result, mcuType });
-      }, (e) => {
-        // the bridge resolves refusals as structured results; a rejection here
-        // is an unexpected failure — surface it in the log instead of an
-        // unhandled rejection (code-review H1 follow-up)
-        this.panel?.webview.postMessage({ command: 'dlLog', text: t('dlOpFailed', e instanceof Error ? e.message : String(e)) });
-      });
+      // one physical WCH-Link probe + one 32-bit PowerShell bridge — serialize
+      // hardware ops across ALL open Properties panels (review: two panels
+      // issuing Query/Erase concurrently would collide on the USB device)
+      if (this.dlOpBusy) {
+        this.post(session, { command: 'dlLog', text: 'Another WCH-Link operation is already in progress. Please wait.' });
+        return;
+      }
+      this.dlOpBusy = true;
+      void runWlinkOp(install, op, args)
+        .then((r) => {
+          let text = describeResult(op, r);
+          let mcuType: string | undefined;
+          // the queryMcuId result is an SDK SERIES id — resolve the MRS-parity
+          // display name (flash.json type, e.g. 6 -> CH32V30x) from the chip db
+          // (round: remote panel showed the raw id while MRS2 showed CH32V30x)
+          if (op === 'queryMcuId' && r.result !== undefined) {
+            mcuType = session.dlChipDb?.series.find((s2) => s2.id === r.result)?.mcuType;
+            if (mcuType) text = `Linked MCU type: ${mcuType} (family id ${r.result})`;
+          }
+          this.post(session, { command: 'dlLog', text, op, result: r.result, mcuType });
+        }, (e) => {
+          // the bridge resolves refusals as structured results; a rejection here
+          // is an unexpected failure — surface it in the log instead of an
+          // unhandled rejection (code-review H1 follow-up)
+          this.post(session, { command: 'dlLog', text: t('dlOpFailed', e instanceof Error ? e.message : String(e)) });
+        })
+        .finally(() => {
+          this.dlOpBusy = false;
+        });
       return;
     }
     if (m.command === 'pickTarget') {
@@ -1025,14 +1255,14 @@ export class ConfigView {
           title: 'Select firmware target file',
         })
         .then((pick) => {
-          if (pick?.length && this.panel) this.panel.webview.postMessage({ command: 'pickedTarget', path: pick[0].fsPath });
+          if (pick?.length) this.post(session, { command: 'pickedTarget', path: pick[0].fsPath });
         });
       return;
     }
     if (m.command === 'listDir') {
       const parent = typeof m.path === 'string' ? m.path : '';
       const buildDirName = path.basename(project.buildDir);
-      this.panel.webview.postMessage({
+      this.post(session, {
         command: 'dirTree',
         path: parent,
         dirs: this.listImmediate(project.root, parent, 'dir', buildDirName),
@@ -1054,7 +1284,7 @@ export class ConfigView {
           title: mode === 'ldfile' ? 'Select linker script file' : mode === 'file' ? 'Select file' : 'Select directory',
         })
         .then((pick) => {
-          if (pick?.length && this.panel) this.panel.webview.postMessage({ command: 'pickedPath', path: pick[0].fsPath });
+          if (pick?.length) this.post(session, { command: 'pickedPath', path: pick[0].fsPath });
         });
       return;
     }
@@ -1062,7 +1292,7 @@ export class ConfigView {
       // path-entry gate: new rows in include/linker path lists must at least
       // be well-formed (hard error), and unknown macros / missing targets get
       // an MRS2-style "continue anyway?" prompt BEFORE anything is written
-      const pathIssues = checkPathEntries(m.values, this.initial, project.root);
+      const pathIssues = checkPathEntries(m.values, session.initial, project.root);
       if (pathIssues.malformed.length) {
         vscode.window.showErrorMessage(t('propertiesPathMalformed', '\n' + pathIssues.malformed.join('\n')));
         return;
@@ -1080,14 +1310,41 @@ export class ConfigView {
         );
         if (go !== t('propertiesPathContinue')) return;
       }
+      // the modal above is an await boundary — the panel may have been closed
+      // while the user was deciding; never write for a dead session
+      if (session.disposed) return;
       try {
         // PRE-WRITE gate: Apply only ever rewrites a .cproject whose RAW
         // structure a strict parser accepts (MRS/Eclipse would refuse a file
         // our lenient parser merely tolerates — and rewriting it would
-        // cement the damage). Audit owns the repair; Apply refuses.
+        // cement the damage). Audit owns the repair; Apply refuses. This
+        // check comes FIRST: a damaged file refuses with the damage error
+        // regardless of which configuration it belongs to.
         const cprojectFile = path.join(project.root, '.cproject');
         const structureError = strictXmlFileError(cprojectFile, 'cproject');
         if (structureError) throw new Error(t('propertiesXmlInvalid', structureError));
+        // (review P2 / round2) configuration-identity gate BEFORE ANY write:
+        // the panel may predate an EXTERNAL switch (MRS / MCP reordered
+        // .cproject) — the rendered controls and baseline still describe the
+        // OLD active configuration, and a fresh load's index 0 is now a
+        // DIFFERENT configuration. Applying would silently put these drafts
+        // into that one. Content fingerprints catch the swap even for
+        // hand-imported projects with missing or duplicated ids; refuse and
+        // let the user pick a full reload (fresh baseline) or cancel.
+        const freshCp = Cproject.load(project.root);
+        if (freshCp.activeConfigurationFingerprint() !== session.renderedConfigFp) {
+          const go = await vscode.window.showWarningMessage(
+            t('propertiesConfigChanged'),
+            { modal: true },
+            t('propertiesConfigChangedReload'),
+            t('propertiesConfigChangedCancel')
+          );
+          if (go === t('propertiesConfigChangedReload') && !session.disposed) {
+            project.reload();
+            if (!session.disposed) session.panel.webview.html = this.render(session);
+          }
+          return;
+        }
         // .template fields first (chip identity / download address), batched
         // into one read-modify-write; the address is validated like the flash
         // code does, so a bad value aborts the whole save before any write
@@ -1098,7 +1355,7 @@ export class ConfigView {
           const v = (m.values[f.key] ?? '').trim();
           // untouched = still shows what the page rendered: skip (an external
           // edit made meanwhile stays in place)
-          const initialTpl = this.initial.get(f.key);
+          const initialTpl = session.initial.get(f.key);
           if (initialTpl !== undefined && v === initialTpl.trim()) continue;
           if (v === (tplData.values[f.tplKey] ?? '')) continue;
           if (f.tplKey === 'Address' && v && !ADDRESS_RE.test(v)) {
@@ -1120,7 +1377,7 @@ export class ConfigView {
           // changed one setting, did everything else survive?" guarantee. A
           // stored enum choice our list does not know is echoed back by the
           // synthetic "(current)" option, so it lands here as unchanged too.
-          const initial = this.initial.get(f.key);
+          const initial = session.initial.get(f.key);
           if (initial !== undefined && v === initial) continue;
           if (f.type === 'bool') {
             if (f.set) {
@@ -1165,10 +1422,15 @@ export class ConfigView {
         for (const f of FIELDS) {
           const v = m.values[f.key];
           if (v === undefined) continue;
-          this.initial.set(f.key, f.tplKey ? v.trim() : v);
+          session.initial.set(f.key, f.tplKey ? v.trim() : v);
         }
+        // the config's CONTENT changed with this write — re-base the
+        // identity fingerprint onto the just-saved configuration, or the
+        // NEXT Apply would read its own previous write as an external
+        // switch and refuse (round2 P2 gate calibration)
+        session.renderedConfigFp = cp.activeConfigurationFingerprint();
         project.reload();
-        this.panel.webview.postMessage({ command: 'saved' });
+        this.post(session, { command: 'saved' });
         vscode.window.showInformationMessage(t('propertiesSaved', path.basename(project.root)));
         // preprocessor consistency (0.3.3, THE one trigger per user decision):
         // after a successful save, automatically check the C / C++ / Assembler
@@ -1218,13 +1480,15 @@ export class ConfigView {
   private dlSettingsHtml(project: MrsProject, chipDb: ChipDb, nonce: string): string {
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const tpl = project.template.values;
-    // the Target File field shows the RESOLVED download target (what a
-    // download will actually flash) — EVT packages ship cross-project Target
-    // Paths (MACRAW's template pointing at TCP_SERVER's hex), and displaying
-    // the stale raw value would contradict the real download. An UNRESOLVED
-    // raw value (project not built) is shown verbatim — path.relative() on
-    // it would fold in the process cwd (review round2 §2).
-    const displayTarget = (resolved: string): string => displayTargetPath(project.root, resolved) || (tpl['Target Path'] ?? '');
+    // (review round7 P2-D) the editable Target File field shows the STORED
+    // .template value — an unedited Apply must compare equal against the
+    // render baseline and never rewrite the key. What a download would
+    // ACTUALLY flash (the resolved target — EVT packages ship cross-project
+    // Target Paths) moves to a separate read-only hint that carries no
+    // data-dlkey and is never collected; changing the effective target
+    // still requires an explicit edit (or the download-time repair dialog).
+    const storedTarget = tpl['Target Path'] ?? '';
+    const effectiveTarget = displayTargetPath(project.root, resolveDownloadTarget(project)) || storedTarget;
     // MRS2's own fallback chain (Series -> Mcu Type -> MCU) plus the
     // flash.json per-model "special" override — shared with the download
     // target-chip guard in src/vscode/flash.ts. The hard-ware controls use the
@@ -1234,7 +1498,9 @@ export class ConfigView {
     const series = chip?.series ?? null;
     const sup = chip?.support;
     const has = (k?: boolean) => (k === true ? '' : ' disabled');
-    const chk = (v: string | undefined) => (v === 'true' ? ' checked' : '');
+    // same display model as the save diff (round6 P1-C): a missing key and
+    // an explicit 'false' both render unchecked
+    const chk = (v: string | undefined) => (isOn(v) ? ' checked' : '');
     const rptOn = sup?.readProtectOpts === true;
     const ctx = {
       chipId: chip?.id ?? 0,
@@ -1263,7 +1529,8 @@ export class ConfigView {
     <div class="dlrow"><label>Program Address:</label><input type="text" id="dl-address" data-dlkey="Address" value="${esc(tpl['Address'] ?? '')}" spellcheck="false"></div>
     <div class="dlrow"><label>Debug Interface Mode:</label><select id="dl-dbgif" data-dlkey="DebugInterfaceMode"><option value="0"${tpl['DebugInterfaceMode'] !== '1' ? ' selected' : ''}>1-wire serial</option><option value="1"${tpl['DebugInterfaceMode'] === '1' ? ' selected' : ''}>2-wires serial</option></select></div>
     <div class="dlrow"><label>CLK Speed:</label><select id="dl-clk" data-dlkey="CLKSpeed"><option value="1"${tpl['CLKSpeed'] === '1' ? ' selected' : ''}>High</option><option value="2"${tpl['CLKSpeed'] === '2' ? ' selected' : ''}>Middle</option><option value="3"${tpl['CLKSpeed'] === '3' ? ' selected' : ''}>Low</option></select></div>
-    <div class="dlrow"><label>Target File:</label><input type="text" id="dl-target" data-dlkey="Target Path" value="${esc(displayTarget(resolveDownloadTarget(project)))}" spellcheck="false"><button type="button" id="dl-targetbtn">…</button></div>
+    <div class="dlrow"><label>Target File:</label><input type="text" id="dl-target" data-dlkey="Target Path" value="${esc(storedTarget)}" spellcheck="false"><button type="button" id="dl-targetbtn">…</button></div>
+    <div class="dlrow"><label>Effective target:</label><span id="dl-effective">${esc(effectiveTarget)}</span></div>
     <div class="dlchk"><span>Main Operations:</span>
       <label><input type="checkbox" data-dlkey="eraseAll"${chk(tpl['Erase All'])}> Erase All</label>
       <label><input type="checkbox" data-dlkey="program"${chk(tpl['Program'])}> Program</label>
@@ -1279,11 +1546,11 @@ export class ConfigView {
 <script nonce="${nonce}">const DL_CTX = ${jsonForScript(ctx)};</script>`;
   }
 
-  private fieldHtml(cp: Cproject, f: FieldDef, tplData?: TemplateData): string {
+  private fieldHtml(cp: Cproject, f: FieldDef, initial: Map<string, string>, tplData?: TemplateData): string {
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     if (f.tplKey) {
       const value = tplData?.values[f.tplKey] ?? '';
-      this.initial.set(f.key, value);
+      initial.set(f.key, value);
       const ro = f.tplReadonly ? ' readonly style="opacity:.75"' : ' spellcheck="false"';
       return `<div class="fld"><label>${esc(f.label)}</label><input type="text" data-key="${f.key}" value="${esc(value)}"${ro}></div>`;
     }
@@ -1294,7 +1561,7 @@ export class ConfigView {
       value = f.type === 'bool' || f.type === 'enum' ? readEnum(cp, f) : '';
     }
     // diff baseline for Apply (bool normalized to the checkbox's 1/0)
-    this.initial.set(f.key, f.type === 'bool' ? (value === 'true' ? '1' : '0') : value);
+    initial.set(f.key, f.type === 'bool' ? (value === 'true' ? '1' : '0') : value);
     if (f.type === 'bool') {
       return `<label class="check"><input type="checkbox" data-key="${f.key}" ${value === 'true' ? 'checked' : ''}><span>${esc(f.label)}</span></label>`;
     }
@@ -1334,9 +1601,12 @@ export class ConfigView {
     return `<div class="fld"><label>${esc(f.label)}</label><textarea data-key="${f.key}" data-stype="string" rows="4" spellcheck="false" style="resize:vertical">${esc(value)}</textarea></div>`;
   }
 
-  private render(project: MrsProject): string {
+  private render(session: ConfigSession): string {
+    const project = session.project;
     const cp = project.cproject;
-    this.initial.clear();
+    session.initial.clear();
+    session.renderedConfigFp = cp.activeConfigurationFingerprint();
+    session.renderedTpl = dlControlValues(project.template.values);
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     // fresh nonce per render: only <script nonce="..."> blocks may run, so a
     // future escaping slip cannot hand crafted script full acquireVsCodeApi
@@ -1375,12 +1645,12 @@ export class ConfigView {
 
     const pages = pageDefs.map((p, i) => {
       const fields = FIELDS.filter((f) => f.page === p.key)
-        .map((f) => this.fieldHtml(cp, f, project.template))
+        .map((f) => this.fieldHtml(cp, f, session.initial, project.template))
         .join('\n');
       let body = fields;
       if (p.key === 'chip' && chipDb.available) body = this.chipPickerHtml() + body;
       if (p.key === 'dlset') {
-        this.dlChipDb = chipDb;
+        session.dlChipDb = chipDb;
         body = this.dlSettingsHtml(project, chipDb, nonce);
       }
       return `<div class="page" data-page="${p.key}" data-title="${esc(p.title)}" data-desc="${esc(p.description)}" style="display:${i === 0 ? 'block' : 'none'}">${body}</div>`;
@@ -1401,10 +1671,16 @@ export class ConfigView {
     const dupCfgNote = dupCfgNames.length
       ? `${esc(t('cfgDuplicateNames', dupCfgNames.join('", "')))} ${esc(t('cfgDuplicateNamesHint'))}`
       : '';
+    // per-row content fingerprints ride along on every option/row: the
+    // switch/Manage messages carry them, and the host resolves a row that
+    // was REORDERED externally back to its current position (or refuses
+    // when the configuration is gone) instead of trusting a stale index
+    // (review round2 P2)
+    const cfgFps = cp.configurationFingerprints();
     const cfgControl =
       cfgNames.length > 1
         ? `<select id="cfgsel" data-cur="${esc(cp.configName)}">${cfgNames
-            .map((n) => `<option value="${esc(n)}"${n === cp.configName ? ' selected' : ''}>${esc(n)}</option>`)
+            .map((n, i) => `<option value="${esc(n)}" data-fp="${cfgFps[i]}"${n === cp.configName ? ' selected' : ''}>${esc(n)}</option>`)
             .join('')}</select>`
         : `<input type="text" value="${esc(cp.configName)}" readonly>`;
 
@@ -1526,7 +1802,7 @@ button.secondary { background: var(--vscode-button-secondaryBackground); color: 
     <div class="cfglist" id="cfglist">${cfgNames
       .map(
         (n, i) =>
-          `<div class="cfgrow${i === 0 ? ' active' : ''}" data-name="${esc(n)}" data-index="${i}"><span class="nm">${esc(n)}</span><span class="st">${i === 0 ? 'Active' : ''}</span></div>`
+          `<div class="cfgrow${i === 0 ? ' active' : ''}" data-name="${esc(n)}" data-index="${i}" data-fp="${cfgFps[i]}"><span class="nm">${esc(n)}</span><span class="st">${i === 0 ? 'Active' : ''}</span></div>`
       )
       .join('')}</div>
     ${dupCfgNames.length ? `<div class="cfgnote">${dupCfgNote}</div>` : ''}
@@ -1595,19 +1871,32 @@ function collectFormValues() {
   });
   return values;
 }
+// the Download Settings write goes out ONLY after the property save has
+// SUCCEEDED: 'save' carries the validation gates (include-path prompts,
+// strict-XML check, address format) — posting 'saveDl' first used to commit
+// .template even when the user then cancelled a path prompt or the .cproject
+// failed validation, leaving the download options applied while the compile
+// settings were refused (review P2). The 'saved' handler chains it below.
+let pendingDl = null;
 document.getElementById('apply').addEventListener('click', () => {
   const values = collectFormValues();
   // the Download Settings page uses data-dlkey controls, collected separately
-  const dl = collectDl();
-  if (dl) vscode.postMessage({ command: 'saveDl', values: dl });
+  pendingDl = collectDl();
   vscode.postMessage({ command: 'save', values });
 });
 // page dirty state: ONE baseline for the configuration selector AND the
-// Manage dialog. Apply success re-baselines it below ('saved'), so a switch
-// right after Apply never asks about edits that are already on disk.
+// Manage dialog. Apply success re-baselines it below ('savedDl' — after
+// BOTH the property save and the chained download-settings write), so a
+// switch right after Apply never asks about edits that are already on disk.
 let pristine = JSON.stringify([collectFormValues(), collectDl()]);
 const pageDirty = () => JSON.stringify([collectFormValues(), collectDl()]) !== pristine;
 const confirmDiscard = (message) => !pageDirty() || confirm(message);
+const rebaseAndFlash = () => {
+  pristine = JSON.stringify([collectFormValues(), collectDl()]);
+  const s = document.getElementById('status');
+  s.style.opacity = '1';
+  setTimeout(() => (s.style.opacity = '0'), 1600);
+};
 // top-right configuration selector: switching rewrites .cproject's
 // configuration order and reloads this page — unapplied edits would be lost,
 // so a dirty page asks first
@@ -1625,7 +1914,10 @@ if (cfgSel) {
       cfgSel.value = cur;
       return;
     }
-    vscode.postMessage({ command: 'switchConfig', name: next, index: nextIndex });
+    // the option's content fingerprint rides along: an external reorder
+    // between render and this switch is resolved on the host by identity,
+    // not by the possibly stale index (review round2 P2)
+    vscode.postMessage({ command: 'switchConfig', name: next, index: nextIndex, fp: cfgSel.options[nextIndex]?.dataset.fp });
   });
 }
 // ---- "Manage Configurations" dialog (MRS 配置管理): add / rename / delete /
@@ -1670,13 +1962,18 @@ if (cfgModal) {
   document.getElementById('cfgclose').addEventListener('click', () => {
     cfgModal.hidden = true;
   });
+  // every acted row's CONTENT fingerprint travels with the message — an
+  // external reorder between rendering and the click is resolved back to the
+  // row's current position on the host (review round2 P2: name+index alone
+  // deleted the WRONG one of two same-named rows after a reorder)
+  const rowFp = (i) => rowAt(i)?.dataset.fp;
   rows().forEach((row) => {
     row.addEventListener('click', () => selectIndex(Number(row.dataset.index)));
     row.addEventListener('dblclick', () => {
       const i = Number(row.dataset.index);
       if (i === activeIndex()) return;
       if (!manageDiscardOk()) return;
-      vscode.postMessage({ command: 'switchConfig', name: row.dataset.name, index: i });
+      vscode.postMessage({ command: 'switchConfig', name: row.dataset.name, index: i, fp: row.dataset.fp });
     });
   });
   document.getElementById('cfgadd').addEventListener('click', () => {
@@ -1687,8 +1984,9 @@ if (cfgModal) {
       return;
     }
     if (!manageDiscardOk()) return;
-    // the copy source travels as an INDEX (same duplicate-name reason)
-    vscode.postMessage({ command: 'addConfig', name, copyFromIndex: Number(cfgSource.value) });
+    // the copy source travels as an INDEX plus its fingerprint (same
+    // duplicate-name / stale-reorder reason)
+    vscode.postMessage({ command: 'addConfig', name, copyFromIndex: Number(cfgSource.value), copyFromFp: rowFp(Number(cfgSource.value)) });
   });
   document.getElementById('cfgrename').addEventListener('click', () => {
     cfgErr.textContent = '';
@@ -1699,20 +1997,20 @@ if (cfgModal) {
       return;
     }
     if (!manageDiscardOk()) return;
-    vscode.postMessage({ command: 'renameConfig', name: selectedName(), index: selected, newName });
+    vscode.postMessage({ command: 'renameConfig', name: selectedName(), index: selected, newName, fp: rowFp(selected) });
   });
   document.getElementById('cfgdel').addEventListener('click', () => {
     cfgErr.textContent = '';
     if (!needSelection()) return;
     if (!manageDiscardOk()) return;
-    vscode.postMessage({ command: 'deleteConfig', name: selectedName(), index: selected });
+    vscode.postMessage({ command: 'deleteConfig', name: selectedName(), index: selected, fp: rowFp(selected) });
   });
   document.getElementById('cfgactive').addEventListener('click', () => {
     cfgErr.textContent = '';
     if (!needSelection()) return;
     if (selected === activeIndex()) return;
     if (!manageDiscardOk()) return;
-    vscode.postMessage({ command: 'switchConfig', name: selectedName(), index: selected });
+    vscode.postMessage({ command: 'switchConfig', name: selectedName(), index: selected, fp: rowFp(selected) });
   });
 }
 document.getElementById('cancel').addEventListener('click', () => vscode.postMessage({ command: 'close' }));
@@ -1722,13 +2020,56 @@ window.addEventListener('message', (e) => {
     if (el) el.textContent = e.data.text || '';
   }
   if (e.data.command === 'saved') {
-    // the page content now equals what is on disk — re-baseline the dirty
-    // check so a following switch / Manage operation does not warn about
-    // edits that were just applied
-    pristine = JSON.stringify([collectFormValues(), collectDl()]);
-    const s = document.getElementById('status');
-    s.style.opacity = '1';
-    setTimeout(() => (s.style.opacity = '0'), 1600);
+    // the property save passed every gate — NOW commit the download
+    // settings (.template); see the apply handler for the ordering rationale
+    if (pendingDl) {
+      vscode.postMessage({ command: 'saveDl', values: pendingDl });
+      pendingDl = null;
+    } else {
+      rebaseAndFlash();
+    }
+  }
+  if (e.data.command === 'savedDl') {
+    // (review round7 P2-D) the effective target is a read-only hint: it is
+    // updated by textContent only and is never a submitted control
+    if (e.data.effectiveTarget !== undefined) {
+      const eff = dlEl('dl-effective');
+      if (eff) eff.textContent = e.data.effectiveTarget;
+    }
+    // BOTH halves are on disk now — only here may the dirty baseline reset:
+    // resetting at 'saved' (before the .template write) would hide a FAILED
+    // download-settings write from the switch/Manage confirms (review
+    // round2 P2)
+    // (review round5 P1) the payload carries the MERGED disk values — the
+    // download controls are refreshed to them, so a field an external
+    // editor changed shows its new value instead of lying in wait inside a
+    // stale checkbox that the next Apply would re-commit
+    if (e.data.values) {
+      // the .template keys and the data-dlkey names differ in case — map
+      // each control by its OWN dlkey to the merged disk value
+      const KEYMAP = {
+        eraseAll: 'Erase All',
+        program: 'Program',
+        verify: 'Verify',
+        reset: 'Reset',
+        sdiPrintf: 'SDIPrintf',
+        disableCodeProtect: 'Disable Code-Protect',
+        clearCodeFlash: 'Clear CodeFlash',
+        disablePower: 'Disable Power Output',
+        Address: 'Address',
+        'Flash Type': 'Flash Type',
+        DebugInterfaceMode: 'DebugInterfaceMode',
+        CLKSpeed: 'CLKSpeed',
+        'Target Path': 'Target Path',
+      };
+      document.querySelectorAll('[data-dlkey]').forEach((el) => {
+        const v = e.data.values[KEYMAP[el.dataset.dlkey] ?? el.dataset.dlkey];
+        if (v === undefined) return;
+        if (el.type === 'checkbox') el.checked = v === 'true';
+        else el.value = v;
+      });
+    }
+    rebaseAndFlash();
   }
   if (e.data.command === 'dirTree') fillTreeLevel(e.data.path ?? '', e.data.dirs ?? [], e.data.files ?? []);
   if (e.data.command === 'pickedPath') document.getElementById('mpath').value = e.data.path;

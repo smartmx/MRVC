@@ -47,6 +47,8 @@ import { initSdiMonitor, sdiPrintMonitorCmd, sdiPrintStopCmd } from './vscode/sd
 import { onSdiPrintfStatusChanged } from './core/sdiState';
 import { notePowerOutputRail, onPowerOutputRailChanged, powerOutputRail } from './core/powerState';
 import { ensureIntellisenseConfig, applyCacheOverrides, resolveProjectForFile, switchContext, maybePromptCppTools } from './vscode/intellisense';
+import { applyAsmAssociations } from './vscode/asmAssociations';
+import { registerAsmNavigation } from './vscode/asmNavigation';
 import { addProjectToSolutionCmd, addProjectsByBatchCmd, setBuildOrderCmd, closeSolutionCmd, modifySolutionToolchainCmd, recoverSolutionPath } from './vscode/solutionLife';
 import { generateCMakeListCmd, exportAsCMakeCmd } from './vscode/cmakeExport';
 import { exportMcpServerCmd } from './vscode/mcpExport';
@@ -189,6 +191,33 @@ function startExtension(context: vscode.ExtensionContext): void {
   context.subscriptions.push(store);
   store.restoreState();
 
+  // the opt-in language-mode associations (0.3.8, per folder): once MRVC is
+  // enabled (this code only runs behind the install gate) and the folder
+  // carries at least one MRS project, its settings.json gets the managed
+  // associations — *.s/*.S → mrvc-qingke (all-or-nothing pair), *.lst →
+  // mrvc-objdump-lst, *.map → mrvc-ld-map — UNLESS a glob already has a
+  // value anywhere (user settings, workspace settings, an earlier write);
+  // the user may re-point any of them at another mode and MRVC never
+  // fights. Folders WITHOUT a project are left alone (review H2: a mixed
+  // multi-root workspace must not get RISC-V associations on another repo's
+  // assembly). Re-applied after discovery (projects known) and on every
+  // store change; never surfaces as an exception.
+  const applyAsmAssociationsSafe = (): void => {
+    try {
+      const r = applyAsmAssociations(store.all.map((p) => p.root));
+      // a broken/locked settings.json would silently leave .s/.S unassociated
+      // — surface it once per message (review round27 P3-1)
+      if (r.unreadable.length) {
+        reportIntellisenseError(t('asmAssocUnreadable', r.unreadable.join(', ')));
+      }
+    } catch {
+      // a settings write must never take the extension host down
+    }
+  };
+  applyAsmAssociationsSafe();
+  context.subscriptions.push(store.onDidChange(applyAsmAssociationsSafe));
+  context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(applyAsmAssociationsSafe));
+
   const tree = new ProjectTreeProvider(store, context.extensionUri);
   const treeView = vscode.window.createTreeView('mrvc.projectExplorer', { treeDataProvider: tree, dragAndDropController: undefined });
   context.subscriptions.push(treeView);
@@ -229,6 +258,9 @@ function startExtension(context: vscode.ExtensionContext): void {
     if (!workspaceInit) {
       workspaceInit = (async () => {
         await store.discoverInWorkspace();
+        // project roots are only known now — a fresh workspace has no
+        // restored state, so the activation-time pass had nothing to gate on
+        applyAsmAssociationsSafe();
         reportIntellisenseError(ensureIntellisenseConfig(store).error);
         // the databases are only half of code navigation — make sure the
         // extension that consumes them is present and new enough
@@ -252,6 +284,17 @@ function startExtension(context: vscode.ExtensionContext): void {
     })
   );
   if (treeView.visible) void ensureWorkspaceInit();
+
+  // Go-to-Definition on .s/.S (0.3.8): bridges cpptools workspace symbols +
+  // .ld scripts / includes / local labels for mrvc-qingke. The provider
+  // awaits a DISCOVERY-ONLY closure on the first F12 of an empty store —
+  // the heavy IntelliSense chain stays behind the view-click memo and must
+  // never block an F12.
+  context.subscriptions.push(
+    registerAsmNavigation(store, async () => {
+      await store.discoverInWorkspace();
+    })
+  );
 
   // IntelliSense context switch: selecting a (different) project in the tree
   // copies that project's compile_commands database over the active one —
@@ -344,6 +387,7 @@ function startExtension(context: vscode.ExtensionContext): void {
 
   const build = new BuildManager(store);
   const configView = new ConfigView(store, context, build);
+  context.subscriptions.push(configView); // dispose panels + store listener on deactivation
 
   // ---- global UI context keys (menu/keybinding gating) ----
   // no status bar items: the tree stays the single MRVC surface
